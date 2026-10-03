@@ -735,7 +735,7 @@ async fn config_command(app: &App, command: Config) -> Result<Value> {
         Config::Show { scope } => {
             if scope == "local" {
                 Ok(
-                    json!({"scope":"local","values":app.store.local()?,"defaults":{"server_url":"ws://127.0.0.1:8765/ws","output":"text","audio.input":null,"audio.output":null,"updates.channel":"stable","telemetry.enabled":true},"schema":{"server_url":"WebSocket URL; remote requires TLS","output":["text","json"],"audio.input":"OS device ID/name or null","audio.output":"OS device ID/name or null","updates.channel":["stable","beta"],"telemetry.enabled":"boolean"}}),
+                    json!({"scope":"local","values":app.store.local()?,"defaults":{"server_url":store::DEFAULT_SERVER_URL,"output":"text","audio.input":null,"audio.output":null,"updates.channel":"stable","telemetry.enabled":true},"schema":{"server_url":"WebSocket URL; remote requires TLS","output":["text","json"],"audio.input":"OS device ID/name or null","audio.output":"OS device ID/name or null","updates.channel":["stable","beta"],"telemetry.enabled":"boolean"}}),
                 )
             } else {
                 app.req("config.get", json!({"scope":scope})).await

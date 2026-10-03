@@ -5,7 +5,7 @@ use clap::{Args, Parser, Subcommand};
     name = "ring",
     version,
     about = "Calls, conferences and voicemail for carbons and silicons",
-    long_about = "Silicon Ring connects verified IAM actors within an organization. A successful init means ringing, not answered. The daemon keeps carbon audio alive after the CLI exits. Context approval is always explicit.",
+    long_about = "Silicon Ring connects global IAM carbon and silicon IDs across organizations. Your selected organization controls your own IAM context. A successful init means ringing, not answered. The daemon keeps carbon audio alive after the CLI exits. Context approval is always explicit.",
     after_help = "Start: ring login --token-stdin\nThen: ring call init @c:alex\nExplore: ring call --help; ring context --help; ring doctor\nDocumentation: bundled udd/cli.md and udd/api.md. Published links: ring iam --json"
 )]
 pub struct Cli {

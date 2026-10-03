@@ -115,7 +115,7 @@ impl Fixture {
         let alice = login("si:alice", "org", true);
         let bob = login("si:bob", "org", false);
         let carol = login("si:carol", "org", false);
-        let outsider = login("si:alice", "other", true);
+        let outsider = login("si:eve", "other", true);
         Self {
             engine,
             _dir: dir,
@@ -498,5 +498,179 @@ fn encrypted_retry_fingerprints_and_push_tokens_remain_private() {
             json!({"device_id":alice.device_id,"push_platform":"unsupported"})
         ),
         "INVALID_INPUT"
+    );
+}
+
+#[test]
+fn global_ids_use_participant_access_and_pinned_own_credentials() {
+    let mut f = Fixture::new();
+    let mut other = f.bob.identity.clone();
+    other.org_id = "bobs-own-org".into();
+    let token = f.engine.login(other.clone(), None).unwrap();
+    let bob = f
+        .engine
+        .session(token["session_token"].as_str().unwrap())
+        .unwrap();
+    let ring = dial(&mut f.engine, &f.alice, "si:bob[legacy-other-org]");
+    assert_eq!(
+        f.engine.state.calls[&ring].identity("si:bob").org_id,
+        "bobs-own-org"
+    );
+    assert!(f
+        .engine
+        .state
+        .publications
+        .values()
+        .any(|n| n.actor == "si:bob"
+            && n.org_id == "bobs-own-org"
+            && n.event_type == "call.incoming"));
+    op(&mut f.engine, &bob, "calls.accept", json!({"ringid":ring}));
+    // Logging in through a different own organization never changes this call's credentials.
+    f.engine.login(f.bob.identity.clone(), None).unwrap();
+    f.engine.tick(true);
+    assert!(f
+        .engine
+        .state
+        .publications
+        .values()
+        .any(|n| n.actor == "si:bob"
+            && n.org_id == "bobs-own-org"
+            && n.event_type == "transcript.batch"));
+    assert_eq!(
+        op(&mut f.engine, &bob, "calls.get", json!({"ringid":ring}))["state"],
+        "active"
+    );
+    assert_eq!(
+        op(&mut f.engine, &f.bob, "calls.get", json!({"ringid":ring}))["state"],
+        "active"
+    );
+    let mut alternate_realm = bob.clone();
+    alternate_realm.identity.realm = "production".into();
+    assert_eq!(
+        fail(
+            &mut f.engine,
+            &alternate_realm,
+            "calls.get",
+            json!({"ringid":ring})
+        ),
+        "FORBIDDEN"
+    );
+    assert_eq!(
+        fail(
+            &mut f.engine,
+            &f.outsider,
+            "calls.get",
+            json!({"ringid":ring})
+        ),
+        "FORBIDDEN"
+    );
+    assert!(op(&mut f.engine, &bob, "calls.list", json!({}))["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["ringid"] == ring));
+    assert_eq!(
+        actor_id("si:bob[]", "org").unwrap_err().code,
+        "INVALID_INPUT"
+    );
+    assert_eq!(
+        actor_id("si:bob[x][y]", "org").unwrap_err().code,
+        "INVALID_INPUT"
+    );
+    assert_eq!(
+        actor_id("si:bob[x]tail", "org").unwrap_err().code,
+        "INVALID_INPUT"
+    );
+}
+
+#[test]
+fn foreign_recipient_voicemail_preferences_and_notification_route_are_preserved() {
+    let mut f = Fixture::new();
+    let mut identity = f.bob.identity.clone();
+    identity.org_id = "bobs-own-org".into();
+    let token = f.engine.login(identity, None).unwrap();
+    let bob = f
+        .engine
+        .session(token["session_token"].as_str().unwrap())
+        .unwrap();
+    voicemail_off(&mut f.engine, &bob);
+    let ring = dial(&mut f.engine, &f.alice, "si:bob");
+    op(
+        &mut f.engine,
+        &bob,
+        "calls.decline",
+        json!({"ringid":ring,"give_no_reason":true}),
+    );
+    assert_eq!(f.engine.state.calls[&ring].state, "ended");
+    assert_eq!(
+        fail(
+            &mut f.engine,
+            &f.alice,
+            "voicemail.begin",
+            json!({"ringid":ring,"format":"text"})
+        ),
+        "VOICEMAIL_DISABLED"
+    );
+    op(
+        &mut f.engine,
+        &bob,
+        "config.set",
+        json!({"scope":"actor","values":{"voicemail.enabled":true}}),
+    );
+    let draft = op(
+        &mut f.engine,
+        &f.alice,
+        "voicemail.begin",
+        json!({"ringid":ring,"format":"text"}),
+    );
+    let vid = draft["voicemail_id"].as_str().unwrap();
+    assert_eq!(draft["recipient_org_id"], "bobs-own-org");
+    assert_eq!(draft["org_id"], "org");
+    assert_eq!(
+        fail(
+            &mut f.engine,
+            &bob,
+            "voicemail.get",
+            json!({"voicemail_id":vid})
+        ),
+        "FORBIDDEN"
+    );
+    // Delivery itself is covered with real recorded PCM by test-server.mjs.
+    let vm = f.engine.state.voicemails.get_mut(vid).unwrap();
+    vm.complete_audio = true;
+    vm.audio_asset_id = Some("recorded-asset".into());
+    vm.text = Some("Private message".into());
+    f.engine.login(f.bob.identity.clone(), None).unwrap();
+    op(
+        &mut f.engine,
+        &f.alice,
+        "voicemail.commit",
+        json!({"voicemail_id":vid}),
+    );
+    assert_eq!(
+        op(
+            &mut f.engine,
+            &bob,
+            "voicemail.get",
+            json!({"voicemail_id":vid})
+        )["state"],
+        "delivered"
+    );
+    assert!(f
+        .engine
+        .state
+        .publications
+        .values()
+        .any(|n| n.actor == "si:bob"
+            && n.org_id == "bobs-own-org"
+            && n.event_type == "voicemail.received"));
+    assert_eq!(
+        fail(
+            &mut f.engine,
+            &f.outsider,
+            "voicemail.get",
+            json!({"voicemail_id":vid})
+        ),
+        "FORBIDDEN"
     );
 }

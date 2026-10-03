@@ -22,6 +22,8 @@ with tempfile.TemporaryDirectory(prefix="ring-cli-") as temp:
     def run(actor, *args, code=0, stdin=None):
         print("CLI smoke:", actor, *args[:3], flush=True)
         actor_env = {**env, "SILICON_HOME": str(root / actor)}
+        if actor == "alice":
+            actor_env.pop("SILICON_RING_SERVER_URL")
         result = subprocess.run([str(BIN), "--json", "--test", *args], input=stdin, capture_output=True, text=True, env=actor_env, timeout=30)
         assert result.returncode == code, (args, result.returncode, result.stdout, result.stderr)
         text = result.stdout if code == 0 else result.stderr
@@ -35,6 +37,9 @@ with tempfile.TemporaryDirectory(prefix="ring-cli-") as temp:
             except OSError:
                 assert server.poll() is None, "server exited"
                 time.sleep(.05)
+        # Alice uses her persisted URL; Bob's environment overrides a stale local URL.
+        run("alice", "config", "set", "--scope", "local", json.dumps({"server_url": env["SILICON_RING_SERVER_URL"]}))
+        run("bob", "config", "set", "--scope", "local", '{"server_url":"ws://127.0.0.1:1/ws"}')
         assert run("alice", "login", "status")["authenticated"] is False
         for actor in actors:
             result = run(actor, "login", "--token-stdin", stdin=f"{actor}-test-token\n")
@@ -54,7 +59,7 @@ with tempfile.TemporaryDirectory(prefix="ring-cli-") as temp:
         preview = denied["error"]["details"]
         run("alice", "context", "approve", preview["preparation_id"], "--for", "1h")
         first = run("alice", "--request-id", "approved-call", "call", "init", "si:bob", "--context", "Discuss launch.")
-        retry = run("alice", "--request-id", "approved-call", "call", "init", "si:bob", "--context", "Discuss launch.")
+        retry = run("alice", "--request-id", "approved-call", "call", "init", "si:bob[another-org]", "--context", "Discuss launch.")
         assert first["ringid"] == retry["ringid"]
         ring = first["ringid"]
         accepted = run("bob", "call", "accept", ring, "--start", "Hello")

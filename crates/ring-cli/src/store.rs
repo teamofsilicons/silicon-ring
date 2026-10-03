@@ -8,6 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub const DEFAULT_SERVER_URL: &str = "wss://backend.ring.teamofsilicons.com/ws";
+
 #[derive(Clone)]
 pub struct Store {
     pub dir: PathBuf,
@@ -144,7 +146,7 @@ impl Store {
             server_url: std::env::var("SILICON_RING_SERVER_URL")
                 .ok()
                 .or_else(|| config["server_url"].as_str().map(str::to_owned))
-                .unwrap_or_else(|| "ws://127.0.0.1:8765/ws".into()),
+                .unwrap_or_else(|| DEFAULT_SERVER_URL.into()),
             org_id: self.org.clone(),
             realm: if self.test { "test" } else { "production" }.into(),
             test_app_secret: secret,

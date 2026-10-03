@@ -36,6 +36,9 @@ jobs:
       - name: Headless CLI/server contract
         timeout-minutes: 6
         run: python crates/ring-cli/tests/smoke.py
+      - name: Honeycomb clean-PATH setup and configuration
+        timeout-minutes: 3
+        run: python scripts/test-packaging.py --ring-binary target/debug/ring${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Package installable native artifact
         shell: bash
         run: |

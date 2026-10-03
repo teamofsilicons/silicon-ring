@@ -69,32 +69,28 @@ pub async fn verify(app: &App, i: &Identity) -> Result<String> {
     }
     Ok(token)
 }
-/// A retained profile is not evidence of current organization membership.
-pub async fn verify_recipient(app: &App, caller: &Identity, actor: &str) -> Result<()> {
-    let recipient = Identity {
-        actor: actor.into(),
-        org_id: caller.org_id.clone(),
-        realm: caller.realm.clone(),
-        display_name: actor.into(),
-        admin: false,
+/// Resolve a global actor through their own current IAM grant in this realm.
+pub async fn verify_recipient(app: &App, caller: &Identity, actor: &str) -> Result<Identity> {
+    let candidates = {
+        let e = app.engine.lock().unwrap();
+        e.state.registered_identities(&caller.realm, actor)
     };
-    if !app.engine.lock().unwrap().state.profiles.contains_key(&key(
-        &recipient.realm,
-        &recipient.org_id,
-        actor,
-    )) {
-        return Err(recipient_unavailable());
+    let mut error = recipient_unavailable();
+    for recipient in candidates {
+        if recipient.realm != caller.realm || recipient.actor != actor {
+            continue;
+        }
+        match verify(app, &recipient).await {
+            Ok(_) => return Ok(recipient),
+            Err(fault) => error.retryable |= fault.retryable,
+        }
     }
-    verify(app, &recipient).await.map(|_| ()).map_err(|e| {
-        let mut error = recipient_unavailable();
-        error.retryable = e.retryable;
-        error
-    })
+    Err(error)
 }
 fn recipient_unavailable() -> Fault {
     Fault::new(
         "RECIPIENT_UNAVAILABLE",
-        "The recipient is not currently authorized for Ring in this organization.",
+        "The recipient is not currently authorized for Ring.",
         "Confirm the recipient has logged in to Ring with current IAM membership, then retry.",
     )
 }
@@ -320,7 +316,9 @@ pub fn revoke_identity(app: &App, i: &Identity, reason: &str) -> Result<()> {
         .state
         .calls
         .values()
-        .filter(|c| c.realm == i.realm && c.org_id == i.org_id && c.active(&i.actor))
+        .filter(|c| {
+            c.realm == i.realm && c.identity(&i.actor).org_id == i.org_id && c.active(&i.actor)
+        })
         .map(|c| c.ringid.clone())
         .collect();
     let control = Session {
@@ -385,17 +383,11 @@ pub fn monitored_identities(app: &App) -> Vec<Identity> {
         .state
         .calls
         .values()
-        .filter(|c| matches!(c.state.as_str(), "active" | "ringing"))
+        .filter(|c| matches!(c.state.as_str(), "active" | "ringing" | "connecting"))
     {
         for p in call.participants.iter().filter(|p| p.left_at.is_none()) {
-            ids.entry(key(&call.realm, &call.org_id, &p.actor))
-                .or_insert(Identity {
-                    actor: p.actor.clone(),
-                    realm: call.realm.clone(),
-                    org_id: call.org_id.clone(),
-                    display_name: p.display_name.clone(),
-                    admin: false,
-                });
+            let i = call.identity(&p.actor);
+            ids.entry(key(&i.realm, &i.org_id, &i.actor)).or_insert(i);
         }
     }
     ids.into_values().collect()
@@ -425,13 +417,16 @@ mod tests {
         }
     }
     fn login(app: &App, actor: &str) -> Session {
+        login_in(app, actor, "org", "production")
+    }
+    fn login_in(app: &App, actor: &str, org: &str, realm: &str) -> Session {
         let mut e = app.engine.lock().unwrap();
         let value = e
             .login(
                 Identity {
                     actor: actor.into(),
-                    org_id: "org".into(),
-                    realm: "production".into(),
+                    org_id: org.into(),
+                    realm: realm.into(),
                     display_name: actor.into(),
                     admin: false,
                 },
@@ -446,7 +441,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let app = app(dir.path());
         let alice = login(&app, "si:alice");
-        let bob = login(&app, "si:bob");
+        let bob = login_in(&app, "si:bob", "recipient-org", "production");
         let ring = {
             let mut e = app.engine.lock().unwrap();
             let ring = e
@@ -469,6 +464,20 @@ mod tests {
             ring
         };
         assert_eq!(monitored_identities(&app).len(), 2);
+        assert_eq!(
+            monitored_identities(&app)
+                .iter()
+                .find(|i| i.actor == "si:bob")
+                .unwrap()
+                .org_id,
+            "recipient-org"
+        );
+        let mut unrelated_context = bob.identity.clone();
+        unrelated_context.org_id = "unrelated-org".into();
+        revoke_identity(&app, &unrelated_context, "membership_removed").unwrap();
+        assert!(app.engine.lock().unwrap().state.calls[&ring].active("si:bob"));
+        revoke_identity(&app, &bob.identity, "membership_removed").unwrap();
+        assert!(!app.engine.lock().unwrap().state.calls[&ring].active("si:bob"));
         revoke_identity(&app, &alice.identity, "membership_removed").unwrap();
         let e = app.engine.lock().unwrap();
         assert!(!e.state.calls[&ring].active("si:alice"));
@@ -492,6 +501,29 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, "RECIPIENT_UNAVAILABLE");
         assert!(!error.retryable);
+    }
+
+    #[tokio::test]
+    async fn global_recipient_uses_their_own_context_and_preserves_realm_isolation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(dir.path());
+        let alice = login_in(&app, "si:alice", "caller-org", "test");
+        let bob = login_in(&app, "si:bob", "recipient-org", "test");
+        login_in(&app, "si:production-only", "caller-org", "production");
+        app.test_tokens = Arc::new(BTreeMap::from([("isolated-token".into(), bob.identity)]));
+        let recipient = verify_recipient(&app, &alice.identity, "si:bob")
+            .await
+            .unwrap();
+        assert_eq!(recipient.actor, "si:bob");
+        assert_eq!(recipient.org_id, "recipient-org");
+        assert_eq!(recipient.realm, "test");
+        assert_eq!(
+            verify_recipient(&app, &alice.identity, "si:production-only")
+                .await
+                .unwrap_err()
+                .code,
+            "RECIPIENT_UNAVAILABLE"
+        );
     }
 
     #[tokio::test]

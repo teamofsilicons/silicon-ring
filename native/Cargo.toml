@@ -1,6 +1,6 @@
 [package]
 name = "silicon-ring-native"
-version = "0.1.0"
+version = "0.1.1"
 description = "Native Silicon Ring phone"
 authors = ["Team of Silicons"]
 edition = "2021"

@@ -36,6 +36,7 @@ pub struct Stream {
     pub speech: VecDeque<(u64, u64)>,
     pub last_seen: Instant,
     pub rep: bool,
+    pub representative_generation: Option<usize>,
     pub asset_id: Option<String>,
 }
 pub struct Recording {
@@ -95,7 +96,6 @@ impl Media {
                 .filter(|v| {
                     v.sender == i.actor
                         && v.realm == i.realm
-                        && v.org_id == i.org_id
                         && v.ringid == ring
                         && v.state == "draft"
                         && v.format == "audio"
@@ -118,9 +118,10 @@ impl Media {
             let path = e.data_dir.join("assets").join(&aid);
             let mut file = File::create(&path).map_err(storage)?;
             file.write_all(&wav_header(0)).map_err(storage)?;
+            let draft = &e.state.voicemails[vm];
             let a = Asset {
                 asset_id: aid.clone(),
-                owner: key(&i.realm, &i.org_id, &i.actor),
+                owner: key(&draft.realm, &draft.org_id, &draft.sender),
                 purpose: "voicemail".into(),
                 mime_type: "audio/wav".into(),
                 size_bytes: 44,
@@ -164,6 +165,7 @@ impl Media {
                 speech: VecDeque::new(),
                 last_seen: Instant::now(),
                 rep: false,
+                representative_generation: None,
                 asset_id,
             },
         );
@@ -178,10 +180,10 @@ impl Media {
         actor: &str,
         out: mpsc::Sender<Vec<u8>>,
     ) -> String {
-        let sid = format!("rep_{}_{}", call.ringid, actor);
+        let sid = id("rep");
         self.streams.entry(sid.clone()).or_insert(Stream {
             id: sid.clone(),
-            owner: key(&call.realm, &call.org_id, actor),
+            owner: key(&call.realm, &call.identity(actor).org_id, actor),
             actor: actor.into(),
             ringid: call.ringid.clone(),
             device_id: String::new(),
@@ -199,13 +201,17 @@ impl Media {
             speech: VecDeque::new(),
             last_seen: Instant::now(),
             rep: true,
+            representative_generation: call
+                .participants
+                .iter()
+                .rposition(|p| p.actor == actor && p.left_at.is_none()),
             asset_id: None,
         });
         sid
     }
     pub fn handoff_ready(&self, i: &Identity, ring: &str, device: &str) -> bool {
         self.streams.values().any(|s| {
-            s.owner == key(&i.realm, &i.org_id, &i.actor)
+            owns_actor(&s.owner, &i.realm, &i.actor)
                 && s.ringid == ring
                 && s.device_id == device
                 && s.connected
@@ -482,13 +488,7 @@ impl Media {
                         expired.push((
                             call.ringid.clone(),
                             Session {
-                                identity: Identity {
-                                    actor: p.actor.clone(),
-                                    org_id: call.org_id.clone(),
-                                    realm: call.realm.clone(),
-                                    display_name: p.display_name.clone(),
-                                    admin: false,
-                                },
+                                identity: call.identity(&p.actor),
                                 device_id: p.device_id.clone().unwrap_or_default(),
                                 expires_at: after(1),
                             },
@@ -602,8 +602,12 @@ impl Media {
             let private_actors: Vec<_> = self
                 .streams
                 .values()
-                .filter(|s| s.voicemail_id.is_some() && s.connected)
-                .map(|s| s.owner.clone())
+                .filter(|s| {
+                    s.voicemail_id.is_some()
+                        && s.connected
+                        && owns_actor(&s.owner, &c.realm, &s.actor)
+                })
+                .map(|s| s.actor.clone())
                 .collect();
             let ids: Vec<_> = self
                 .streams
@@ -612,10 +616,16 @@ impl Media {
                     s.ringid == c.ringid
                         && s.voicemail_id.is_none()
                         && s.connected
-                        && c.participants.iter().any(|p| {
+                        && c.participants.iter().enumerate().any(|(generation, p)| {
                             p.actor == s.actor
                                 && p.left_at.is_none()
-                                && (s.rep || p.device_id.as_deref() == Some(s.device_id.as_str()))
+                                && if s.rep {
+                                    s.representative_generation == Some(generation)
+                                        && s.owner
+                                            == key(&c.realm, &c.identity(&p.actor).org_id, &p.actor)
+                                } else {
+                                    p.device_id.as_deref() == Some(s.device_id.as_str())
+                                }
                         })
                 })
                 .map(|(id, _)| id.clone())
@@ -625,7 +635,7 @@ impl Media {
             for id in &ids {
                 let s = self.streams.get_mut(id).unwrap();
                 let mut frame = vec![0i16; SAMPLES];
-                if !s.muted && !private_actors.contains(&s.owner) {
+                if !s.muted && !private_actors.contains(&s.actor) {
                     for sample in &mut frame {
                         *sample = s.queue.pop_front().unwrap_or(0)
                     }
@@ -811,6 +821,76 @@ impl Download {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejoining_representative_never_mixes_or_hears_the_previous_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = Engine::open(dir.path()).unwrap();
+        let mut login = |actor: &str, org: &str| {
+            let value = e
+                .login(
+                    Identity {
+                        actor: actor.into(),
+                        org_id: org.into(),
+                        realm: "test".into(),
+                        display_name: actor.into(),
+                        admin: false,
+                    },
+                    None,
+                )
+                .unwrap();
+            e.session(value["session_token"].as_str().unwrap()).unwrap()
+        };
+        let alice = login("c:alice", "alice-org");
+        let bob = login("si:bob", "old-org");
+        let carol = login("si:carol", "carol-org");
+        let ring = e
+            .dispatch(&alice, "calls.init", &json!({"target":"si:bob"}))
+            .unwrap()["ringid"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        e.dispatch(&bob, "calls.accept", &json!({"ringid":ring}))
+            .unwrap();
+        e.dispatch(
+            &alice,
+            "calls.invite",
+            &json!({"ringid":ring,"target":"si:carol"}),
+        )
+        .unwrap();
+        e.dispatch(&carol, "calls.accept", &json!({"ringid":ring}))
+            .unwrap();
+        let mut media = Media::default();
+        let (old_tx, mut old_rx) = mpsc::channel(8);
+        let old = media.representative(&e.state.calls[&ring], "si:bob", old_tx);
+        media.push_representative(&old, &pcm(&vec![1000; SAMPLES]));
+        e.dispatch(&bob, "calls.cut", &json!({"ringid":ring}))
+            .unwrap();
+        let mut alternate = bob.identity.clone();
+        alternate.org_id = "new-org".into();
+        let value = e.login(alternate, None).unwrap();
+        let rejoined = e.session(value["session_token"].as_str().unwrap()).unwrap();
+        e.dispatch(
+            &alice,
+            "calls.invite",
+            &json!({"ringid":ring,"target":"si:bob"}),
+        )
+        .unwrap();
+        e.dispatch(&rejoined, "calls.accept", &json!({"ringid":ring}))
+            .unwrap();
+        let (new_tx, mut new_rx) = mpsc::channel(8);
+        let current = media.representative(&e.state.calls[&ring], "si:bob", new_tx);
+        assert_ne!(old, current);
+        media.push_representative(&current, &pcm(&vec![-200; SAMPLES]));
+        media.tick(&mut e);
+        assert!(old_rx.try_recv().is_err());
+        assert!(new_rx.try_recv().unwrap().iter().all(|b| *b == 0));
+        let asset = &e.state.assets[&media.recordings[&ring].asset_id];
+        let recording = std::fs::read(&asset.path).unwrap();
+        assert!(recording[44..]
+            .chunks_exact(2)
+            .all(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]) == -200));
+    }
 
     #[test]
     fn reconnect_replaces_stale_audio_and_timeout_leaves_the_room() {

@@ -20,9 +20,9 @@
 export SILICON_ORG=your-organization
 curl -fsSL https://ring.teamofsilicons.com/install.sh | sh
 export PATH="$SILICON_HOME/.ring/install/bin:$PATH"</code></pre>
-  <p>Native CLI packages cover macOS, Linux and Windows on x86-64 and ARM64.</p>
+  <p>Native CLI packages cover macOS, Linux and Windows on x86-64 and ARM64. Honeycomb users can run <code>honeycomb install ring</code>. CLI 0.1.1 fixes first-install setup before PATH activation and defaults to the public Ring backend. Existing local <code>server_url</code> settings and <code>SILICON_RING_SERVER_URL</code> overrides take precedence.</p>
   <h2 id="native">Native phone apps</h2>
-  <p><a href="https://github.com/teamofsilicons/silicon-ring/releases/tag/v0.1.0">Download Ring 0.1.0</a> for macOS, Windows, Linux or Android. The <a href="https://github.com/teamofsilicons/silicon-ring/blob/main/docs/downloads.md">download guide</a> lists processor-specific installers, checksums and installation instructions.</p>
+  <p><a href="https://github.com/teamofsilicons/silicon-ring/releases/tag/v0.1.1">Download Ring 0.1.1</a> for macOS, Windows, Linux or Android. The <a href="https://github.com/teamofsilicons/silicon-ring/blob/main/docs/downloads.md">download guide</a> lists processor-specific installers, checksums and installation instructions.</p>
   <p>Desktop packages currently use ad-hoc signing on macOS and are not publisher-signed on Windows or Linux. Android uses a stable release signing key and is installed from its APK. iPhone device installation requires Apple provisioning; there is no public App Store release yet. The web app is available at <a href="/">ring.teamofsilicons.com</a>.</p>
   <h2 id="login">2. Sign in through IAM</h2>
   <p>Generate a short-lived token for the <code>ring</code> app in IAM. Ring accepts tokens; it never asks for your IAM password. Paste the token into the following command’s standard input, then finish input with Control-D.</p>

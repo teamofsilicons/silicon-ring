@@ -280,26 +280,26 @@ pub fn start(app: App) {
                         .devices
                         .values()
                         .filter(|d| {
-                            d.owner == key(&call.realm, &call.org_id, &offer.target)
-                                && d.ring_enabled
-                                && !d.revoked
-                                && d.push_token.is_some()
-                                && allowed_environment(&call.realm, d, test_push_enabled)
-                                && e.state
-                                    .sessions
-                                    .values()
-                                    .any(|s| s.device_id == d.device_id && s.expires_at > now())
+                            push_identity(
+                                &e.state,
+                                &call.realm,
+                                &offer.target,
+                                d,
+                                test_push_enabled,
+                            )
+                            .is_some()
                         })
                         .cloned()
                         .collect();
+                    let inviter = call.identity(&offer.inviter);
                     let name = e
                         .state
                         .profiles
-                        .get(&key(&call.realm, &call.org_id, &offer.inviter))
+                        .get(&key(&inviter.realm, &inviter.org_id, &inviter.actor))
                         .map(|p| p.display_name.clone())
                         .unwrap_or_else(|| offer.inviter.clone());
                     for device in devices {
-                        let did = format!("{}:{}", event.event_id, device.device_id);
+                        let did = format!("{}:{}", offer.invitation_id, device.device_id);
                         let uuid = uuid::Uuid::parse_str(ring.trim_start_matches("ring_"))
                             .map(|u| u.to_string())
                             .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
@@ -330,48 +330,43 @@ pub fn start(app: App) {
             for (id, task) in tasks {
                 let device = {
                     let e = app.engine.lock().unwrap();
-                    let call = e.state.calls.get(task["ringid"].as_str().unwrap_or(""));
-                    let valid = call.is_some_and(|c| {
-                        c.invitations.iter().any(|o| {
-                            o.invitation_id == task["invitation_id"]
-                                && o.state == "pending"
-                                && !o.silenced
-                                && o.expires_at > now()
-                        })
-                    });
-                    e.state
-                        .devices
-                        .get(task["device_id"].as_str().unwrap_or(""))
-                        .filter(|d| {
-                            valid
-                                && !d.revoked
-                                && d.ring_enabled
-                                && d.push_token.is_some()
-                                && call.is_some_and(|c| {
-                                    allowed_environment(&c.realm, d, test_push_enabled)
-                                })
-                                && e.state
-                                    .sessions
-                                    .values()
-                                    .any(|s| s.device_id == d.device_id && s.expires_at > now())
-                        })
-                        .cloned()
+                    pending_push_device(&e.state, &task, test_push_enabled)
                 };
-                let outcome = if let Some(d) = device {
+                let outcome = if let Some((_, identity)) = device {
                     let expiry = task["payload"]["expires_at"]
                         .as_str()
                         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                         .map(|t| t.timestamp())
                         .unwrap_or(0);
-                    push.send(
-                        d.push_platform.as_deref().unwrap_or(""),
-                        d.push_token.as_deref().unwrap_or(""),
-                        d.push_environment.as_deref(),
-                        &task["payload"],
-                        task["apns_id"].as_str().unwrap_or(""),
-                        expiry,
-                    )
-                    .await
+                    match crate::auth::verify(&app, &identity).await {
+                        Ok(_) => {
+                            // Logout, device revocation, or a cut may happen during introspection.
+                            let current = {
+                                let e = app.engine.lock().unwrap();
+                                pending_push_device(&e.state, &task, test_push_enabled).filter(
+                                    |(_, i)| {
+                                        i.actor == identity.actor
+                                            && i.realm == identity.realm
+                                            && i.org_id == identity.org_id
+                                    },
+                                )
+                            };
+                            if let Some((d, _)) = current {
+                                push.send(
+                                    d.push_platform.as_deref().unwrap_or(""),
+                                    d.push_token.as_deref().unwrap_or(""),
+                                    d.push_environment.as_deref(),
+                                    &task["payload"],
+                                    task["apns_id"].as_str().unwrap_or(""),
+                                    expiry,
+                                )
+                                .await
+                            } else {
+                                Ok(())
+                            }
+                        }
+                        Err(error) => Err(error),
+                    }
                 } else {
                     Ok(())
                 };
@@ -399,6 +394,48 @@ pub fn start(app: App) {
         }
     });
 }
+fn pending_push_device(
+    state: &State,
+    task: &Value,
+    test_push_enabled: bool,
+) -> Option<(Device, Identity)> {
+    let call = state.calls.get(task["ringid"].as_str()?)?;
+    let offer = call.invitations.iter().find(|o| {
+        o.invitation_id == task["invitation_id"]
+            && o.state == "pending"
+            && !o.silenced
+            && o.expires_at > now()
+    })?;
+    let device = state.devices.get(task["device_id"].as_str()?)?;
+    let identity = push_identity(state, &call.realm, &offer.target, device, test_push_enabled)?;
+    Some((device.clone(), identity))
+}
+fn push_identity(
+    state: &State,
+    realm: &str,
+    actor: &str,
+    device: &Device,
+    test_push_enabled: bool,
+) -> Option<Identity> {
+    if device.revoked
+        || !device.ring_enabled
+        || device.push_token.is_none()
+        || !allowed_environment(realm, device, test_push_enabled)
+    {
+        return None;
+    }
+    state
+        .sessions
+        .values()
+        .find(|s| {
+            s.device_id == device.device_id
+                && s.expires_at > now()
+                && s.identity.realm == realm
+                && s.identity.actor == actor
+                && device.owner == key(&s.identity.realm, &s.identity.org_id, &s.identity.actor)
+        })
+        .map(|s| s.identity.clone())
+}
 fn allowed_environment(realm: &str, device: &Device, test_push_enabled: bool) -> bool {
     realm != "test"
         || (test_push_enabled
@@ -408,6 +445,89 @@ fn allowed_environment(realm: &str, device: &Device, test_push_enabled: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn global_push_target_requires_its_own_live_device_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = crate::engine::Engine::open(dir.path()).unwrap();
+        let mut login = |actor: &str, org: &str, realm: &str| {
+            let value = engine
+                .login(
+                    Identity {
+                        actor: actor.into(),
+                        org_id: org.into(),
+                        realm: realm.into(),
+                        display_name: actor.into(),
+                        admin: false,
+                    },
+                    None,
+                )
+                .unwrap();
+            engine
+                .session(value["session_token"].as_str().unwrap())
+                .unwrap()
+        };
+        let caller = login("si:caller", "caller-org", "production");
+        let recipient = login("c:recipient", "recipient-org", "production");
+        let other = login("c:other", "recipient-org", "production");
+        let isolated = login("c:recipient", "recipient-org", "test");
+        for session in [&recipient, &other, &isolated] {
+            let d = engine.state.devices.get_mut(&session.device_id).unwrap();
+            d.push_token = Some("push-token".into());
+            d.push_platform = Some("fcm".into());
+        }
+        let started = engine
+            .dispatch(&caller, "calls.init", &json!({"target":"c:recipient"}))
+            .unwrap();
+        let ring = started["ringid"].as_str().unwrap();
+        let offer = engine.state.calls[ring].invitations[0]
+            .invitation_id
+            .clone();
+        let task = json!({"ringid":ring,"invitation_id":offer,"device_id":recipient.device_id});
+        let (_, identity) = pending_push_device(&engine.state, &task, false).unwrap();
+        assert_eq!(identity.org_id, "recipient-org");
+        for device in [&other.device_id, &isolated.device_id] {
+            let mut changed = task.clone();
+            changed["device_id"] = json!(device);
+            assert!(pending_push_device(&engine.state, &changed, false).is_none());
+        }
+        let owner = engine.state.devices[&recipient.device_id].owner.clone();
+        engine
+            .state
+            .devices
+            .get_mut(&recipient.device_id)
+            .unwrap()
+            .owner = key("production", "unverified-org", "c:recipient");
+        assert!(pending_push_device(&engine.state, &task, false).is_none());
+        engine
+            .state
+            .devices
+            .get_mut(&recipient.device_id)
+            .unwrap()
+            .owner = owner;
+        engine
+            .state
+            .devices
+            .get_mut(&recipient.device_id)
+            .unwrap()
+            .revoked = true;
+        assert!(pending_push_device(&engine.state, &task, false).is_none());
+        engine
+            .state
+            .devices
+            .get_mut(&recipient.device_id)
+            .unwrap()
+            .revoked = false;
+        engine.state.calls.get_mut(ring).unwrap().invitations[0].silenced = true;
+        assert!(pending_push_device(&engine.state, &task, false).is_none());
+        engine.state.calls.get_mut(ring).unwrap().invitations[0].silenced = false;
+        for session in engine.state.sessions.values_mut() {
+            if session.device_id == recipient.device_id {
+                session.expires_at = after(-1);
+            }
+        }
+        assert!(pending_push_device(&engine.state, &task, false).is_none());
+    }
+
     #[test]
     fn isolated_calls_never_wake_production_push_tokens() {
         let mut device = Device {

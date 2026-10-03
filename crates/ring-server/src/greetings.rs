@@ -14,6 +14,15 @@ pub async fn prepare(app: &App, i: &Identity, result: &mut Value) -> Result<()> 
             e.state.greetings.get(&vid).cloned(),
         )
     };
+    if vm.sender != i.actor || vm.realm != i.realm || vm.org_id != i.org_id {
+        return Err(forbidden());
+    }
+    let recipient_org = if vm.recipient_org_id.is_empty() {
+        &vm.org_id
+    } else {
+        &vm.recipient_org_id
+    };
+    let recipient = key(&vm.realm, recipient_org, &vm.recipient);
     if let Some(aid) = existing {
         result["greeting"]["asset_id"] = json!(aid);
         result["greeting_asset_id"] = json!(aid);
@@ -33,16 +42,11 @@ pub async fn prepare(app: &App, i: &Identity, result: &mut Value) -> Result<()> 
         let e = app.engine.lock().unwrap();
         e.state
             .profiles
-            .get(&key(&vm.realm, &vm.org_id, &vm.recipient))
+            .get(&recipient)
             .map(|p| p.voice_id.clone())
             .unwrap_or_else(|| "gleam".into())
     };
-    let cache = format!(
-        "{}|{}|{}",
-        key(&vm.realm, &vm.org_id, &vm.recipient),
-        voice,
-        digest(&text)
-    );
+    let cache = format!("{}|{}|{}", recipient, voice, digest(&text));
     let cached = app
         .engine
         .lock()
@@ -54,7 +58,7 @@ pub async fn prepare(app: &App, i: &Identity, result: &mut Value) -> Result<()> 
     let aid = if let Some(aid) = cached {
         aid
     } else {
-        let provider = crate::settings::openai(app, &vm.realm, &vm.org_id, "providers.tts")
+        let provider = crate::settings::openai(app, &vm.realm, recipient_org, "providers.tts")
             .map_err(crate::provider_error)?;
         let bytes = synthesize(&provider, &text, &voice)
             .await
@@ -67,7 +71,7 @@ pub async fn prepare(app: &App, i: &Identity, result: &mut Value) -> Result<()> 
             aid.clone(),
             Asset {
                 asset_id: aid.clone(),
-                owner: key(&vm.realm, &vm.org_id, &vm.recipient),
+                owner: recipient,
                 purpose: "voicemail_greeting".into(),
                 mime_type: "audio/wav".into(),
                 size_bytes: bytes.len(),
@@ -84,9 +88,6 @@ pub async fn prepare(app: &App, i: &Identity, result: &mut Value) -> Result<()> 
         aid
     };
     let mut e = app.engine.lock().unwrap();
-    if vm.sender != i.actor {
-        return Err(forbidden());
-    }
     e.state.greetings.insert(vid, aid.clone());
     e.persist()?;
     result["greeting"]["asset_id"] = json!(aid);
@@ -134,4 +135,80 @@ pub async fn synthesize(
     let mut bytes = crate::media::wav_header(pcm.len() as u32).to_vec();
     bytes.extend(pcm);
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn greeting_cache_uses_pinned_recipient_context_with_legacy_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App {
+            engine: Arc::new(Mutex::new(crate::engine::Engine::open(dir.path()).unwrap())),
+            media: Arc::new(Mutex::new(crate::media::Media::default())),
+            test_tokens: Arc::new(Default::default()),
+            test_secret: None,
+            providers_disabled: false,
+            vault: Arc::new(crate::vault::Vault::open(dir.path()).unwrap()),
+            telemetry: Arc::new(None),
+            web_analytics: Arc::new(None),
+            web_events: Arc::new(None),
+            cli_telemetry: Arc::new(None),
+        };
+        let sender = Identity {
+            actor: "si:sender".into(),
+            org_id: "sender-org".into(),
+            realm: "test".into(),
+            display_name: "Sender".into(),
+            admin: false,
+        };
+        for (recipient_org, expected_org) in
+            [("recipient-org", "recipient-org"), ("", "sender-org")]
+        {
+            let vid = id("vm");
+            let vm: Voicemail = serde_json::from_value(json!({
+                "recipient_org_id":recipient_org,"voicemail_id":vid,"ringid":"ring-example",
+                "invitation_id":"invite-example","org_id":"sender-org","realm":"test",
+                "sender":"si:sender","recipient":"si:recipient","format":"text","state":"draft",
+                "created_at":now(),"expires_at":after(60),"reason":null,"text":null,"transcript":null,
+                "audio_asset_id":null,"read":false,"complete_audio":false,
+                "transcription_status":"pending","synthesis_status":"pending","error":null
+            })).unwrap();
+            let text = "Please leave a message.";
+            {
+                let mut e = app.engine.lock().unwrap();
+                e.state.voicemails.insert(vid.clone(), vm);
+                e.state.greeting_cache.insert(
+                    format!(
+                        "{}|gleam|{}",
+                        key("test", "sender-org", "si:recipient"),
+                        digest(text)
+                    ),
+                    "wrong-context-asset".into(),
+                );
+                e.state.greeting_cache.insert(
+                    format!(
+                        "{}|gleam|{}",
+                        key("test", expected_org, "si:recipient"),
+                        digest(text)
+                    ),
+                    "correct-context-asset".into(),
+                );
+            }
+            let mut result = json!({"voicemail_id":vid,"greeting":{"text":text}});
+            prepare(&app, &sender, &mut result).await.unwrap();
+            assert_eq!(result["greeting_asset_id"], "correct-context-asset");
+            let mut wrong_realm = sender.clone();
+            wrong_realm.realm = "production".into();
+            assert_eq!(
+                prepare(&app, &wrong_realm, &mut result)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "FORBIDDEN"
+            );
+        }
+    }
 }

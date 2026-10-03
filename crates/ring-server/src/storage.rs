@@ -129,7 +129,14 @@ pub async fn ensure_local(app: &App, i: &Identity, asset_id: &str) -> Result<()>
         return Ok(());
     }
     let stored = stored.ok_or_else(|| missing("Stored audio"))?;
-    let store = crate::settings::s3(app, &i.realm, &i.org_id)
+    let mut owner = a.owner.splitn(3, '|');
+    let realm = owner
+        .next()
+        .ok_or_else(|| invalid("Asset realm is missing"))?;
+    let org = owner
+        .next()
+        .ok_or_else(|| invalid("Asset storage context is missing"))?;
+    let store = crate::settings::s3(app, realm, org)
         .await
         .map_err(crate::provider_error)?
         .ok_or_else(|| {

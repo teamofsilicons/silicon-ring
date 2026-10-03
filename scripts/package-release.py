@@ -90,7 +90,7 @@ def honeycomb_package(args):
                     (root/"docs").mkdir(exist_ok=True)
                     shutil.copyfile(path,root/"docs"/name)
             setup="setup.ps1" if platform=="windows" else "setup.sh"
-            (root/setup).write_text("$ErrorActionPreference = 'Stop'\nring daemon start\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n" if platform=="windows" else "#!/bin/sh\nset -eu\nring daemon start\n")
+            (root/setup).write_text('$ErrorActionPreference = \'Stop\'\n& "$PSScriptRoot\\ring.exe" daemon start\nexit $LASTEXITCODE\n' if platform=="windows" else '#!/bin/sh\nset -eu\nexec "${0%/*}/ring" daemon start\n')
             (root/setup).chmod(0o755)
             manifest += [f"  {target}:",f"    root: targets/{target}","    executables:",f"      main: {executable}",f"    install_script: {setup}"]
         (stage/"honeycomb.yaml").write_text("\n".join(manifest)+"\n")

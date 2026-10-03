@@ -2,8 +2,8 @@ export type RingError = { code: string; message: string; next_action?: string; r
 export type RingEvent = { type: string; data: any; seq?: number; event_id?: string };
 export type Session = { actor: string; actor_id?: string; display_name?: string; org_id: string; device_id: string; session_token: string; expires_at?: string };
 export type Call = { ringid: string; caller: string; target: string; state: string; created_at: string; answered_at?: string; ended_at?: string; outcome?: string; recording_status?: string; participants: { actor: string; display_name?: string; device_id?: string; left_at?: string | null }[]; invitations: { invitation_id: string; inviter: string; target: string; state: string; reason?: string; expires_at: string }[] };
-export const normalizeActor = (value: string) => value.trim().replace(/^@/, '');
-export const isActor = (value: string) => /^(?:c|si):[^\s\[\]]+(?:\[[^\s\[\]]+\])?$/.test(normalizeActor(value));
+export const normalizeActor = (value: string) => value.trim().replace(/^@/, '').replace(/^((?:c|si):[^\s\[\]]+)\[[^\s\[\]]+\]$/, '$1');
+export const isActor = (value: string) => /^(?:c|si):[^\s\[\]]+$/.test(normalizeActor(value));
 export const displayActor = (value = '') => value.replace(/^(?:c|si):/, '').replace(/\[.*\]$/, '');
 export function socketUrl(value: string) {
   const url = new URL(value);
@@ -66,7 +66,7 @@ export class RingSocket {
       ws.onerror = () => { clearTimeout(timeout); reject(new Error('Could not reach Ring. Make sure the server is running and its address is correct.')); };
     });
     try {
-      await this.request('protocol.hello', { versions: [1], client: { name: 'ring-web', version: '0.1.0' }, realm: this.settings.realm, org_id: this.settings.org_id || undefined, capabilities: ['audio.pcm16', 'events', 'handoff'], ...(this.settings.test_app_secret ? { test_app_secret: this.settings.test_app_secret } : {}) });
+      await this.request('protocol.hello', { versions: [1], client: { name: 'ring-web', version: '0.1.1' }, realm: this.settings.realm, org_id: this.settings.org_id || undefined, capabilities: ['audio.pcm16', 'events', 'handoff'], ...(this.settings.test_app_secret ? { test_app_secret: this.settings.test_app_secret } : {}) });
       if (this.session) {
         const result = await this.request('auth.resume', { session_token: this.session.session_token, device_id: this.session.device_id });
         this.session = { ...this.session, ...result };

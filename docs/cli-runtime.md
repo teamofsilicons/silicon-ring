@@ -2,11 +2,15 @@
 
 Run `ring --help` to explore commands without a network connection or `SILICON_HOME`. Bare command groups show their help without taking action. Runtime commands require an absolute `SILICON_HOME`; organization selection is `--org`, then `SILICON_ORG`.
 
+Call targets are global `c:handle` or `si:handle` IDs. The selected organization controls your own IAM context and need not match the recipient's organization. Well-formed legacy `c:handle[org]` and `si:handle[org]` inputs normalize to the global ID; the suffix conveys no membership authority.
+
 ## Connections and storage
 
 `SILICON_HOME/.ring` contains local config, protected session files, process metadata and redacted JSON Lines logs. Session names are partitioned by selected organization and production/test realm. The directory is mode `0700` and files `0600` on Unix. Windows uses an ACL restricted to the current user's SID, inherited by new files.
 
-Server selection is `SILICON_RING_SERVER_URL`, local `server_url`, then `ws://127.0.0.1:8765/ws`. Remote servers require `wss://`; URL user/password authentication is rejected. The published binary installer configures the production endpoint for a new installation. `ISI` adds request origin metadata and never changes verified identity.
+From CLI 0.1.1, server selection is `SILICON_RING_SERVER_URL`, local `server_url`, then `wss://backend.ring.teamofsilicons.com/ws`. Existing configuration and environment overrides are preserved. For a local server, set `SILICON_RING_SERVER_URL=ws://127.0.0.1:8765/ws`. Remote servers require `wss://`; URL user/password authentication is rejected. `ISI` adds request origin metadata and never changes verified identity.
+
+Honeycomb packages start the daemon through the executable beside their setup script, including on a first installation before shell PATH activation. CLI 0.1.1 fixes the fresh-PATH setup failure in the immutable 0.1.0 package.
 
 A command starts the daemon when needed. On Unix it uses a locked, owner-protected socket directory under `/tmp/silicon-ring-UID` to avoid macOS's short socket-path limit. State stays in `SILICON_HOME/.ring`. Windows uses an ephemeral loopback TCP listener with mutual HMAC-SHA256 challenge authentication before sending session data. Fresh nonces prevent captured proofs from authorizing later connections. The endpoint and random IPC credential are stored only in the protected process file.
 

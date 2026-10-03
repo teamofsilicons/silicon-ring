@@ -294,8 +294,7 @@ async fn connection(app: App, socket: WebSocket) {
                     if let Some(session) = session {
                         for (id, subscription) in &mut peer.subscriptions {
                             for event in engine.state.events.iter().filter(|event| event.seq > subscription.after_seq) {
-                                if event.org_id == session.identity.org_id
-                                    && event.realm == session.identity.realm
+                                if event.realm == session.identity.realm
                                     && event.recipients.contains(&session.identity.actor)
                                     && subscription.ring.as_ref().is_none_or(|ring| event.data["ringid"] == *ring)
                                     && (subscription.topics.is_empty() || subscription.topics.iter().any(|topic| event.kind.starts_with(topic)))
@@ -495,10 +494,12 @@ async fn handle(
     auth::verify(app, &session.identity).await?;
     let session = app.engine.lock().unwrap().session(token)?;
     let i = &session.identity;
-    if matches!(m, "calls.init" | "calls.invite") {
+    let verified_recipient = if matches!(m, "calls.init" | "calls.invite") {
         let target = actor_id(required(&p, "target")?, &i.org_id)?;
-        auth::verify_recipient(app, i, &target).await?;
-    }
+        Some(auth::verify_recipient(app, i, &target).await?)
+    } else {
+        None
+    };
     if m == "notifications.authorize" {
         return auth::notifications(app, i, rid, &p).await;
     }
@@ -625,13 +626,13 @@ async fn handle(
         settings::prepare_config(app, i, &mut p)?;
     }
     let response = {
-        app.engine.lock().unwrap().request_with_fingerprint(
-            &session,
-            rid,
-            m,
-            p.clone(),
-            fingerprint,
-        )
+        let mut engine = app.engine.lock().unwrap();
+        engine.session(token)?;
+        // Keep the verified recipient context pinned across concurrent logins.
+        if let Some(recipient) = verified_recipient.as_ref() {
+            engine.state.remember_identity(recipient);
+        }
+        engine.request_with_fingerprint(&session, rid, m, p.clone(), fingerprint)
     };
     if response["ok"] != true {
         return Err(serde_json::from_value(response["error"].clone())

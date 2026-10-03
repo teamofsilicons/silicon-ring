@@ -47,6 +47,7 @@ impl Engine {
         Ok(())
     }
     pub fn login(&mut self, identity: Identity, device: Option<String>) -> Result<Value> {
+        self.state.remember_identity(&identity);
         let owner = key(&identity.realm, &identity.org_id, &identity.actor);
         let device_id = device
             .filter(|d| {
@@ -197,9 +198,18 @@ impl Engine {
             }
             "profile.get" => {
                 let actor = actor_id(p["actor"].as_str().unwrap_or(&i.actor), &i.org_id)?;
+                if actor == i.actor {
+                    return Ok(json!(self.state.profile(i)));
+                }
                 self.state
                     .profiles
-                    .get(&key(&i.realm, &i.org_id, &actor))
+                    .get(
+                        &self
+                            .state
+                            .recipient_identity(&i.realm, &actor)
+                            .map(|identity| key(&identity.realm, &identity.org_id, &identity.actor))
+                            .ok_or_else(|| missing("Profile"))?,
+                    )
                     .map(|v| json!(v))
                     .ok_or_else(|| missing("Profile"))
             }
@@ -382,10 +392,12 @@ impl Engine {
             )),
             "calls.list" => {
                 let mut rows = Vec::new();
-                for c in
-                    self.state.calls.values().rev().filter(|c| {
-                        c.org_id == i.org_id && c.realm == i.realm && c.visible(&i.actor)
-                    })
+                for c in self
+                    .state
+                    .calls
+                    .values()
+                    .rev()
+                    .filter(|c| c.realm == i.realm && c.visible(&i.actor))
                 {
                     if p["state"].as_str().is_some_and(|state| state != c.state)
                         || !time_matches(&c.created_at, p)?
@@ -433,7 +445,6 @@ impl Engine {
                         .values()
                         .filter(|d| {
                             d.realm == i.realm
-                                && d.org_id == i.org_id
                                 && d.actor == i.actor
                                 && d.ringid == p["ringid"]
                                 && p["status"].as_str().is_none_or(|s| s == d.status)
@@ -447,7 +458,7 @@ impl Engine {
                 .state
                 .delegations
                 .get(required(p, "delegation_id")?)
-                .filter(|d| d.actor == i.actor && d.org_id == i.org_id && d.realm == i.realm)
+                .filter(|d| d.actor == i.actor && d.realm == i.realm)
                 .map(|d| json!(d))
                 .ok_or_else(forbidden),
             "voicemail.begin" | "voicemail.send" | "voicemail.commit" | "voicemail.abort"
@@ -553,7 +564,7 @@ impl Engine {
                     .state
                     .publications
                     .values()
-                    .filter(|n| n.actor == i.actor && n.realm == i.realm && n.org_id == i.org_id)
+                    .filter(|n| n.actor == i.actor && n.realm == i.realm)
                     .collect();
                 Ok(
                     json!({"pending":rows.iter().filter(|n|n.status=="pending").count(),"failed":rows.iter().filter(|n|n.status=="failed").count(),"delivered":rows.iter().filter(|n|n.status=="delivered").count(),"errors":rows.iter().filter_map(|n|n.error.as_ref()).collect::<Vec<_>>()}),
@@ -564,7 +575,6 @@ impl Engine {
                 for v in self.state.publications.values_mut().filter(|v| {
                     v.actor == i.actor
                         && v.realm == i.realm
-                        && v.org_id == i.org_id
                         && v.status == "failed"
                         && p["notification_id"]
                             .as_str()
@@ -915,17 +925,16 @@ impl Engine {
                 "Cannot call yourself; use device handoff for another device",
             ));
         }
-        if !self
+        let recipient = self
             .state
-            .profiles
-            .contains_key(&key(&i.realm, &i.org_id, &target))
-        {
-            return Err(Fault::new(
-                "RECIPIENT_NOT_REGISTERED",
-                "Recipient is not registered in this Ring organization.",
-                "Ask the recipient to log in to Ring with IAM first.",
-            ));
-        }
+            .recipient_identity(&i.realm, &target)
+            .ok_or_else(|| {
+                Fault::new(
+                    "RECIPIENT_NOT_REGISTERED",
+                    "Recipient has not registered with Ring.",
+                    "Ask the recipient to log in to Ring with IAM first.",
+                )
+            })?;
         if self.state.busy(&i.actor, &i.realm, None) {
             return Err(Fault::new(
                 "SILICON_BUSY",
@@ -948,6 +957,12 @@ impl Engine {
         };
         let mut call = Call {
             ringid: id("ring"),
+            actor_orgs: [
+                (i.actor.clone(), i.org_id.clone()),
+                (target.clone(), recipient.org_id.clone()),
+            ]
+            .into_iter()
+            .collect(),
             org_id: i.org_id.clone(),
             realm: i.realm.clone(),
             caller: i.actor.clone(),
@@ -976,7 +991,7 @@ impl Engine {
             json!({"target":target,"invitation_id":invitation.invitation_id}),
             None,
         );
-        if busy && !self.voicemail_enabled(&i.realm, &i.org_id, &target) {
+        if busy && !self.voicemail_enabled(&i.realm, &recipient.org_id, &target) {
             end_call(&mut call);
         }
         let event = if call.state == "ended" {
@@ -1012,7 +1027,11 @@ impl Engine {
         if call.state == "ringing" {
             if call.invitations.iter().any(|v| {
                 matches!(v.state.as_str(), "busy" | "declined" | "timeout")
-                    && self.voicemail_enabled(&call.realm, &call.org_id, &v.target)
+                    && self.voicemail_enabled(
+                        &call.realm,
+                        &call.identity(&v.target).org_id,
+                        &v.target,
+                    )
             }) {
                 call.state = "voicemail".into();
             } else {
@@ -1066,6 +1085,7 @@ impl Engine {
                 context_params["invitation_id"] = json!(call.invitations[idx].invitation_id);
                 let context = self.context(i, &context_params, "accept", ring)?;
                 let device = self.call_device(s, p)?;
+                call.actor_orgs.insert(i.actor.clone(), i.org_id.clone());
                 call.invitations[idx].state = "accepted".into();
                 call.invitations[idx].silenced = true;
                 call.participants.push(Participant {
@@ -1170,13 +1190,12 @@ impl Engine {
                         "Inspect the call roster.",
                     ));
                 }
-                if !self
+                let recipient = self
                     .state
-                    .profiles
-                    .contains_key(&key(&i.realm, &i.org_id, &target))
-                {
-                    return Err(missing("Registered recipient"));
-                }
+                    .recipient_identity(&i.realm, &target)
+                    .ok_or_else(|| missing("Registered recipient"))?;
+                call.actor_orgs
+                    .insert(target.clone(), recipient.org_id.clone());
                 let busy = self.state.busy(&target, &i.realm, Some(ring));
                 let offer = Invitation {
                     invitation_id: id("offer"),
@@ -1195,7 +1214,7 @@ impl Engine {
                     None,
                 );
                 call.invitations.push(offer);
-                if busy && self.voicemail_enabled(&i.realm, &i.org_id, &target) {
+                if busy && self.voicemail_enabled(&i.realm, &recipient.org_id, &target) {
                     "voicemail.offered"
                 } else if busy {
                     "call.invitation.busy"
@@ -1212,10 +1231,17 @@ impl Engine {
                     .state
                     .devices
                     .get(d)
-                    .is_some_and(|v| v.owner == key(&i.realm, &i.org_id, &i.actor) && !v.revoked)
+                    .is_some_and(|v| owns_actor(&v.owner, &i.realm, &i.actor) && !v.revoked)
                 {
                     return Err(forbidden());
                 }
+                let target_org = self.state.devices[d]
+                    .owner
+                    .splitn(3, '|')
+                    .nth(1)
+                    .unwrap()
+                    .to_owned();
+                call.actor_orgs.insert(i.actor.clone(), target_org);
                 for member in call
                     .participants
                     .iter_mut()
@@ -1277,7 +1303,6 @@ impl Engine {
                     d.ringid == ring
                         && d.actor == i.actor
                         && d.realm == i.realm
-                        && d.org_id == i.org_id
                         && d.status == "open"
                 })
                 .ok_or_else(forbidden)?;
@@ -1303,12 +1328,11 @@ impl Engine {
     fn voicemail(&mut self, i: &Identity, m: &str, p: &Value) -> Result<Value> {
         if m == "voicemail.list" {
             let mut rows = Vec::new();
-            for v in self.state.voicemails.values().filter(|v| {
-                v.recipient == i.actor
-                    && v.realm == i.realm
-                    && v.org_id == i.org_id
-                    && v.state == "delivered"
-            }) {
+            for v in
+                self.state.voicemails.values().filter(|v| {
+                    v.recipient == i.actor && v.realm == i.realm && v.state == "delivered"
+                })
+            {
                 if p["unread"] != false && v.read
                     || !time_matches(&v.created_at, p)?
                     || p["actor"]
@@ -1342,15 +1366,9 @@ impl Engine {
                 ));
             }
             let offer = offers[0];
-            let recipient = Identity {
-                actor: offer.target.clone(),
-                org_id: i.org_id.clone(),
-                realm: i.realm.clone(),
-                display_name: String::new(),
-                admin: false,
-            };
+            let recipient = c.identity(&offer.target);
             let cfg = self.state.config(&recipient);
-            if !self.voicemail_enabled(&i.realm, &i.org_id, &recipient.actor) {
+            if !self.voicemail_enabled(&i.realm, &recipient.org_id, &recipient.actor) {
                 return Err(Fault::new(
                     "VOICEMAIL_DISABLED",
                     "Recipient has disabled voicemail.",
@@ -1376,6 +1394,7 @@ impl Engine {
             }
             let greeting=cfg.values.get(&format!("voicemail.greetings.{}",offer.state)).cloned().unwrap_or_else(||json!({"text":if offer.state=="busy"{"The Silicon you're trying to reach is currently talking to someone else, please wait or try again later. You can leave a message at the beep."}else{"Your call could not be answered. Please leave a message after the beep."}}));
             let v = Voicemail {
+                recipient_org_id: recipient.org_id.clone(),
                 voicemail_id: id("vm"),
                 ringid: ring.into(),
                 invitation_id: offer.invitation_id.clone(),
@@ -1411,7 +1430,6 @@ impl Engine {
             .get(vid)
             .filter(|v| {
                 v.realm == i.realm
-                    && v.org_id == i.org_id
                     && (v.sender == i.actor || v.recipient == i.actor && v.state == "delivered")
             })
             .ok_or_else(forbidden)?;
@@ -1490,7 +1508,7 @@ impl Engine {
     }
     pub fn authorized_asset(&self, i: &Identity, aid: &str) -> Result<&Asset> {
         let a = self.state.assets.get(aid).ok_or_else(forbidden)?;
-        if a.owner == key(&i.realm, &i.org_id, &i.actor) {
+        if owns_actor(&a.owner, &i.realm, &i.actor) {
             return Ok(a);
         }
         if a.purpose == "voicemail_greeting"
@@ -1500,7 +1518,6 @@ impl Engine {
                     && self.state.voicemails.get(vid).is_some_and(|v| {
                         v.sender == i.actor
                             && v.realm == i.realm
-                            && v.org_id == i.org_id
                             && matches!(v.state.as_str(), "draft" | "delivered")
                     })
             })
@@ -1509,8 +1526,7 @@ impl Engine {
         }
         if a.purpose == "profile_photo"
             && self.state.profiles.iter().any(|(k, p)| {
-                k.starts_with(&format!("{}|{}|", i.realm, i.org_id))
-                    && p.photo_asset_id.as_deref() == Some(aid)
+                k.starts_with(&format!("{}|", i.realm)) && p.photo_asset_id.as_deref() == Some(aid)
             })
         {
             return Ok(a);
@@ -1524,10 +1540,7 @@ impl Engine {
         }
         if a.voicemail_id.as_ref().is_some_and(|vid| {
             self.state.voicemails.get(vid).is_some_and(|v| {
-                v.org_id == i.org_id
-                    && v.realm == i.realm
-                    && v.recipient == i.actor
-                    && v.state == "delivered"
+                v.realm == i.realm && v.recipient == i.actor && v.state == "delivered"
             })
         }) {
             return Ok(a);
@@ -1590,7 +1603,7 @@ impl Engine {
                         let n = Publication {
                             notification_id: format!("transcript_{}_{}_{}", id, p.actor, upper),
                             actor: p.actor.clone(),
-                            org_id: c.org_id.clone(),
+                            org_id: c.identity(&p.actor).org_id,
                             realm: c.realm.clone(),
                             event_type: "transcript.batch".into(),
                             data: json!({"ringid":id,"from_seq":entries[0].seq,"to_seq":upper,"entries":entries}),
@@ -1624,6 +1637,7 @@ fn read_only(m: &str) -> bool {
 pub fn public_call(c: &Call, actor: &str) -> Value {
     let mut out = json!(c);
     out.as_object_mut().unwrap().remove("transcript");
+    out.as_object_mut().unwrap().remove("actor_orgs");
     if let Some(rows) = out["participants"].as_array_mut() {
         for p in rows {
             p.as_object_mut().unwrap().remove("context");

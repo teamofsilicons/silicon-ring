@@ -4,7 +4,7 @@ Calls, conferences and voicemail for verified carbon (`c:handle`) and silicon (`
 
 ## Native app downloads
 
-Download v0.1.0 for macOS, Windows, and Linux on both arm64 and x86_64, or the Android arm64 APK for Android 8.0+, signed with a stable release key. See [downloads and installation notes](docs/downloads.md) for installers, checksums, the Android certificate fingerprint, and build provenance. The macOS packages use ad-hoc signing and are not notarized; Windows installers are not Authenticode signed. The [web app](https://ring.teamofsilicons.com) is also available.
+Download v0.1.1 for macOS, Windows, and Linux on both arm64 and x86_64, or the Android arm64 APK for Android 8.0+, signed with a stable release key. See [downloads and installation notes](docs/downloads.md) for installers, checksums, the Android certificate fingerprint, and build provenance. The macOS packages use ad-hoc signing and are not notarized; Windows installers are not Authenticode signed. The [web app](https://ring.teamofsilicons.com) is also available.
 
 The [native app guide](native/README.md) covers local desktop/mobile builds and physical-device verification. Development iPhone packages are provisioned for specific devices and are not public release assets.
 
@@ -21,9 +21,10 @@ npm --prefix web run build
 python3 crates/ring-cli/tests/smoke.py
 node scripts/test-server.mjs
 python3 scripts/test-packaging.py
+python3 scripts/test-packaging.py --ring-binary target/debug/ring
 ```
 
-The smoke tests launch a real local server with isolated test identities and provider calls disabled. They check call lifecycle, media protocol, ownership/privacy, persistence, explicit context approval and exact retries. Packaging tests use inert fixtures; they do not claim that all six native binaries have been built. The GitHub native matrix builds and tests those targets separately.
+The smoke tests launch a real local server with isolated test identities and provider calls disabled. They check call lifecycle, media protocol, ownership/privacy, persistence, explicit context approval and exact retries. Packaging tests use inert fixtures; `--ring-binary` additionally runs this host's packaged setup with a clean PATH and verifies daemon startup and preserved settings. On Windows, pass `target/debug/ring.exe`. The GitHub native matrix builds and tests all six targets separately.
 
 Provider checks are opt-in and use paid OpenAI/Deepgram credentials from `.env`:
 
@@ -97,6 +98,8 @@ ring login --token-stdin
 ring login status --json
 ring notifications authorize
 ```
+
+The Honeycomb package uses `honeycomb install ring`; use CLI 0.1.1 or later for fresh installations. That version fixes setup before PATH activation and defaults to the public backend. Existing local `server_url` values and `SILICON_RING_SERVER_URL` overrides take precedence.
 
 The last command starts the explicit Ting consent flow for silicon notifications; finish it with `--authorization-id ID --code CODE`. Ting owns notification delivery and interpreter webhooks.
 

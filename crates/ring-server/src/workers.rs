@@ -67,13 +67,14 @@ pub fn start(app: App) {
                 )
             };
             for c in calls {
-                for p in c
+                for (generation, p) in c
                     .participants
                     .iter()
-                    .filter(|p| silicon(&p.actor) && p.left_at.is_none())
+                    .enumerate()
+                    .filter(|(_, p)| silicon(&p.actor) && p.left_at.is_none())
                 {
-                    let rep = format!("{}_{}", c.ringid, p.actor);
-                    if started.insert(rep.clone()) && !app.providers_disabled {
+                    let rep = (c.ringid.clone(), p.actor.clone(), generation);
+                    if started.insert(rep) && !app.providers_disabled {
                         let app = app.clone();
                         let c = c.clone();
                         let p = p.clone();
@@ -90,7 +91,9 @@ pub fn start(app: App) {
                     tokio::spawn(async move {
                         if let Err(error) = transcriber(&a, &c).await {
                             let mut e = a.engine.lock().unwrap();
-                            e.state.call_event(&c,"transcription.failed",json!({"ringid":c.ringid,"code":error.code,"message":error.message}));
+                            if let Some(current) = e.state.calls.get(&c.ringid).cloned() {
+                                e.state.call_event(&current,"transcription.failed",json!({"ringid":c.ringid,"code":error.code,"message":error.message}));
+                            }
                             let _ = e.persist();
                         }
                     });
@@ -122,24 +125,53 @@ pub fn start(app: App) {
         }
     });
 }
+fn same_representative(current: &Call, original: &Call, actor: &str) -> bool {
+    current.state == "active"
+        && current.identity(actor).org_id == original.identity(actor).org_id
+        && current
+            .participants
+            .iter()
+            .rposition(|p| p.actor == actor && p.left_at.is_none())
+            .is_some_and(|generation| {
+                original
+                    .participants
+                    .get(generation)
+                    .is_some_and(|p| p.actor == actor && p.left_at.is_none())
+            })
+}
+fn representative_is_current(app: &App, original: &Call, actor: &str) -> bool {
+    app.engine
+        .lock()
+        .unwrap()
+        .state
+        .calls
+        .get(&original.ringid)
+        .is_some_and(|current| same_representative(current, original, actor))
+}
 async fn representative(
     app: &App,
     c: &Call,
     p: &Participant,
 ) -> std::result::Result<(), ring_providers::Error> {
+    let identity = c.identity(&p.actor);
     let voice = app
         .engine
         .lock()
         .unwrap()
         .state
         .profiles
-        .get(&key(&c.realm, &c.org_id, &p.actor))
+        .get(&key(&identity.realm, &identity.org_id, &identity.actor))
         .map(|v| v.voice_id.clone())
         .unwrap_or_else(|| "gleam".into());
-    let provider = crate::settings::openai(app, &c.realm, &c.org_id, "providers.live")?;
+    let provider =
+        crate::settings::openai(app, &identity.realm, &identity.org_id, "providers.live")?;
     let mut socket = provider
         .connect_live(&voice, &p.context, Some(&p.start))
         .await?;
+    if !representative_is_current(app, c, &p.actor) {
+        voice::close_live(&mut socket).await?;
+        return Ok(());
+    }
     let live_offset = c
         .answered_at
         .as_deref()
@@ -160,10 +192,12 @@ async fn representative(
             tokio::select! {
                 sample = audio.recv() => {
                     let Some(bytes) = sample else { break };
+                    if !representative_is_current(app, c, &p.actor) { break; }
                     voice::send_event(&mut socket, voice::audio_event(&bytes)?).await?;
                 },
                 received = voice::receive_event(&mut socket) => {
                     let event = received?;
+                    if !representative_is_current(app, c, &p.actor) { break; }
                     match event["type"].as_str() {
                         Some("session.output_audio.delta") => {
                             if let Some(raw) = event["delta"].as_str() {
@@ -180,7 +214,7 @@ async fn representative(
                         Some("error") => {
                             message_status(app, c, &p.actor, event["error"]["client_event_id"].as_str(), "failed");
                             let mut e = app.engine.lock().unwrap();
-                            let i = Identity { actor: p.actor.clone(), org_id: c.org_id.clone(), realm: c.realm.clone(), display_name: p.display_name.clone(), admin: false };
+                            let i = c.identity(&p.actor);
                             e.state.event(&i, vec![p.actor.clone()], "representative.error", json!({"ringid":c.ringid,"code":event["error"]["code"],"client_event_id":event["error"]["client_event_id"]}));
                             let _ = e.persist();
                         },
@@ -191,7 +225,7 @@ async fn representative(
                 _ = check.tick() => {
                     let (members, messages) = {
                         let e = app.engine.lock().unwrap();
-                        let current = e.state.calls.get(&c.ringid).filter(|c| c.state == "active" && c.active(&p.actor));
+                        let current = e.state.calls.get(&c.ringid).filter(|current| same_representative(current, c, &p.actor));
                         let Some(current) = current else { break };
                         let messages = pending_messages(&e.state, current, &p.actor);
                         (current.participants.iter().filter(|p| p.left_at.is_none()).map(|p| p.actor.clone()).collect::<BTreeSet<_>>(), messages)
@@ -237,6 +271,9 @@ fn message_status(app: &App, c: &Call, actor: &str, message_id: Option<&str>, st
     let Some(call) = e.state.calls.get(&c.ringid) else {
         return;
     };
+    if !same_representative(call, c, actor) {
+        return;
+    }
     if !call
         .transcript
         .iter()
@@ -255,13 +292,7 @@ fn message_status(app: &App, c: &Call, actor: &str, message_id: Option<&str>, st
         .sent_messages
         .insert(message_id.into(), status.into());
     if status != "sent" {
-        let i = Identity {
-            actor: actor.into(),
-            org_id: c.org_id.clone(),
-            realm: c.realm.clone(),
-            display_name: actor.into(),
-            admin: false,
-        };
+        let i = c.identity(actor);
         e.state.event(
             &i,
             vec![actor.into()],
@@ -275,25 +306,25 @@ fn message_status(app: &App, c: &Call, actor: &str, message_id: Option<&str>, st
 }
 fn representative_failure(app: &App, c: &Call, actor: &str, error: &ring_providers::Error) {
     let mut e = app.engine.lock().unwrap();
-    if let Some(call) = e.state.calls.get_mut(&c.ringid) {
-        call.entry(
-            "representative.failed",
-            Some(actor.into()),
-            json!({"code":error.code,"message":error.message}),
-            None,
-        );
+    let Some(call) = e.state.calls.get_mut(&c.ringid) else {
+        return;
+    };
+    if !same_representative(call, c, actor) {
+        return;
     }
+    call.entry(
+        "representative.failed",
+        Some(actor.into()),
+        json!({"code":error.code,"message":error.message}),
+        None,
+    );
+    let call = call.clone();
     e.state.call_event(
-        c,
+        &call,
         "representative.failed",
         json!({"ringid":c.ringid,"actor":actor,"code":error.code,"message":error.message}),
     );
     let _ = e.persist();
-    app.media
-        .lock()
-        .unwrap()
-        .streams
-        .remove(&format!("rep_{}_{}", c.ringid, actor));
 }
 pub fn add_transcript(
     app: &App,
@@ -318,13 +349,7 @@ pub fn add_transcript(
         .filter(|p| entry_visible(&call, &entry, &p.actor))
         .map(|p| p.actor.clone())
         .collect();
-    let i = Identity {
-        actor: call.caller.clone(),
-        org_id: call.org_id.clone(),
-        realm: call.realm.clone(),
-        display_name: String::new(),
-        admin: false,
-    };
+    let i = call.identity(&call.caller);
     // Speech is batched for Ting every ten seconds; clients still see each delta immediately.
     e.state.event(
         &i,
@@ -345,6 +370,9 @@ fn create_delegation(app: &App, c: &Call, actor: &str, event: &Value) {
     let Some(call) = e.state.calls.get(&c.ringid) else {
         return;
     };
+    if !same_representative(call, c, actor) {
+        return;
+    }
     let threshold = after(-30);
     let context: Vec<_> = call
         .transcript
@@ -352,7 +380,8 @@ fn create_delegation(app: &App, c: &Call, actor: &str, event: &Value) {
         .filter(|t| t.occurred_at >= threshold && entry_visible(call, t, actor))
         .cloned()
         .collect();
-    let d=Delegation{delegation_id:did.into(),ringid:c.ringid.clone(),actor:actor.into(),org_id:c.org_id.clone(),realm:c.realm.clone(),request:"The representative requested backend assistance. Determine the task from the attached recent transcript; the provider does not supply separate request text.".into(),context,responses:vec![],status:"open".into(),created_at:now()};
+    let i = call.identity(actor);
+    let d=Delegation{delegation_id:did.into(),ringid:c.ringid.clone(),actor:actor.into(),org_id:i.org_id.clone(),realm:i.realm.clone(),request:"The representative requested backend assistance. Determine the task from the attached recent transcript; the provider does not supply separate request text.".into(),context,responses:vec![],status:"open".into(),created_at:now()};
     e.state.delegations.insert(did.into(), d.clone());
     if let Some(call) = e.state.calls.get_mut(&c.ringid) {
         call.entry(
@@ -362,13 +391,6 @@ fn create_delegation(app: &App, c: &Call, actor: &str, event: &Value) {
             Some(actor.into()),
         );
     }
-    let i = Identity {
-        actor: actor.into(),
-        org_id: c.org_id.clone(),
-        realm: c.realm.clone(),
-        display_name: actor.into(),
-        admin: false,
-    };
     e.state
         .event(&i, vec![actor.into()], "delegation.created", json!(d));
     let _ = e.persist();
@@ -704,6 +726,160 @@ fn transcription_result(app: &App, call: &Call, event: &Value, offset: u64, revi
 mod tests {
     use super::*;
     use crate::engine::Engine;
+
+    #[test]
+    fn delegation_and_failure_use_current_participant_contexts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(dir.path()).unwrap();
+        let mut login = |actor: &str, org: &str| {
+            let value = engine
+                .login(
+                    Identity {
+                        actor: actor.into(),
+                        org_id: org.into(),
+                        realm: "test".into(),
+                        display_name: actor.into(),
+                        admin: false,
+                    },
+                    None,
+                )
+                .unwrap();
+            engine
+                .session(value["session_token"].as_str().unwrap())
+                .unwrap()
+        };
+        let a = login("si:alice", "alice-org");
+        let b = login("si:bob", "bob-org");
+        let c = login("si:carol", "carol-org");
+        let ring = engine
+            .dispatch(&a, "calls.init", &json!({"target":b.identity.actor}))
+            .unwrap()["ringid"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        engine
+            .dispatch(&b, "calls.accept", &json!({"ringid":ring}))
+            .unwrap();
+        let initial = engine.state.calls[&ring].clone();
+        engine
+            .dispatch(
+                &a,
+                "calls.invite",
+                &json!({"ringid":ring,"target":c.identity.actor}),
+            )
+            .unwrap();
+        engine
+            .dispatch(&c, "calls.accept", &json!({"ringid":ring}))
+            .unwrap();
+        let call = engine.state.calls.get_mut(&ring).unwrap();
+        call.entry(
+            "speech",
+            Some(a.identity.actor.clone()),
+            json!({"text":"public context"}),
+            None,
+        );
+        call.entry(
+            "thinking",
+            Some(a.identity.actor.clone()),
+            json!({"text":"private context"}),
+            Some(a.identity.actor.clone()),
+        );
+        let app = App {
+            engine: std::sync::Arc::new(std::sync::Mutex::new(engine)),
+            media: std::sync::Arc::new(std::sync::Mutex::new(crate::media::Media::default())),
+            test_tokens: std::sync::Arc::new(Default::default()),
+            test_secret: None,
+            providers_disabled: true,
+            vault: std::sync::Arc::new(crate::vault::Vault::open(dir.path()).unwrap()),
+            telemetry: std::sync::Arc::new(None),
+            web_analytics: std::sync::Arc::new(None),
+            web_events: std::sync::Arc::new(None),
+            cli_telemetry: std::sync::Arc::new(None),
+        };
+        create_delegation(
+            &app,
+            &initial,
+            &b.identity.actor,
+            &json!({"delegation":{"id":"delegation-test"}}),
+        );
+        representative_failure(
+            &app,
+            &initial,
+            &b.identity.actor,
+            &ring_providers::Error::new("PROVIDER_FAILED", "Provider failed.", true),
+        );
+        let e = app.engine.lock().unwrap();
+        let delegation = &e.state.delegations["delegation-test"];
+        assert_eq!(delegation.org_id, "bob-org");
+        assert!(delegation
+            .context
+            .iter()
+            .any(|t| t.data["text"] == "public context"));
+        assert!(!delegation
+            .context
+            .iter()
+            .any(|t| t.data["text"] == "private context"));
+        let failure = e
+            .state
+            .publications
+            .values()
+            .find(|n| n.event_type == "representative.failed" && n.actor == c.identity.actor)
+            .unwrap();
+        assert_eq!(failure.org_id, "carol-org");
+        let notification = e
+            .state
+            .publications
+            .values()
+            .find(|n| n.event_type == "delegation.created")
+            .unwrap();
+        assert_eq!(notification.actor, b.identity.actor);
+        assert_eq!(notification.org_id, "bob-org");
+        drop(e);
+        let rejoined = {
+            let mut e = app.engine.lock().unwrap();
+            e.dispatch(&b, "calls.cut", &json!({"ringid":ring}))
+                .unwrap();
+            let mut identity = b.identity.clone();
+            identity.org_id = "bob-new-org".into();
+            let login = e.login(identity, None).unwrap();
+            let new_session = e.session(login["session_token"].as_str().unwrap()).unwrap();
+            e.dispatch(
+                &a,
+                "calls.invite",
+                &json!({"ringid":ring,"target":b.identity.actor}),
+            )
+            .unwrap();
+            e.dispatch(&new_session, "calls.accept", &json!({"ringid":ring}))
+                .unwrap();
+            e.state.calls[&ring].clone()
+        };
+        assert!(!same_representative(&rejoined, &initial, &b.identity.actor));
+        assert!(same_representative(&rejoined, &rejoined, &b.identity.actor));
+        assert_eq!(rejoined.identity(&b.identity.actor).org_id, "bob-new-org");
+        let (tx, _) = mpsc::channel(1);
+        let stream = app
+            .media
+            .lock()
+            .unwrap()
+            .representative(&rejoined, &b.identity.actor, tx);
+        let event_count = app.engine.lock().unwrap().state.events.len();
+        representative_failure(
+            &app,
+            &initial,
+            &b.identity.actor,
+            &ring_providers::Error::new("OLD_WORKER_FAILED", "Old worker failed.", false),
+        );
+        create_delegation(
+            &app,
+            &initial,
+            &b.identity.actor,
+            &json!({"delegation":{"id":"stale-delegation"}}),
+        );
+        assert!(app.media.lock().unwrap().streams.contains_key(&stream));
+        let e = app.engine.lock().unwrap();
+        assert_eq!(e.state.events.len(), event_count);
+        assert!(!e.state.delegations.contains_key("stale-delegation"));
+    }
 
     #[test]
     fn ting_busy_invitation_preserves_event_payload_and_retry_identity() {

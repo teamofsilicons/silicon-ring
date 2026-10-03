@@ -55,7 +55,7 @@ pub fn forbidden() -> Fault {
     Fault::new(
         "FORBIDDEN",
         "This identity cannot access this resource.",
-        "Use an authorized identity in the selected organization.",
+        "Use an identity invited to this resource.",
     )
 }
 pub fn missing(what: &str) -> Fault {
@@ -82,13 +82,20 @@ pub fn text_limit(v: &Value, k: &str, max: usize) -> Result<()> {
     }
     Ok(())
 }
-pub fn actor_id(raw: &str, org: &str) -> Result<String> {
+pub fn actor_id(raw: &str, _org: &str) -> Result<String> {
     let raw = raw.trim_start_matches('@');
-    let actor = if let Some((a, o)) = raw.split_once('[') {
-        if o != format!("{org}]") {
-            return Err(forbidden());
+    let actor = if let Some((actor, suffix)) = raw.split_once('[') {
+        let suffix = suffix
+            .strip_suffix(']')
+            .ok_or_else(|| invalid("Invalid identity suffix"))?;
+        if suffix.is_empty()
+            || suffix
+                .chars()
+                .any(|c| c.is_whitespace() || matches!(c, '[' | ']' | '|'))
+        {
+            return Err(invalid("Invalid identity suffix"));
         }
-        a
+        actor
     } else {
         raw
     };
@@ -96,11 +103,16 @@ pub fn actor_id(raw: &str, org: &str) -> Result<String> {
         || actor.split_once(':').unwrap().1.is_empty()
         || actor
             .chars()
-            .any(|c| c.is_whitespace() || c == '|' || c == '[' || c == ']')
+            .any(|c| c.is_whitespace() || matches!(c, '|' | '[' | ']'))
     {
         return Err(invalid("Expected a public c:handle or si:handle identity"));
     }
     Ok(actor.into())
+}
+
+pub fn owns_actor(owner: &str, realm: &str, actor: &str) -> bool {
+    let mut parts = owner.splitn(3, '|');
+    parts.next() == Some(realm) && parts.next().is_some() && parts.next() == Some(actor)
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -174,6 +186,9 @@ pub struct Entry {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Call {
     pub ringid: String,
+    // IAM/provider context belongs to each actor; it is never a call access boundary.
+    #[serde(default)]
+    pub actor_orgs: BTreeMap<String, String>,
     pub org_id: String,
     pub realm: String,
     pub caller: String,
@@ -189,6 +204,38 @@ pub struct Call {
     pub recording_asset_id: Option<String>,
 }
 impl Call {
+    pub fn credential_orgs(&self) -> BTreeMap<String, String> {
+        let mut routes = self.actor_orgs.clone();
+        for actor in self
+            .participants
+            .iter()
+            .map(|p| &p.actor)
+            .chain(self.invitations.iter().map(|v| &v.target))
+        {
+            routes
+                .entry(actor.clone())
+                .or_insert_with(|| self.org_id.clone());
+        }
+        routes
+    }
+    pub fn identity(&self, actor: &str) -> Identity {
+        Identity {
+            actor: actor.into(),
+            org_id: self
+                .actor_orgs
+                .get(actor)
+                .cloned()
+                .unwrap_or_else(|| self.org_id.clone()),
+            realm: self.realm.clone(),
+            display_name: self
+                .participants
+                .iter()
+                .find(|p| p.actor == actor)
+                .map(|p| p.display_name.clone())
+                .unwrap_or_else(|| actor.into()),
+            admin: false,
+        }
+    }
     pub fn active(&self, actor: &str) -> bool {
         self.participants
             .iter()
@@ -248,6 +295,8 @@ pub struct Config {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Voicemail {
+    #[serde(default)]
+    pub recipient_org_id: String,
     pub voicemail_id: String,
     pub ringid: String,
     pub invitation_id: String,
@@ -330,6 +379,10 @@ pub struct Cached {
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct State {
     #[serde(default)]
+    pub identities: BTreeMap<String, Identity>,
+    #[serde(default)]
+    pub recipient_routes: BTreeMap<String, String>,
+    #[serde(default)]
     pub event_seq: u64,
     #[serde(default)]
     pub push_cursor: u64,
@@ -363,6 +416,53 @@ pub struct State {
     pub transcript_cursors: BTreeMap<String, u64>,
 }
 impl State {
+    pub fn remember_identity(&mut self, identity: &Identity) {
+        let owner = key(&identity.realm, &identity.org_id, &identity.actor);
+        self.identities.insert(owner.clone(), identity.clone());
+        self.recipient_routes
+            .insert(format!("{}|{}", identity.realm, identity.actor), owner);
+    }
+    pub fn registered_identities(&self, realm: &str, actor: &str) -> Vec<Identity> {
+        let mut candidates = BTreeMap::new();
+        // Older snapshots predate the registry. Profiles provide candidate contexts;
+        // auth verifies their own retained IAM credentials before routing production calls.
+        for (owner, profile) in &self.profiles {
+            if owns_actor(owner, realm, actor) {
+                let org = owner.splitn(3, '|').nth(1).unwrap();
+                candidates.insert(
+                    owner.clone(),
+                    Identity {
+                        actor: actor.into(),
+                        org_id: org.into(),
+                        realm: realm.into(),
+                        display_name: profile.display_name.clone(),
+                        admin: false,
+                    },
+                );
+            }
+        }
+        for session in self.sessions.values() {
+            let i = &session.identity;
+            if i.realm == realm && i.actor == actor {
+                candidates.insert(key(realm, &i.org_id, actor), i.clone());
+            }
+        }
+        for (owner, i) in &self.identities {
+            if i.realm == realm && i.actor == actor {
+                candidates.insert(owner.clone(), i.clone());
+            }
+        }
+        let preferred = self.recipient_routes.get(&format!("{realm}|{actor}"));
+        let mut result = Vec::new();
+        if let Some(i) = preferred.and_then(|owner| candidates.remove(owner)) {
+            result.push(i);
+        }
+        result.extend(candidates.into_values());
+        result
+    }
+    pub fn recipient_identity(&self, realm: &str, actor: &str) -> Option<Identity> {
+        self.registered_identities(realm, actor).into_iter().next()
+    }
     pub fn latest_event_seq(&self) -> u64 {
         self.event_seq.max(self.events.last().map_or(0, |e| e.seq))
     }
@@ -385,6 +485,35 @@ impl State {
             .unwrap_or_default()
     }
     pub fn event(&mut self, i: &Identity, recipients: Vec<String>, kind: &str, data: Value) {
+        let mut routes = data["ringid"]
+            .as_str()
+            .and_then(|id| self.calls.get(id))
+            .map(Call::credential_orgs)
+            .unwrap_or_default();
+        if let Some(vm) = data["voicemail_id"]
+            .as_str()
+            .and_then(|id| self.voicemails.get(id))
+        {
+            routes.insert(vm.sender.clone(), vm.org_id.clone());
+            routes.insert(
+                vm.recipient.clone(),
+                if vm.recipient_org_id.is_empty() {
+                    vm.org_id.clone()
+                } else {
+                    vm.recipient_org_id.clone()
+                },
+            );
+        }
+        self.event_routed(i, recipients, kind, data, &routes);
+    }
+    fn event_routed(
+        &mut self,
+        i: &Identity,
+        recipients: Vec<String>,
+        kind: &str,
+        data: Value,
+        routes: &BTreeMap<String, String>,
+    ) {
         self.event_seq = self.latest_event_seq() + 1;
         let e = Event {
             event_id: id("evt"),
@@ -403,7 +532,17 @@ impl State {
             let n = Publication {
                 notification_id: format!("{}_{}", e.event_id, actor),
                 actor: actor.clone(),
-                org_id: i.org_id.clone(),
+                org_id: routes
+                    .get(actor)
+                    .cloned()
+                    .or_else(|| {
+                        if actor == &i.actor {
+                            Some(i.org_id.clone())
+                        } else {
+                            self.recipient_identity(&i.realm, actor).map(|i| i.org_id)
+                        }
+                    })
+                    .unwrap_or_else(|| i.org_id.clone()),
                 realm: i.realm.clone(),
                 event_type: kind.into(),
                 data: data.clone(),
@@ -432,7 +571,7 @@ impl State {
             display_name: String::new(),
             admin: false,
         };
-        self.event(&i, recipients, kind, data);
+        self.event_routed(&i, recipients, kind, data, &call.credential_orgs());
     }
     pub fn busy(&self, actor: &str, realm: &str, except: Option<&str>) -> bool {
         silicon(actor)
@@ -446,7 +585,7 @@ impl State {
     pub fn call(&self, i: &Identity, r: &str) -> Result<&Call> {
         self.calls
             .get(r)
-            .filter(|c| c.org_id == i.org_id && c.realm == i.realm && c.visible(&i.actor))
+            .filter(|c| c.realm == i.realm && c.visible(&i.actor))
             .ok_or_else(forbidden)
     }
 }

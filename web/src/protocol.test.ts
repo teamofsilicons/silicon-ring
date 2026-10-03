@@ -8,10 +8,12 @@ test('packaged native clients use production while local web and development cli
   assert.equal(defaultSocketUrl('localhost', false, true), 'ws://127.0.0.1:8765/ws');
   assert.equal(defaultSocketUrl('ring.teamofsilicons.com', false, false), 'wss://backend.ring.teamofsilicons.com/ws');
 });
-test('identity validation accepts public and membership IDs without accepting malformed IDs', () => {
+test('call targets normalize to global public IDs without accepting malformed IDs', () => {
   assert.equal(normalizeActor(' @c:alex '), 'c:alex');
-  for (const id of ['si:assistant', '@c:alex', 'c:alex[team]']) assert.equal(isActor(id), true);
-  for (const id of ['', 'alex', 'si:', 'c:alex smith', 'c:a[team][other]']) assert.equal(isActor(id), false);
+  assert.equal(normalizeActor(' @c:alex[another-org] '), 'c:alex');
+  assert.equal(normalizeActor('si:assistant[any-org]'), 'si:assistant');
+  for (const id of ['si:assistant', '@c:alex', 'c:alex[another-org]']) assert.equal(isActor(id), true);
+  for (const id of ['', 'alex', 'si:', 'c:alex smith', 'c:a[team][other]', 'c:alex[]', 'c:alex[team space]', 'c:alex[[team]]', 'c:alex[team]extra']) assert.equal(isActor(id), false);
   assert.throws(() => socketUrl('https://example.com'));
   assert.throws(() => socketUrl('wss://user:password@example.com/ws'));
   assert.throws(() => socketUrl('ws://example.com/ws'));

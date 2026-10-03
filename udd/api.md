@@ -13,11 +13,11 @@ Planned API, based on [understanding.md](understanding.md) and [iam.md](iam.md).
 ```
 
 - Requests use `{id, method, params}` and optional `metadata: {isi}`. Match replies by `id`. Retry a mutation with the same ID and input to avoid doing it twice; changed input needs a new ID.
-- Public identities are `si:handle` and `c:handle`; membership identities add `[org]`. Verify IAM membership, never infer permission from an ID. Each call belongs to one organization.
+- Public identities are global `si:handle` and `c:handle` IDs. Any registered Ring user can call or invite another registered ID, across organizations, with no shared membership or relationship required. Legacy `[org]` suffixes are accepted and normalized to the global ID. IAM verifies each user in their own organization; calls retain separate per-actor credential contexts.
 - `ringid` identifies a call; `invitation_id` identifies one offer to join it. Accept/decline can omit the offer ID when the actor has exactly one pending offer.
 - Times are UTC RFC 3339. Lists accept `limit` and `cursor`, returning `items` and `next_cursor`. Default limit: 50; maximum: 200. `since` is inclusive; `until` is exclusive.
 - Events use `{subscription_id, event_id, seq, type, occurred_at, data}`. Event, transcript and audio sequence numbers are separate. Reconnect resumes from the appropriate cursor; expired cursors require a fresh snapshot.
-- All operations enforce actor, organization and resource ownership. Secrets are never returned in logs or ordinary responses. Errors identify the failed field/step and a recovery action.
+- Call, transcript, recording and voicemail access enforce the authenticated global actor, participation or invitation, and realm. Organization-scoped configuration and credentials remain confined to their own IAM context. Secrets are never returned in logs or ordinary responses. Errors identify the failed field/step and a recovery action.
 
 **Text limits:** context **400 characters**, starting words **100 characters**, each thinking/commentary message **160 characters**. Count Unicode characters (code points), including spaces and newlines. Reject oversized input; never truncate. `context` and `start` accept literal text only, never file references. Context limits apply to saved defaults, supplied text and the final merged context, including separators.
 

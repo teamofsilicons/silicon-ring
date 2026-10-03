@@ -417,7 +417,9 @@ pub fn checked_text(text: &str, max: usize, field: &str) -> Result<()> {
         Ok(())
     }
 }
-pub fn actor_id(input: &str, org: Option<&str>) -> Result<String> {
+/// Normalize a global actor ID. A legacy membership suffix never grants authority
+/// or constrains the caller's independently authenticated organization context.
+pub fn actor_id(input: &str, _org: Option<&str>) -> Result<String> {
     let id = input.strip_prefix('@').unwrap_or(input);
     let (public, membership) = match id.split_once('[') {
         Some((p, m)) => (
@@ -449,12 +451,17 @@ pub fn actor_id(input: &str, org: Option<&str>) -> Result<String> {
             "Supply a public IAM actor ID.",
         ));
     }
-    if membership.is_some() && membership != org {
+    if membership.is_some_and(|m| {
+        m.is_empty()
+            || !m
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    }) {
         return Err(RingError::new(
             "INVALID_ACTOR",
-            "Membership organization does not match selected organization",
+            "Membership suffix must contain a valid organization ID",
             "actor",
-            "Set --org to the membership organization.",
+            "Supply a global si:handle or c:handle; legacy [org] suffixes must be well formed.",
         ));
     }
     Ok(public.into())
@@ -491,9 +498,39 @@ mod tests {
         assert!(checked_text(&"🦀".repeat(160), 160, "text").is_ok());
         assert!(checked_text(&"🦀".repeat(161), 160, "text").is_err());
         assert_eq!(actor_id("@si:alex[team]", Some("team")).unwrap(), "si:alex");
-        assert!(actor_id("c:alex[other]", Some("team")).is_err());
+        assert_eq!(actor_id("c:alex[other]", Some("team")).unwrap(), "c:alex");
         assert_eq!(duration("1h").unwrap(), 3600);
         assert!(duration("0s").is_err());
+    }
+    #[test]
+    fn actor_ids_are_global_and_legacy_suffixes_are_validated() {
+        for selected in [None, Some("caller-org"), Some("other-org")] {
+            for (input, expected) in [
+                ("c:alex", "c:alex"),
+                ("@si:assistant", "si:assistant"),
+                ("c:alex[other-org]", "c:alex"),
+                ("@si:assistant[team_2.test]", "si:assistant"),
+            ] {
+                assert_eq!(actor_id(input, selected).unwrap(), expected);
+            }
+        }
+        for input in [
+            "c:alex[]",
+            "c:alex[team",
+            "c:alex[team]extra",
+            "c:alex[team][other]",
+            "c:alex[[team]]",
+            "c:alex[team]]",
+            "c:alex[team org]",
+            "c:[team]",
+            "alex",
+            "si:",
+        ] {
+            assert_eq!(
+                actor_id(input, Some("team")).unwrap_err().code,
+                "INVALID_ACTOR"
+            );
+        }
     }
     #[tokio::test]
     async fn transport_matches_interleaved_replies_and_events() {
