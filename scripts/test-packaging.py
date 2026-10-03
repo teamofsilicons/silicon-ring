@@ -104,6 +104,27 @@ with tempfile.TemporaryDirectory(prefix='ring-package-test-') as temp:
                     time.sleep(.05)
                 assert not list((home/'.ring').glob('*-daemon.json')),'Temporary daemon did not stop'
                 assert cli('daemon','status')['running'] is False
+            if host=='windows' and not configured:
+                print('Packaging PIPE probe: start PowerShell with captured output',flush=True)
+                probe=subprocess.Popen(command,cwd=root,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+                try:
+                    exit_code=probe.wait(timeout=30)
+                    print('Packaging PIPE probe: PowerShell exited',exit_code,'while daemon is alive',flush=True)
+                    stdout,stderr=probe.communicate(timeout=5)
+                    assert exit_code==0,(exit_code,stdout,stderr)
+                    assert cli('daemon','status')['running'] is True
+                    print('Packaging PIPE probe: stdout/stderr reached EOF while daemon is alive',flush=True)
+                finally:
+                    # Stop the descendant before draining pipes: subprocess.run's Windows
+                    # TimeoutExpired recovery can otherwise wait forever for descendant EOF.
+                    print('Packaging PIPE probe: stop temporary daemon before final pipe drain',flush=True)
+                    stopped=subprocess.run([str(payload/executable),'--json','daemon','stop'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
+                    if probe.poll() is None:
+                        subprocess.run([str(windows/'taskkill.exe'),'/PID',str(probe.pid),'/T','/F'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10,check=True)
+                    stdout,stderr=probe.communicate(timeout=5)
+                    print('Packaging PIPE probe: final output',stdout,'stderr:',stderr,flush=True)
+                    assert stopped.returncode==0
+                assert cli('daemon','status')['running'] is False
         print('Clean-PATH Honeycomb setup, production default, preserved local settings and daemon cleanup passed',flush=True)
     print('Release signature, tamper rejection and six-target Honeycomb layout checks passed',flush=True)
 faulthandler.cancel_dump_traceback_later()
