@@ -91,6 +91,8 @@ Ring the device/client in case of an incomming call.
 
 Both carbons and silicons can change their profile photos which is displayed to the receiver and in the call logs. Calls are always received by the Display Name shown big and an ID shown below it.
 
+Keep a complete audio recording of the entire call, along with the transcript.
+
 # Client
 We'll make an eq. for carbons to use on all devices they have, with handoff possible between devices where they are logged in as the same carbon. make native apps for all. It should ring everywhere when an incomming call is there, but can be picked up on any one device. and then can be taken to another device by opening the app. it shows that its active on say Phone, and on mac i get the option to switch to mac where its a seamless switch.
 
@@ -111,3 +113,18 @@ clicking the decline button surfaces 3-4 common reasons and a text box to type a
 For all apps, it will need to have a always on listener to accept calls just like how whatsapp & signal does it. Since each app is native, just make it the best way a call service can be built on that playform.
 
 # This is a silicon app and all login happens via IAM.
+# The app is published on Honeycomb.
+
+# Tech Stack
+For TTS & Live, use OPENAI
+For STT during voicemail, use DEEPGRAM's best multilingual voice model. Dont use deepgram for any voice generation.
+For storage, use S3
+For Hosting, use AWS (smallest server needed for about 10-15 concurrent calls).
+Hosted on ring.teamofsilicons.com and backend.ring.teamofsilicons.com
+Each app is Native
+Backend is in Rust, Make a Rust Client for it, which can be used by the CLI.
+Frontend is in SolidJS
+
+# Implementation
+This device has gh cli, vercel cli, aws cli, namecheap cli, iam cli, honeycomb cli installed. Use them to publish everything.
+Working keys are inside .env
