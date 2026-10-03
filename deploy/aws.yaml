@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Silicon Ring candidate single-host deployment; benchmark before claiming call capacity.
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet with an internet gateway route.
+  InstanceType:
+    Type: String
+    Default: t3.small
+    Description: Candidate size only. Choose the smallest instance passing the media load test.
+  ImageUri:
+    Type: String
+    AllowedPattern: '.+\.dkr\.ecr\..+\.amazonaws\.com/.+@sha256:[a-f0-9]{64}'
+    Description: Immutable ECR image digest built from the tested release.
+  SecretsArn:
+    Type: String
+    Description: Secrets Manager ARN containing server environment as a JSON object.
+  LatestAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+Resources:
+  Assets:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Assets
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt Assets.Arn
+              - !Sub '${Assets.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Ring HTTPS and certificate validation; administration via SSM only.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: udp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Policies:
+        - PolicyName: ring-storage-and-runtime-secret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref SecretsArn
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt Assets.Arn
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource: !Sub '${Assets.Arn}/*'
+  Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref Role]
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmi
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref Profile
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: [!Ref SecurityGroup]
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 2
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            Encrypted: true
+            VolumeType: gp3
+            VolumeSize: 30
+      Tags:
+        - Key: Name
+          Value: silicon-ring
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          dnf install -y docker jq
+          systemctl enable --now docker
+          install -d -m 700 /etc/ring
+          install -d -m 700 -o 10001 -g 10001 /var/lib/ring
+          umask 077
+          aws secretsmanager get-secret-value --region '${AWS::Region}' --secret-id '${SecretsArn}' --query SecretString --output text | jq -er 'to_entries | map(select(.value | type == "string") | "\(.key)=\(.value)") | join("\n")' > /etc/ring/server.env
+          printf '\nRING_ENV=production\nRING_S3_BUCKET=${Assets}\nAWS_REGION=${AWS::Region}\n' >> /etc/ring/server.env
+          aws ecr get-login-password --region '${AWS::Region}' | docker login --username AWS --password-stdin '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'
+          docker network create ring
+          docker run -d --name ring --restart unless-stopped --network ring --security-opt no-new-privileges:true --env-file /etc/ring/server.env --env RING_BIND=0.0.0.0:8765 --volume /var/lib/ring:/data '${ImageUri}'
+          cat > /etc/ring/Caddyfile <<'CADDY'
+          ring.teamofsilicons.com, backend.ring.teamofsilicons.com {
+              encode zstd gzip
+              header Strict-Transport-Security "max-age=31536000"
+              reverse_proxy ring:8765
+          }
+          CADDY
+          docker run -d --name caddy --restart unless-stopped --network ring -p 80:80 -p 443:443 -p 443:443/udp -v /etc/ring/Caddyfile:/etc/caddy/Caddyfile:ro -v ring-caddy-data:/data -v ring-caddy-config:/config caddy:2.10
+  Address:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Instance
+Outputs:
+  InstanceId:
+    Value: !Ref Instance
+  PublicIp:
+    Value: !Ref Address
+  AssetsBucket:
+    Value: !Ref Assets

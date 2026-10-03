@@ -1,0 +1,21 @@
+[
+  {"type":"ring.call.incoming","description":"A Ring call invitation is waiting for this recipient."},
+  {"type":"ring.call.accepted","description":"A Ring call invitation was accepted."},
+  {"type":"ring.call.declined","description":"A Ring call invitation was declined."},
+  {"type":"ring.call.silenced","description":"A Ring call invitation was silenced."},
+  {"type":"ring.call.ended","description":"A Ring call ended or was interrupted."},
+  {"type":"ring.call.timeout","description":"A Ring call invitation timed out."},
+  {"type":"ring.call.invitation.busy","description":"An invited Ring participant is busy."},
+  {"type":"ring.call.handoff","description":"A Ring participant handed the call to another device."},
+  {"type":"ring.participant.left","description":"A Ring participant left a group call."},
+  {"type":"ring.voicemail.offered","description":"A Ring call can proceed as voicemail."},
+  {"type":"ring.voicemail.received","description":"A Ring voicemail is available to its recipient."},
+  {"type":"ring.voicemail.updated","description":"A Ring voicemail audio or transcript processing result changed."},
+  {"type":"ring.delegation.created","description":"A Ring voice representative requested assistance from its silicon."},
+  {"type":"ring.representative.message","description":"A Ring silicon supplied a message to its voice representative."},
+  {"type":"ring.representative.error","description":"A Ring voice representative reported a provider error."},
+  {"type":"ring.transcript.batch","description":"A new participation-authorized batch of Ring transcript entries is available."},
+  {"type":"ring.recording.storage_failed","description":"A Ring recording could not yet be persisted to object storage."},
+  {"type":"ring.recording.updated","description":"A Ring call recording was finalized or failed."},
+  {"type":"ring.transcription.failed","description":"Live transcription for a Ring call could not continue."}
+]

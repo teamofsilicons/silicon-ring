@@ -1,0 +1,85 @@
+name: Build draft release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version without a leading v (must match Cargo.toml)
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  binaries:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, platform: linux, arch: x86_64}
+          - {runner: ubuntu-24.04-arm, platform: linux, arch: aarch64}
+          - {runner: macos-15-intel, platform: macos, arch: x86_64}
+          - {runner: macos-15, platform: macos, arch: aarch64}
+          - {runner: windows-2025, platform: windows, arch: x86_64}
+          - {runner: windows-11-arm, platform: windows, arch: aarch64}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Require matching package version
+        env: {RELEASE_VERSION: '${{ inputs.version }}'}
+        run: python -c "import os,tomllib; assert os.environ['RELEASE_VERSION'] == tomllib.load(open('crates/ring-cli/Cargo.toml','rb'))['package']['version']"
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
+      - run: cargo test --locked -p ring-client -p ring-cli
+      - run: cargo build --locked --release -p ring-cli
+      - name: Collect binary
+        shell: bash
+        run: |
+          mkdir -p binaries
+          source=target/release/ring
+          output='binaries/ring-${{ matrix.platform }}-${{ matrix.arch }}'
+          if [ '${{ matrix.platform }}' = windows ]; then source="$source.exe"; output="$output.exe"; fi
+          cp "$source" "$output"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.platform }}-${{ matrix.arch }}
+          path: binaries/
+  sign-and-draft:
+    needs: binaries
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {pattern: 'binary-*', path: binaries, merge-multiple: true}
+      - name: Sign six compatible releases
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RING_RELEASE_SIGNING_KEY: ${{ secrets.RING_RELEASE_SIGNING_KEY }}
+        run: |
+          python - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          version=os.environ['RELEASE_VERSION']
+          base=f"https://github.com/{os.environ['RELEASE_REPOSITORY']}/releases/download/v{version}"
+          for platform in ('macos','linux','windows'):
+            for arch in ('x86_64','aarch64'):
+              binary=f"binaries/ring-{platform}-{arch}"+('.exe' if platform=='windows' else '')
+              subprocess.run(['python','scripts/package-release.py','--binary',binary,'--platform',platform,'--arch',arch,'--version',version,'--base-url',base,'--output','dist'],check=True)
+          subprocess.run(['python','scripts/package-release.py','--honeycomb','--binary','binaries','--version',version,'--output','dist'],check=True)
+          metadata=[json.loads(p.read_text()) for p in sorted(pathlib.Path('dist').glob('ring-*.json'))]
+          assert len(metadata)==6 and all(item['signed'] for item in metadata)
+          pathlib.Path('dist/release-index.json').write_text(json.dumps({'version':version,'releases':metadata},indent=2)+'\n')
+          files=sorted(p for p in pathlib.Path('dist').iterdir() if p.is_file())
+          pathlib.Path('dist/SHA256SUMS').write_text(''.join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n" for p in files))
+          PY
+      - name: Create reviewable draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_TARGET: ${{ github.sha }}
+        run: |
+          gh release create "v$RELEASE_VERSION" dist/* --draft --target "$RELEASE_TARGET" --title "Ring $RELEASE_VERSION" --notes 'Six native CLI packages. Review CI, signatures, installer URL, IAM approvals and platform audio behavior before publishing.'

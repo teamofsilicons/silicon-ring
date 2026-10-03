@@ -1,0 +1,64 @@
+name: Check
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    name: CLI ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, platform: linux, arch: x86_64}
+          - {runner: ubuntu-24.04-arm, platform: linux, arch: aarch64}
+          - {runner: macos-15-intel, platform: macos, arch: x86_64}
+          - {runner: macos-15, platform: macos, arch: aarch64}
+          - {runner: windows-2025, platform: windows, arch: x86_64}
+          - {runner: windows-11-arm, platform: windows, arch: aarch64}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux native audio dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
+      - name: Unit and protocol tests
+        run: cargo test --locked --workspace
+      - name: Build native CLI and test server
+        run: cargo build --locked -p ring-cli -p ring-server
+      - name: Headless CLI/server contract
+        run: python crates/ring-cli/tests/smoke.py
+      - name: Package installable native artifact
+        shell: bash
+        run: |
+          executable=target/debug/ring
+          if [ '${{ matrix.platform }}' = windows ]; then executable="$executable.exe"; fi
+          version=$(python -c "import tomllib; print(tomllib.load(open('crates/ring-cli/Cargo.toml','rb'))['package']['version'])")
+          python scripts/package-release.py --binary "$executable" --platform '${{ matrix.platform }}' --arch '${{ matrix.arch }}' --version "$version" --base-url 'https://example.invalid/unpublished' --unsigned --output dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ring-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/
+  web-and-protocol:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with: {node-version: '22', cache: npm, cache-dependency-path: web/package-lock.json}
+      - name: Web tests and build
+        working-directory: web
+        run: npm ci && npm test && npm run build
+      - name: Server contract
+        run: cargo build --locked -p ring-server && node scripts/test-server.mjs
+      - name: Formatting and installer lint
+        run: cargo fmt --all --check && shellcheck scripts/install.sh

@@ -1,0 +1,15 @@
+/target/
+/gen/android/.gradle/
+/gen/android/**/build/
+/gen/android/local.properties
+/gen/android/**/google-services.json
+/gen/apple/build/
+/gen/apple/Externals/
+/gen/apple/assets/
+/gen/apple/**/xcuserdata/
+/gen/apple/ExportOptions.plist
+/gen/apple/.tauri/
+**/.tauri/
+**/build/
+**/.gradle/
+**/local.properties

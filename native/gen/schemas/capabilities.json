@@ -1,0 +1,1 @@
+{"main-window":{"identifier":"main-window","description":"Ring's own application window","local":true,"windows":["main"],"permissions":["core:default","call-service:default"]}}
