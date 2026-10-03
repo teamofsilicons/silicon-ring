@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Ring's own application window",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "call-service:default"
+  ]
+}

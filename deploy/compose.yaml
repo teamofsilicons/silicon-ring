@@ -1,0 +1,36 @@
+services:
+  ring:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ${RING_IMAGE:-silicon-ring:local}
+    restart: unless-stopped
+    env_file: ${RING_ENV_FILE:-./server.env}
+    environment:
+      RING_BIND: 0.0.0.0:8765
+      RING_DATA_DIR: /data
+      RING_WEB_DIR: /app/web/dist
+    volumes:
+      - ring-data:/data
+    expose:
+      - "8765"
+    security_opt:
+      - no-new-privileges:true
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      ring:
+        condition: service_healthy
+volumes:
+  ring-data:
+  caddy-data:
+  caddy-config:

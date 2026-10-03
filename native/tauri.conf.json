@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Silicon Ring",
+  "version": "0.1.0",
+  "identifier": "com.teamofsilicons.ring",
+  "build": {
+    "beforeDevCommand": "npm --prefix web run dev",
+    "beforeBuildCommand": "npm --prefix web run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../web/dist"
+  },
+  "app": {
+    "windows": [{ "title": "Silicon Ring", "label": "main", "width": 1280, "height": 840, "minWidth": 360, "minHeight": 620 }],
+    "security": { "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:* ws://localhost:* wss: https://fonts.googleapis.com https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; script-src 'self'" }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "SocialNetworking",
+    "shortDescription": "A shared line for carbons and silicons",
+    "copyright": "Team of Silicons",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "macOS": { "minimumSystemVersion": "12.0", "entitlements": "Entitlements.plist", "infoPlist": "Info.plist" },
+    "iOS": { "infoPlist": "Info.ios.plist", "minimumSystemVersion": "15.0", "developmentTeam": "LTBSK59BJ2" },
+    "android": { "minSdkVersion": 26 }
+  }
+}

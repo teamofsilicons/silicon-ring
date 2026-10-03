@@ -1,0 +1,458 @@
+use crate::{checked, http, required_env, Error, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use silicon_iam_client::{models, Client, Credential, EnvironmentKey, IdempotencyKey, Mutation};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Identity {
+    pub actor_id: String,
+    pub org_id: String,
+    pub display_name: String,
+    pub admin: bool,
+    pub expires_at: i64,
+    pub realm: String,
+}
+// No Debug/Serialize: neither session nor credentials may be accidentally logged.
+pub struct IamSession {
+    pub identity: Identity,
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+}
+#[derive(Clone)]
+pub struct Iam {
+    client: Client,
+    app_id: String,
+    testing: bool,
+}
+fn unavailable(error: silicon_iam_client::Error) -> Error {
+    match error {
+        silicon_iam_client::Error::Api(api) if api.status < 500 && api.status != 429 => Error::new(
+            "IAM_AUTH_FAILED", &format!("IAM rejected the operation ({}). Check the app's verified status, token, selected organization and consent.", api.code), false),
+        silicon_iam_client::Error::Invalid(_) => Error::new("INVALID_IAM_CONFIGURATION", "IAM configuration or request binding is invalid.", false),
+        _ => Error::new("IAM_UNAVAILABLE", "IAM did not confirm current identity and authority. Retry with the original operation ID after checking service availability.", true),
+    }
+}
+fn forbidden() -> Error {
+    Error::new(
+        "IAM_AUTH_FAILED",
+        "IAM did not authorize this actor for Ring in the selected organization and realm.",
+        false,
+    )
+}
+fn mutation(key: &str) -> Result<Mutation> {
+    let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
+    IdempotencyKey::parse(digest)
+        .map(Mutation::with_key)
+        .map_err(unavailable)
+}
+impl Iam {
+    pub fn from_env(test: bool) -> Result<Self> {
+        crate::init_tls();
+        let url = std::env::var("RING_IAM_URL")
+            .unwrap_or_else(|_| "https://backend.iam.teamofsilicons.com".into());
+        let app_id = std::env::var("RING_IAM_APP_ID").unwrap_or_else(|_| "ring".into());
+        let secret = required_env(if test {
+            "RING_IAM_TEST_APP_SECRET"
+        } else {
+            "RING_IAM_APP_SECRET"
+        })?;
+        let mut client = Client::builder(&url)
+            .map_err(unavailable)?
+            .telemetry(false)
+            .build()
+            .map_err(unavailable)?
+            .with_credential(Credential::application(&app_id, &secret));
+        if test {
+            client = client.with_environment(
+                EnvironmentKey::new(required_env("RING_IAM_TEST_ENVIRONMENT_KEY")?)
+                    .map_err(unavailable)?,
+            );
+        }
+        Ok(Self {
+            client,
+            app_id,
+            testing: test,
+        })
+    }
+    /// request_id must be durably retained for an exact login retry, including after a lost response.
+    pub async fn login(&self, slt: &str, org: &str, request_id: &str) -> Result<IamSession> {
+        if slt.is_empty() || request_id.is_empty() {
+            return Err(forbidden());
+        }
+        let tokens = self
+            .client
+            .oauth()
+            .login(&self.app_id, slt, &mutation(request_id)?)
+            .await
+            .map_err(unavailable)?;
+        let identity = self.verify(&tokens.access_token, org).await?;
+        Ok(IamSession {
+            identity,
+            access_token: tokens.access_token,
+            refresh_token: Some(tokens.refresh_token),
+        })
+    }
+    pub async fn refresh(
+        &self,
+        refresh_token: &str,
+        org: &str,
+        request_id: &str,
+    ) -> Result<IamSession> {
+        let tokens = self
+            .client
+            .oauth()
+            .refresh(&self.app_id, refresh_token, &mutation(request_id)?)
+            .await
+            .map_err(unavailable)?;
+        let identity = self.verify(&tokens.access_token, org).await?;
+        Ok(IamSession {
+            identity,
+            access_token: tokens.access_token,
+            refresh_token: Some(tokens.refresh_token),
+        })
+    }
+    /// Always introspects online; no trust in unverified token payloads or caller identity fields.
+    pub async fn verify(&self, access_token: &str, org: &str) -> Result<Identity> {
+        let realm = if self.testing {
+            let context = self
+                .client
+                .applications()
+                .testing_context()
+                .await
+                .map_err(unavailable)?;
+            if context.application.app_id != self.app_id {
+                return Err(forbidden());
+            }
+            Some(context.environment_id.to_string())
+        } else {
+            None
+        };
+        let inspected = self
+            .client
+            .oauth()
+            .introspect(
+                &models::TokenIntrospectionRequest {
+                    token: access_token.into(),
+                    token_type_hint: None,
+                },
+                Some(org),
+            )
+            .await
+            .map_err(unavailable)?;
+        let value = serde_json::to_value(inspected).map_err(|_| forbidden())?;
+        let mut identity = validate_identity(&value, &self.app_id, org, realm.as_deref())?;
+        let me = self
+            .client
+            .with_credential(Credential::bearer(access_token))
+            .application_reads()
+            .me()
+            .await
+            .map_err(unavailable)?;
+        identity.display_name = me["display_name"]
+            .as_str()
+            .or_else(|| me["profile"]["display_name"].as_str())
+            .unwrap_or(&identity.actor_id)
+            .into();
+        Ok(identity)
+    }
+    /// Returns IAM's consent URL; the represented actor must approve the displayed graph in IAM.
+    pub async fn request_ting_consent(
+        &self,
+        access_token: &str,
+        org: &str,
+        request_id: &str,
+    ) -> Result<Value> {
+        self.verify(access_token, org).await?;
+        let result = self
+            .client
+            .obo()
+            .authorize(
+                &models::OboAuthorizationRequest {
+                    redirect_uri: None,
+                    state: None,
+                    subject_token: access_token.into(),
+                    org_id: org.into(),
+                    endpoints: vec![
+                        models::OboAuthorizationEndpoint {
+                            audience: "ting".into(),
+                            endpoint_id: "tings.send".into(),
+                        },
+                        models::OboAuthorizationEndpoint {
+                            audience: "ting".into(),
+                            endpoint_id: "subscriptions.register".into(),
+                        },
+                    ],
+                },
+                &mutation(request_id)?,
+            )
+            .await
+            .map_err(unavailable)?;
+        serde_json::to_value(result).map_err(|_| forbidden())
+    }
+    /// The code is only supplied after separate IAM consent. Returned tokens are secrets: persist encrypted, never print.
+    pub async fn exchange_ting_consent(
+        &self,
+        authorization_id: &str,
+        code: &str,
+        request_id: &str,
+    ) -> Result<models::OboTokenResponse> {
+        let id = authorization_id.parse().map_err(|_| forbidden())?;
+        self.client
+            .obo()
+            .exchange_code(id, code, &mutation(request_id)?)
+            .await
+            .map_err(unavailable)
+    }
+    pub async fn refresh_ting_consent(
+        &self,
+        refresh_token: &str,
+        request_id: &str,
+    ) -> Result<models::OboTokenResponse> {
+        self.client
+            .obo()
+            .refresh(refresh_token, &mutation(request_id)?)
+            .await
+            .map_err(unavailable)
+    }
+    /// The caller's app token is used for scope-projected directory reads. IAM enforces visibility.
+    pub async fn member(&self, access_token: &str, org: &str, actor: &str) -> Result<Value> {
+        self.verify(access_token, org).await?;
+        if !(actor.starts_with("c:") || actor.starts_with("si:")) || actor.contains(['[', ']', '/'])
+        {
+            return Err(forbidden());
+        }
+        let membership = format!("{actor}[{org}]");
+        self.client
+            .with_credential(Credential::bearer(access_token))
+            .application_reads()
+            .member(org, &membership)
+            .await
+            .map_err(unavailable)
+    }
+}
+fn validate_identity(v: &Value, app: &str, org: &str, realm: Option<&str>) -> Result<Identity> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let actor = v["public_id"].as_str().ok_or_else(forbidden)?;
+    let kind = v["actor_type"].as_str().ok_or_else(forbidden)?;
+    if v["active"] != true
+        || !matches!(
+            (kind, actor.split(':').next()),
+            ("carbon", Some("c")) | ("silicon", Some("si"))
+        )
+        || (v["client_id"].as_str() != Some(app) && v["audience"].as_str() != Some(app))
+        || v["client_id"].as_str().is_some_and(|x| x != app)
+        || v["audience"].as_str().is_some_and(|x| x != app)
+    {
+        return Err(forbidden());
+    }
+    let expires = v["expires_at"]
+        .as_i64()
+        .filter(|x| *x > now)
+        .ok_or_else(forbidden)?;
+    let candidates = v["authorization"]
+        .as_object()
+        .map(|_| vec![&v["authorization"]])
+        .unwrap_or_default();
+    let grant = candidates
+        .into_iter()
+        .chain(v["authorizations"].as_array().into_iter().flatten())
+        .find(|a| {
+            a["org_id"] == org
+                && a["public_id"] == actor
+                && a["audience"] == app
+                && a["actor_type"] == kind
+                && a["testing_environment_id"].as_str() == realm
+                && a["membership_id"].as_str().is_some_and(|m| !m.is_empty())
+        })
+        .ok_or_else(forbidden)?;
+    Ok(Identity {
+        actor_id: actor.into(),
+        org_id: org.into(),
+        display_name: actor.into(),
+        admin: matches!(grant["org_role"].as_str(), Some("owner" | "admin")),
+        expires_at: expires,
+        realm: realm.unwrap_or("production").into(),
+    })
+}
+
+#[derive(Clone)]
+pub struct Ting {
+    http: reqwest::Client,
+    origin: String,
+    testing: Option<(String, String)>,
+}
+impl Ting {
+    pub fn from_env() -> Result<Self> {
+        Self::for_realm(false)
+    }
+    /// Test requests need Ting's own isolated app credential and the selected IAM environment.
+    pub fn for_realm(testing: bool) -> Result<Self> {
+        let origin = std::env::var("RING_TING_URL")
+            .unwrap_or_else(|_| "https://ting.teamofsilicons.com".into());
+        let url = reqwest::Url::parse(&origin).map_err(|_| {
+            Error::new(
+                "INVALID_PROVIDER_URL",
+                "Ting URL must be an HTTPS origin.",
+                false,
+            )
+        })?;
+        if url.scheme() != "https"
+            && !(url.scheme() == "http"
+                && matches!(url.host_str(), Some("localhost" | "127.0.0.1")))
+        {
+            return Err(Error::new(
+                "INVALID_PROVIDER_URL",
+                "Ting URL must be HTTPS outside localhost.",
+                false,
+            ));
+        }
+        Ok(Self {
+            http: http()?,
+            origin: origin.trim_end_matches('/').into(),
+            testing: if testing {
+                Some((
+                    required_env("RING_TING_TEST_APP_SECRET")?,
+                    required_env("RING_IAM_TEST_ENVIRONMENT_KEY")?,
+                ))
+            } else {
+                None
+            },
+        })
+    }
+    fn request(&self, path: &str, token: &str) -> reqwest::RequestBuilder {
+        let mut request = self
+            .http
+            .post(format!("{}{path}", self.origin))
+            .bearer_auth(token);
+        if let Some((secret, environment)) = &self.testing {
+            request = request
+                .header("IAM_TEST_APP_SECRET", secret)
+                .header("X-Testing-Environment-Key", environment);
+        }
+        request
+    }
+    /// Call only after the actor separately consents to subscriptions.register.
+    /// The same actor/app/org tuple is idempotent; repeat it after an uncertain response.
+    pub async fn register_subscription(
+        &self,
+        access_token: &str,
+        org: &str,
+        recipient: &str,
+    ) -> Result<Value> {
+        if !recipient.starts_with("si:") || org.is_empty() {
+            return Err(forbidden());
+        }
+        let response = self
+            .request("/v1/subscriptions", access_token)
+            .json(&json!({"org_id":org,"app_id":"ring","for":recipient}))
+            .send()
+            .await
+            .map_err(|_| Error::network("Ting"))?;
+        let value: Value = checked(response, "Ting")
+            .await?
+            .json()
+            .await
+            .map_err(|_| Error::network("Ting"))?;
+        if value["app_id"] != "ring" || value["for"] != recipient || value["active"] != true {
+            return Err(Error::new(
+                "TING_SUBSCRIPTION_UNCONFIRMED",
+                "Ting did not confirm the selected Ring recipient subscription.",
+                true,
+            ));
+        }
+        Ok(value)
+    }
+    /// Persist these exact bytes in the server's transactional outbox. Do not regenerate event keys on retry.
+    pub fn prepare(
+        org: &str,
+        recipient: &str,
+        kind: &str,
+        key: &str,
+        data: Value,
+    ) -> Result<Vec<u8>> {
+        if !recipient.starts_with("si:")
+            || !kind.starts_with("ring.")
+            || key.is_empty()
+            || key.len() > 200
+        {
+            return Err(Error::new(
+                "INVALID_NOTIFICATION",
+                "Ting requires a silicon recipient, ring event type and stable key.",
+                false,
+            ));
+        }
+        serde_json::to_vec(
+            &json!({"org_id":org,"for":recipient,"type":kind,"key":key,"data":data,"metadata":{}}),
+        )
+        .map_err(|_| {
+            Error::new(
+                "INVALID_NOTIFICATION",
+                "Could not serialize notification.",
+                false,
+            )
+        })
+    }
+    /// Publish an already consented IAM OBO token. Keep body/key identical after an uncertain result.
+    /// The server owns encrypted grant storage and refresh; a login token is not notification authority.
+    pub async fn publish(&self, access_token: &str, body: &[u8]) -> Result<Value> {
+        let value: Value = serde_json::from_slice(body)
+            .map_err(|_| Error::new("INVALID_NOTIFICATION", "Corrupt outbox body.", false))?;
+        if value["key"].as_str().is_none() || value["org_id"].as_str().is_none() {
+            return Err(forbidden());
+        }
+        let request = self
+            .request("/v1/tings", access_token)
+            .header("Content-Type", "application/json")
+            .body(body.to_vec());
+        let response = request.send().await.map_err(|_| Error::network("Ting"))?;
+        checked(response, "Ting")
+            .await?
+            .json()
+            .await
+            .map_err(|_| Error::network("Ting"))
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn identity_checks_actor_audience_membership_realm_and_expiry() {
+        let mut v = json!({"active":true,"public_id":"si:alice","actor_type":"silicon","client_id":"ring","expires_at":i64::MAX,"authorization":{"public_id":"si:alice","actor_type":"silicon","audience":"ring","org_id":"tos","membership_id":"si:alice[tos]","testing_environment_id":null,"org_role":"owner"}});
+        assert!(validate_identity(&v, "ring", "tos", None).unwrap().admin);
+        assert!(validate_identity(&v, "other", "tos", None).is_err());
+        assert!(validate_identity(&v, "ring", "other", None).is_err());
+        assert!(validate_identity(&v, "ring", "tos", Some("test")).is_err());
+        v["expires_at"] = json!(1);
+        assert!(validate_identity(&v, "ring", "tos", None).is_err());
+        v["expires_at"] = json!(i64::MAX);
+        v["active"] = json!(false);
+        assert!(validate_identity(&v, "ring", "tos", None).is_err());
+    }
+}
+
+/// Verify before parsing or persisting; the server must durably deduplicate event_id before HTTP204.
+pub fn verify_webhook(headers: &http::HeaderMap, body: &[u8]) -> Result<Value> {
+    use silicon_iam_client::webhook::{WebhookSecret, WebhookSecretKeyring, WebhookVerifier};
+    let secret =
+        WebhookSecret::new(required_env("RING_IAM_WEBHOOK_SECRET")?).map_err(|_| forbidden())?;
+    let version = std::env::var("RING_IAM_WEBHOOK_VERSION")
+        .unwrap_or_else(|_| "1".into())
+        .parse()
+        .map_err(|_| forbidden())?;
+    let verifier =
+        WebhookVerifier::new(WebhookSecretKeyring::new(version, secret).map_err(|_| forbidden())?);
+    let verified = verifier.verify(headers, body).map_err(|_| forbidden())?;
+    if verified.is_testing() {
+        let key = EnvironmentKey::new(required_env("RING_IAM_TEST_ENVIRONMENT_KEY")?)
+            .map_err(unavailable)?;
+        verified
+            .verify_testing_environment(&key)
+            .map_err(|_| forbidden())?;
+    }
+    Ok(json!({"testing":verified.is_testing(),"event":verified.event()}))
+}

@@ -1,0 +1,25 @@
+{
+  "name": "silicon-ring-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build && node ../scripts/prepare-web.mjs",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node --experimental-strip-types --test src/protocol.test.ts",
+    "native:dev": "cd ../native && ../web/node_modules/.bin/tauri dev",
+    "native:build": "cd ../native && ../web/node_modules/.bin/tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.1",
+    "solid-js": "^1.9.9"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.4",
+    "@types/node": "^24.5.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7",
+    "vite-plugin-solid": "^2.11.8"
+  }
+}

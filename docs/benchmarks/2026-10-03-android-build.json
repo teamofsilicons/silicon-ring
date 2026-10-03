@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-03",
+  "target": "aarch64-linux-android",
+  "build_mode": "debug",
+  "android_package": "com.teamofsilicons.ring",
+  "version": "0.1.0",
+  "min_sdk": 26,
+  "target_sdk": 36,
+  "artifact": "dist/native/silicon-ring-android-arm64-debug.apk",
+  "bytes": 136879831,
+  "sha256": "533590285710fc5f456a970a1f03d03fd4bbc42691499318187efc92e899417d",
+  "verified": [
+    "Full Tauri Rust/Kotlin/web APK build, followed by Kotlin-only Gradle rebuild using its unchanged verified Rust library",
+    "APK Signature Scheme v2 verification passes",
+    "Ring-only Firebase resources and launcher artwork are packaged",
+    "Foreground IAM fixture login and encrypted native session restoration after process restart",
+    "Notification and microphone permission prompts displayed and granted",
+    "Backend registered enabled sandbox FCM token for dedicated c:android account",
+    "FCM woke stopped app process, native Telecom entered ringing state, and incoming notification showed Answer/Decline",
+    "Notification Answer accepted call using Android device without opening WebView",
+    "Carbon-to-Android call exchanged 24kHz PCM; remote harness received 352 frames, and Android AudioFlinger showed active recording and playback tracks",
+    "Explicit call end propagated and stopped native call service",
+    "Final APK includes microphone preflight and local notification fallback when Telecom rejects presentation",
+    "System bar/display cutout padding prevents Android status and gesture UI from overlapping controls; layout APK installed and native session restored"
+  ],
+  "not_verified": [
+    "Physical Android microphone and audible speaker routing",
+    "Answering under a PIN-protected Android lock screen"
+  ],
+  "runtime_note": "Android 16/API36 arm64 emulator ran headlessly with host audio disabled. PCM transport and AudioFlinger track activity are verified; audible Android hardware playback is not claimed.",
+  "source_followup": "Stable production APK uses a separate protected release signing identity; debug APK remains the isolated-test artifact.",
+  "previous_launch_check": {
+    "sha256": "16950f5aadee8995a13d58db35d1dbc0b6b7f321772a05828ceaf78a381c0e82",
+    "screenshot": "dist/native/android-launch.png",
+    "verified": [
+      "Installed on Android 16/API36 arm64 emulator",
+      "MainActivity rendered login screen without observed Ring crash"
+    ]
+  },
+  "cold_push_check": {
+    "ringid": "ring_a15b833a91d54e7eb160e7fd5daa61e5",
+    "created_at": "2026-10-03T17:08:21.939Z",
+    "answered_at": "2026-10-03T17:09:11.802Z",
+    "ended_at": "2026-10-03T17:09:37.909Z",
+    "process_absent_before_push": true,
+    "woken_pid": 6717,
+    "incoming_screenshot": "dist/native/android-cold-incoming.png"
+  },
+  "pcm_check": {
+    "ringid": "ring_6b2e00ce1ab84b03a6a11b5b9cde3a23",
+    "answered_at": "2026-10-03T17:10:53.926Z",
+    "ended_at": "2026-10-03T17:11:29.737Z",
+    "remote_received_frames": 352,
+    "remote_peak_pcm16": 10,
+    "remote_non_silent_frames_above_50": 0,
+    "android_playback_track_active": true,
+    "android_record_track_active": true,
+    "android_sample_rate_hz": 24000,
+    "synthetic_speech_sent_frames": 192,
+    "synthetic_total_sent_frames": 337
+  },
+  "runtime_verified_sha256": "1388f6d6b035e7a796faf0fc7f69b6ea612dadf14f11a63a504191d9c5bf181b",
+  "layout_screenshot": "dist/native/android-safe-area.png"
+}

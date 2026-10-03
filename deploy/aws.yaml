@@ -1,0 +1,303 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Silicon Ring native Rust and Caddy on one host; benchmark before claiming call capacity.
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet with an internet gateway route.
+  InstanceType:
+    Type: String
+    Default: t3.small
+    Description: Candidate size only. Choose the smallest instance passing the media load test.
+  ReleaseBucket:
+    Type: String
+    AllowedPattern: '[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]'
+    Description: Private S3 bucket retaining the native Linux x86_64 release archive.
+  ReleaseKey:
+    Type: String
+    AllowedPattern: '[A-Za-z0-9][A-Za-z0-9._/-]{0,1023}'
+    Description: Exact S3 key of a tar.gz containing ring-server and web/. Use an immutable key.
+  ReleaseSha256:
+    Type: String
+    AllowedPattern: '[a-f0-9]{64}'
+    Description: Verified SHA-256 of that archive. The binary must run on Amazon Linux 2023.
+  SecretsArn:
+    Type: String
+    AllowedPattern: 'arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+'
+    Description: Secrets Manager ARN containing server environment as a JSON object.
+  LatestAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+Resources:
+  Assets:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Assets
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt Assets.Arn
+              - !Sub '${Assets.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Ring HTTPS and certificate validation; administration via SSM only.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: udp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Policies:
+        - PolicyName: ring-storage-and-runtime-secret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref SecretsArn
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ReleaseBucket}/${ReleaseKey}'
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt Assets.Arn
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource: !Sub '${Assets.Arn}/*'
+  Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref Role]
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmi
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref Profile
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: [!Ref SecurityGroup]
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 2
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            Encrypted: true
+            VolumeType: gp3
+            VolumeSize: 30
+      Tags:
+        - Key: Name
+          Value: silicon-ring
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          dnf install -y python3 tar gzip
+          id ring >/dev/null 2>&1 || useradd --system --home-dir /var/lib/ring --shell /sbin/nologin ring
+          id caddy >/dev/null 2>&1 || useradd --system --home-dir /var/lib/caddy --shell /sbin/nologin caddy
+          install -d -m 700 /etc/ring
+          install -d -m 700 -o ring -g ring /var/lib/ring
+          install -d -m 755 /opt/ring/releases /var/lib/ring-public/releases /etc/caddy
+          install -d -m 750 -o caddy -g caddy /var/lib/caddy
+          umask 077
+          temp=$(mktemp -d)
+          staging=$(mktemp -d /opt/ring/releases/.install-XXXXXXXX)
+          trap 'rm -rf "$temp" "$staging"' EXIT
+          aws s3 cp 's3://${ReleaseBucket}/${ReleaseKey}' "$temp/ring.tar.gz" --region '${AWS::Region}' --only-show-errors
+          printf '%s  %s\n' '${ReleaseSha256}' "$temp/ring.tar.gz" | sha256sum -c -
+          python3 - "$temp/ring.tar.gz" "$staging" <<'PYRELEASE'
+          import pathlib, sys, tarfile
+          archive, destination = sys.argv[1:]
+          with tarfile.open(archive, 'r:gz') as release:
+              members = release.getmembers()
+              for member in members:
+                  path = pathlib.PurePosixPath(member.name)
+                  if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0] not in ('ring-server', 'web') or not (member.isfile() or member.isdir()):
+                      raise SystemExit('Release archive contains an unexpected path or link')
+              release.extractall(destination, members=members)
+          root = pathlib.Path(destination)
+          if not (root/'ring-server').is_file() or not (root/'web/index.html').is_file():
+              raise SystemExit('Release is missing ring-server or web/index.html')
+          for path in root.rglob('*'):
+              path.chmod(0o755 if path.is_dir() or path == root/'ring-server' else 0o644)
+          root.chmod(0o755)
+          PYRELEASE
+          release='/opt/ring/releases/${ReleaseSha256}'
+          test ! -e "$release"
+          mv "$staging" "$release"
+          ln -s "$release" /opt/ring/current
+          aws secretsmanager get-secret-value --region '${AWS::Region}' --secret-id '${SecretsArn}' --query SecretString --output text > "$temp/secrets.json"
+          python3 - "$temp/secrets.json" <<'PYENV'
+          import json, pathlib, re, sys
+          values = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          values.update(RING_ENV='production', RING_S3_BUCKET='${Assets}', AWS_REGION='${AWS::Region}', RING_BIND='127.0.0.1:8765', RING_DATA_DIR='/var/lib/ring', RING_WEB_DIR='/opt/ring/current/web', RING_RELEASE_INDEX_FILE='/var/lib/ring-public/releases/release-index.json')
+          with open('/etc/ring/server.env', 'w') as environment:
+              for key, value in values.items():
+                  if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key) or not isinstance(value, str) or '\x00' in value:
+                      raise SystemExit('Server secret must map environment names to strings without NUL')
+                  value = value.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+                  environment.write(key + '="' + value + '"\n')
+          PYENV
+          cat > /etc/systemd/system/ring.service <<'RING'
+          [Unit]
+          Description=Silicon Ring native server
+          Wants=network-online.target
+          After=network-online.target
+          [Service]
+          User=ring
+          Group=ring
+          WorkingDirectory=/var/lib/ring
+          EnvironmentFile=/etc/ring/server.env
+          ExecStart=/opt/ring/current/ring-server
+          Restart=on-failure
+          RestartSec=3
+          KillSignal=SIGINT
+          TimeoutStopSec=30
+          StateDirectory=ring
+          StateDirectoryMode=0700
+          UMask=0077
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ProtectHome=true
+          PrivateTmp=true
+          ReadWritePaths=/var/lib/ring
+          LimitNOFILE=65536
+          [Install]
+          WantedBy=multi-user.target
+          RING
+          caddy_url=https://github.com/caddyserver/caddy/releases/download/v2.11.7
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' "$caddy_url/caddy_2.11.7_linux_amd64.tar.gz" -o "$temp/caddy_2.11.7_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' "$caddy_url/caddy_2.11.7_checksums.txt" -o "$temp/caddy-checksums.txt"
+          (cd "$temp"
+              awk '$2 == "caddy_2.11.7_linux_amd64.tar.gz" {print}' caddy-checksums.txt > caddy.checksum
+              test "$(wc -l < caddy.checksum)" -eq 1
+              case "$(awk '{print length($1)}' caddy.checksum)" in
+                  64) sha256sum -c caddy.checksum ;;
+                  128) sha512sum -c caddy.checksum ;;
+                  *) echo 'Unsupported Caddy checksum algorithm' >&2; exit 1 ;;
+              esac
+          )
+          tar -xzf "$temp/caddy_2.11.7_linux_amd64.tar.gz" -C "$temp" caddy
+          install -m 755 "$temp/caddy" /usr/local/bin/caddy
+          cat > /etc/caddy/Caddyfile <<'CADDY'
+          ring.teamofsilicons.com {
+              encode zstd gzip
+              header Strict-Transport-Security "max-age=31536000"
+              handle /releases/* {
+                  root * /var/lib/ring-public
+                  file_server
+              }
+              @api path /ws /ws/* /webhook /webhook/* /health
+              handle @api {
+                  reverse_proxy 127.0.0.1:8765
+              }
+              handle {
+                  root * /opt/ring/current/web
+                  try_files {path} {path}/index.html /index.html
+                  file_server
+              }
+          }
+          backend.ring.teamofsilicons.com {
+              encode zstd gzip
+              header Strict-Transport-Security "max-age=31536000"
+              reverse_proxy 127.0.0.1:8765
+          }
+          CADDY
+          chmod 644 /etc/caddy/Caddyfile
+          cat > /etc/systemd/system/caddy.service <<'CADDYSERVICE'
+          [Unit]
+          Description=Caddy web server
+          Wants=network-online.target
+          After=network-online.target ring.service
+          [Service]
+          Type=notify
+          User=caddy
+          Group=caddy
+          Environment=HOME=/var/lib/caddy
+          WorkingDirectory=/var/lib/caddy
+          ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+          ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+          Restart=on-failure
+          RestartSec=3
+          TimeoutStopSec=30
+          StateDirectory=caddy
+          StateDirectoryMode=0750
+          AmbientCapabilities=CAP_NET_BIND_SERVICE
+          CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ProtectHome=true
+          PrivateTmp=true
+          ReadWritePaths=/var/lib/caddy
+          LimitNOFILE=1048576
+          [Install]
+          WantedBy=multi-user.target
+          CADDYSERVICE
+          chmod 644 /etc/systemd/system/ring.service /etc/systemd/system/caddy.service
+          /usr/local/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          systemctl daemon-reload
+          systemctl enable --now ring.service
+          healthy=0
+          for _ in $(seq 1 60); do
+              if curl --fail --silent http://127.0.0.1:8765/health >/dev/null; then healthy=1; break; fi
+              sleep 1
+          done
+          test "$healthy" = 1
+          systemctl enable --now caddy.service
+  Address:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Instance
+Outputs:
+  InstanceId:
+    Value: !Ref Instance
+  PublicIp:
+    Value: !Ref Address
+  AssetsBucket:
+    Value: !Ref Assets
+  ReleaseSha256:
+    Value: !Ref ReleaseSha256

@@ -1,0 +1,19 @@
+[package]
+name = "silicon-ring-native"
+version = "0.1.0"
+description = "Native Silicon Ring phone"
+authors = ["Team of Silicons"]
+edition = "2021"
+
+[lib]
+name = "silicon_ring_native"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-call-service = { path = "call-service" }
+
+[workspace]

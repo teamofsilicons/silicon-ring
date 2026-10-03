@@ -1,0 +1,18 @@
+{
+  "app_id": "ring",
+  "org_id": "tos",
+  "name": "Silicon Ring",
+  "base_url": "https://backend.ring.teamofsilicons.com",
+  "webhook_url": "https://backend.ring.teamofsilicons.com/webhook/",
+  "app_scope": {
+    "iam": [
+      "self.identity.read", "self.profile.read", "self.organizations.read", "self.membership.read",
+      "directory.carbons.read", "directory.silicons.read", "directory.memberships.read", "directory.profiles.read"
+    ],
+    "external": [
+      { "app_id": "ting", "endpoint_id": "tings.send" },
+      { "app_id": "ting", "endpoint_id": "subscriptions.register" }
+    ]
+  },
+  "webhook_scope": ["full"]
+}
