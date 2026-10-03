@@ -9,4 +9,4 @@ iam login status --json
 iam system version --json
 aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output json
 gh auth status
-docker info --format '{{.ServerVersion}}'
+aws cloudformation validate-template --template-body file://deploy/aws.yaml --query Description --output text

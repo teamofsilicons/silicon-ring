@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a static Linux binary and web bundle on temporary AWS CodeBuild."""
+"""Build an Amazon Linux 2023 native binary and web bundle on temporary AWS CodeBuild."""
 import argparse
 import json
 from pathlib import Path
@@ -76,8 +76,8 @@ try:
     aws("iam", "put-role-policy", payload={"RoleName": name, "PolicyName": "ring-image-build", "PolicyDocument": json.dumps(policy)})
     buildspec = {"version": "0.2", "phases": {
         "install": {"commands": [
-            "apt-get update -qq && apt-get install -y -qq musl-tools build-essential cmake pkg-config",
-            "curl --fail --silent --show-error https://sh.rustup.rs -o /tmp/rustup-init.sh && sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain 1.98.0 --target x86_64-unknown-linux-musl",
+            "dnf install -y gcc gcc-c++ cmake make perl pkgconfig",
+            "curl --fail --silent --show-error https://sh.rustup.rs -o /tmp/rustup-init.sh && sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain 1.98.0",
             "curl --fail --silent --show-error https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz -o /tmp/node-v24.21.0-linux-x64.tar.xz",
             "curl --fail --silent --show-error https://nodejs.org/dist/v24.21.0/SHASUMS256.txt -o /tmp/node-checksums && cd /tmp && grep ' node-v24.21.0-linux-x64.tar.xz$' node-checksums | sha256sum -c -",
             "mkdir -p /opt/ring-build-node && tar -xJf /tmp/node-v24.21.0-linux-x64.tar.xz -C /opt/ring-build-node --strip-components=1",
@@ -85,18 +85,16 @@ try:
         "build": {"commands": [
             "cd $CODEBUILD_SRC_DIR",
             "export PATH=/root/.cargo/bin:/opt/ring-build-node/bin:$PATH",
-            "export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc CC_x86_64_unknown_linux_musl=musl-gcc",
-            "export RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-static'",
-            "cargo +1.98.0 build --locked --release --target x86_64-unknown-linux-musl -p ring-server --features ring-providers/s3",
+            "cargo +1.98.0 build --locked --release -p ring-server --features ring-providers/s3",
             "npm --prefix web ci && npm --prefix web run build",
-            "mkdir /tmp/ring-release && cp target/x86_64-unknown-linux-musl/release/ring-server /tmp/ring-release/ring-server && cp -a web/dist /tmp/ring-release/web",
+            "mkdir /tmp/ring-release && cp target/release/ring-server /tmp/ring-release/ring-server && cp -a web/dist /tmp/ring-release/web",
             "file /tmp/ring-release/ring-server",
-            "if readelf -l /tmp/ring-release/ring-server | grep -q INTERP; then echo 'Expected a static binary without an ELF interpreter' >&2; exit 1; fi",
+            "status=0; timeout 3 env -i PATH=/usr/bin:/bin RING_ENV=test RING_BIND=127.0.0.1:0 RING_DATA_DIR=/tmp/ring-native-probe RING_DISABLE_PROVIDERS=1 RING_TELEMETRY_ENABLED=false /tmp/ring-release/ring-server || status=$?; test \"$status\" = 124",
             "tar -C /tmp/ring-release -czf /tmp/ring-linux-amd64.tar.gz ring-server web",
             f"checksum=$(sha256sum /tmp/ring-linux-amd64.tar.gz | cut -d' ' -f1) && aws s3api put-object --region {args.region} --bucket {args.bucket} --key {release_key} --body /tmp/ring-linux-amd64.tar.gz --server-side-encryption AES256 --metadata sha256=$checksum,revision={receipt['source_revision']}",
         ]},
     }}
-    project = {"name": name, "source": {"type": "S3", "location": bucket + "/source.zip", "buildspec": json.dumps(buildspec)}, "artifacts": {"type": "NO_ARTIFACTS"}, "environment": {"type": "LINUX_CONTAINER", "image": "aws/codebuild/standard:7.0", "computeType": "BUILD_GENERAL1_LARGE", "privilegedMode": False}, "serviceRole": role_arn, "timeoutInMinutes": 45, "queuedTimeoutInMinutes": 30}
+    project = {"name": name, "source": {"type": "S3", "location": bucket + "/source.zip", "buildspec": json.dumps(buildspec)}, "artifacts": {"type": "NO_ARTIFACTS"}, "environment": {"type": "LINUX_CONTAINER", "image": "aws/codebuild/amazonlinux-x86_64-standard:5.0", "computeType": "BUILD_GENERAL1_LARGE", "privilegedMode": False}, "serviceRole": role_arn, "timeoutInMinutes": 45, "queuedTimeoutInMinutes": 30}
     for attempt in range(6):
         try:
             aws("codebuild", "create-project", payload=project)
