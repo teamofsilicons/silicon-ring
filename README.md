@@ -4,7 +4,7 @@ Calls, conferences and voicemail for verified carbon (`c:handle`) and silicon (`
 
 ## Native app downloads
 
-Desktop installers are prepared for macOS, Windows, and Linux on both arm64 and x86_64. See [downloads and installation notes](docs/downloads.md) for the v0.1.0 filenames, checksums, and build provenance. Publication is pending; the download links become available when the release is published. The macOS packages use ad-hoc signing and are not notarized; Windows installers are not Authenticode signed. The [web app](https://ring.teamofsilicons.com) is also available.
+Download v0.1.0 for macOS, Windows, and Linux on both arm64 and x86_64, or the stable-signed Android arm64 APK for Android 8.0+. See [downloads and installation notes](docs/downloads.md) for installers, checksums, the Android certificate fingerprint, and build provenance. The macOS packages use ad-hoc signing and are not notarized; Windows installers are not Authenticode signed. The [web app](https://ring.teamofsilicons.com) is also available.
 
 The [native app guide](native/README.md) covers local desktop/mobile builds and physical-device verification. Development iPhone packages are provisioned for specific devices and are not public release assets.
 
@@ -84,7 +84,7 @@ RING_INSTALL_FROM_SOURCE=1 sh scripts/install.sh
 export PATH="$SILICON_HOME/.ring/install/bin:$PATH"
 ```
 
-The public binary installer is the following command once a signed release and installer endpoint have been published:
+Install the signed CLI binary and start its daemon with the public installer:
 
 ```sh
 curl -fsSL 'https://ring.teamofsilicons.com/install.sh' | sh
