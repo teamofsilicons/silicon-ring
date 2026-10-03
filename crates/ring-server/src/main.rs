@@ -387,6 +387,8 @@ async fn connection(mut app: App, socket: WebSocket) {
         let _ = control.await;
     }
     app.media.lock().unwrap().disconnect(&tx);
+    // Close this connection's storage handles before destructive cleanup can resume.
+    drop(app);
     drop(scope_guard);
 }
 

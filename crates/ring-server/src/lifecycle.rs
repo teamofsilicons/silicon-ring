@@ -575,10 +575,12 @@ mod tests {
             .vault
             .set("testing:app-secret", &json!("private"))
             .unwrap();
+        let activity_a = app_a.activity.clone();
+        drop(app_a);
         let clean = operation(&a, "clean", 4, 2, 1);
         manager.apply(&clean).await.unwrap();
-        assert!(app_a.activity.cancelled.is_cancelled());
-        assert!(app_a.activity.enter().is_none());
+        assert!(activity_a.cancelled.is_cancelled());
+        assert!(activity_a.enter().is_none());
         let fresh = manager.get(&a).await.unwrap();
         assert!(fresh.engine.lock().unwrap().state.bugs.is_empty());
         assert!(fresh.vault.get("testing:app-secret").unwrap().is_none());
@@ -592,6 +594,8 @@ mod tests {
         );
         fresh.stop().await.unwrap();
         app_b.stop().await.unwrap();
+        drop(fresh);
+        drop(app_b);
         drop(manager);
         let restarted = super::tests::manager(dir.path());
         assert_eq!(restarted.apply(&clean).await.unwrap()["state"], "completed");
@@ -622,10 +626,12 @@ mod tests {
             .is_err());
         let old = manager.get(&id).await.unwrap();
         marker(&old, "retained");
+        let old_activity = old.activity.clone();
+        drop(old);
         let mut rotate = operation(&id, "rotate-key", 10, 1, 2);
         rotate.testing_key = "b".repeat(32);
         manager.apply(&rotate).await.unwrap();
-        assert!(old.activity.cancelled.is_cancelled());
+        assert!(old_activity.cancelled.is_cancelled());
         let current = manager.get(&id).await.unwrap();
         assert_eq!(
             current.testing.as_ref().unwrap().testing_key,
@@ -635,6 +641,7 @@ mod tests {
             current.engine.lock().unwrap().state.bugs["marker"],
             "retained"
         );
+        drop(current);
         let next = |action, revision| {
             let mut o = operation(&id, action, revision, 1, 2);
             o.testing_key = "b".repeat(32);
@@ -715,6 +722,7 @@ mod tests {
             .get(&format!("ting:{owner}"))
             .unwrap()
             .is_none());
+        drop(running);
         retire.operation_id = Uuid::new_v4().to_string();
         retire.environment_revision = 16;
         retire.retired_apps = vec!["ring".into()];
@@ -772,6 +780,7 @@ mod tests {
             e.state.storage.clear();
             e.persist().unwrap();
         }
+        drop(app);
         assert_eq!(manager.apply(&clean).await.unwrap()["state"], "completed");
         manager.get(&id).await.unwrap().stop().await.unwrap();
     }

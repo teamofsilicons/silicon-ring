@@ -411,6 +411,8 @@ async fn managed_cleanup_drains_notification_authorization_after_disconnect() {
         .unwrap();
     service.vault.set(&auth::credential_key(&identity), &json!({"access_token":"test-actor-token","expires_at":chrono::Utc::now().timestamp()+3600})).unwrap();
     let original_directory = service.engine.lock().unwrap().data_dir.clone();
+    let activity = service.activity.clone();
+    drop(service);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}/ws", listener.local_addr().unwrap());
     let router = Router::new().route("/ws", get(ws)).with_state(root.clone());
@@ -434,12 +436,9 @@ async fn managed_cleanup_drains_notification_authorization_after_disconnect() {
         .forget();
     socket.close(None).await.unwrap();
     let mut clean = tokio::spawn(lifecycle_request(root, "clean", 2));
-    tokio::time::timeout(
-        Duration::from_secs(3),
-        service.activity.cancelled.cancelled(),
-    )
-    .await
-    .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), activity.cancelled.cancelled())
+        .await
+        .unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(100), &mut clean)
             .await

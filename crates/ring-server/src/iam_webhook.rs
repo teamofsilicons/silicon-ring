@@ -242,6 +242,8 @@ pub async fn handle(State(app): State<App>, headers: HeaderMap, body: Bytes) -> 
             return (StatusCode::UNAUTHORIZED, "IAM webhook verification failed").into_response()
         }
     };
+    // Reverse drop order keeps this guard alive until the selected App's storage closes.
+    let _activity;
     let (app, realm) = match destination(app, &verified).await {
         Ok(target) => target,
         Err(_) => {
@@ -252,12 +254,15 @@ pub async fn handle(State(app): State<App>, headers: HeaderMap, body: Bytes) -> 
                 .into_response()
         }
     };
-    let Some(_activity) = app.activity.enter() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Testing environment is changing",
-        )
-            .into_response();
+    _activity = match app.activity.enter() {
+        Some(activity) => activity,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Testing environment is changing",
+            )
+                .into_response();
+        }
     };
     let event_id = verified.event_id().to_string();
     let verified = json!({"testing":verified.is_testing(),"event":verified.event()});
