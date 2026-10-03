@@ -29,6 +29,11 @@ jobs:
       - name: Linux native audio dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
+      - name: OpenSSL Ed25519 support for packaging checks
+        if: runner.os == 'macOS'
+        run: |
+          brew install openssl@3
+          echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
       - name: Unit and protocol tests
         run: cargo test --locked --workspace
       - name: Build native CLI and test server
