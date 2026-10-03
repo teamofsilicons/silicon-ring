@@ -2,6 +2,30 @@ use crate::store::io_error;
 use ring_client::Result;
 use std::{fs, path::Path};
 
+#[cfg(windows)]
+pub fn prevent_stdio_inheritance() -> Result<()> {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(which: u32) -> *mut c_void;
+        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+    }
+    // Command redirects a child's standard streams but still inherits every other inheritable
+    // handle. Keep the original caller's pipes out of the long-lived daemon so its caller sees EOF.
+    for which in [-10_i32, -11, -12] {
+        unsafe {
+            let handle = GetStdHandle(which as u32);
+            if !handle.is_null()
+                && handle != (-1_isize) as *mut c_void
+                && SetHandleInformation(handle, 1, 0) == 0
+            {
+                return Err(io_error(std::io::Error::last_os_error(), "daemon handles"));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 pub use std::os::unix::fs::OpenOptionsExt;
 #[cfg(windows)]

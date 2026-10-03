@@ -113,6 +113,7 @@ pub async fn ensure(store: &Store) -> Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        crate::platform::prevent_stdio_inheritance()?;
         cmd.creation_flags(0x08000200);
     }
     cmd.args(["daemon", "run"])
