@@ -6,9 +6,11 @@ use crate::{
 use base64::Engine;
 use ring_client::{Client, Result, RingError};
 use serde_json::{json, Value};
+#[cfg(unix)]
+use std::process::Stdio;
 use std::{
     fs,
-    process::{Command, Stdio},
+    process::Command,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -110,14 +112,11 @@ pub async fn ensure(store: &Store) -> Result<()> {
             });
         }
     }
+    cmd.args(["daemon", "run"]);
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        crate::platform::prevent_stdio_inheritance()?;
-        cmd.creation_flags(0x08000200);
-    }
-    cmd.args(["daemon", "run"])
-        .stdin(Stdio::null())
+    platform::spawn_daemon(cmd.get_program(), cmd.get_args(), &log)?;
+    #[cfg(unix)]
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log))
         .spawn()
