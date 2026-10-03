@@ -2,7 +2,8 @@
 """Headless CLI/server contract test; no external providers or real credentials.
 Run: cargo build -p ring-server -p ring-cli && python3 crates/ring-cli/tests/smoke.py
 """
-import base64, json, os, pathlib, socket, subprocess, tempfile, time, urllib.request
+import base64, faulthandler, json, os, pathlib, socket, subprocess, tempfile, time, urllib.request
+faulthandler.dump_traceback_later(60, repeat=True)
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 BIN = ROOT / ("target/debug/ring.exe" if os.name == "nt" else "target/debug/ring")
 SERVER = ROOT / ("target/debug/ring-server.exe" if os.name == "nt" else "target/debug/ring-server")
@@ -19,6 +20,7 @@ with tempfile.TemporaryDirectory(prefix="ring-cli-") as temp:
     server = subprocess.Popen([str(SERVER)], cwd=ROOT, env=env, stdout=server_log, stderr=server_log)
     actors = ["alice", "bob"]
     def run(actor, *args, code=0, stdin=None):
+        print("CLI smoke:", actor, *args[:3], flush=True)
         actor_env = {**env, "SILICON_HOME": str(root / actor)}
         result = subprocess.run([str(BIN), "--json", "--test", *args], input=stdin, capture_output=True, text=True, env=actor_env, timeout=30)
         assert result.returncode == code, (args, result.returncode, result.stdout, result.stderr)
@@ -78,10 +80,13 @@ with tempfile.TemporaryDirectory(prefix="ring-cli-") as temp:
         run("alice", "login", "--token-stdin", stdin="alice-test-token\n")
         run("alice", "logout")
         assert run("alice", "login", "status")["authenticated"] is False
-        print("CLI/server smoke: authentication, privacy, approval, idempotency, lifecycle, daemon restart and validation passed")
+        print("CLI/server smoke: authentication, privacy, approval, idempotency, lifecycle, daemon restart and validation passed", flush=True)
     finally:
+        print("CLI smoke: cleanup", flush=True)
         for actor in actors:
             subprocess.run([str(BIN), "--test", "daemon", "stop"], env={**env, "SILICON_HOME": str(root / actor)}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         server.terminate()
         server.wait(timeout=10)
         server_log.close()
+
+faulthandler.cancel_dump_traceback_later()

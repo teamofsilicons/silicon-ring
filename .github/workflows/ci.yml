@@ -34,6 +34,7 @@ jobs:
       - name: Build native CLI and test server
         run: cargo build --locked -p ring-cli -p ring-server
       - name: Headless CLI/server contract
+        timeout-minutes: 6
         run: python crates/ring-cli/tests/smoke.py
       - name: Package installable native artifact
         shell: bash

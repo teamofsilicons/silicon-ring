@@ -61,6 +61,9 @@ class CallServicePlugin(private val activity: Activity) : Plugin(activity) {
             runtime.configure(payload)
             val configured = FirebaseApp.initializeApp(activity) != null
             if (configured) FirebaseMessaging.getInstance().token.addOnSuccessListener { runtime.registerPush(it) }
+            if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(activity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                activity.runOnUiThread { ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7103) }
+            }
             invoke.resolve(JSObject().put("mobile", true).put("native_audio", true).put("platform", "android").put("push_configured", configured))
         } catch (error: Exception) { invoke.reject(error.message ?: "Native calling setup failed") }
     }
