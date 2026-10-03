@@ -25,6 +25,7 @@ pub struct Iam {
     client: Client,
     app_id: String,
     testing: bool,
+    environment_id: Option<String>,
 }
 fn unavailable(error: silicon_iam_client::Error) -> Error {
     match error {
@@ -49,32 +50,76 @@ fn mutation(key: &str) -> Result<Mutation> {
 }
 impl Iam {
     pub fn from_env(test: bool) -> Result<Self> {
-        crate::init_tls();
-        let url = std::env::var("RING_IAM_URL")
-            .unwrap_or_else(|_| "https://backend.iam.teamofsilicons.com".into());
         let app_id = std::env::var("RING_IAM_APP_ID").unwrap_or_else(|_| "ring".into());
         let secret = required_env(if test {
             "RING_IAM_TEST_APP_SECRET"
         } else {
             "RING_IAM_APP_SECRET"
         })?;
+        let key = if test {
+            Some(required_env("RING_IAM_TEST_ENVIRONMENT_KEY")?)
+        } else {
+            None
+        };
+        Self::configured(&app_id, &secret, key.as_deref(), None)
+    }
+    /// Explicit managed-realm credentials never read or change process-wide test secrets.
+    pub fn for_testing(environment_id: &str, key: &str, app_secret: &str) -> Result<Self> {
+        if uuid::Uuid::parse_str(environment_id)
+            .ok()
+            .is_none_or(|id| id.is_nil() || id.to_string() != environment_id)
+            || app_secret.is_empty()
+        {
+            return Err(forbidden());
+        }
+        Self::configured("ring", app_secret, Some(key), Some(environment_id.into()))
+    }
+    fn configured(
+        app_id: &str,
+        secret: &str,
+        key: Option<&str>,
+        environment_id: Option<String>,
+    ) -> Result<Self> {
+        crate::init_tls();
+        let url = std::env::var("RING_IAM_URL")
+            .unwrap_or_else(|_| "https://backend.iam.teamofsilicons.com".into());
         let mut client = Client::builder(&url)
             .map_err(unavailable)?
             .telemetry(false)
             .build()
             .map_err(unavailable)?
-            .with_credential(Credential::application(&app_id, &secret));
-        if test {
-            client = client.with_environment(
-                EnvironmentKey::new(required_env("RING_IAM_TEST_ENVIRONMENT_KEY")?)
-                    .map_err(unavailable)?,
-            );
+            .with_credential(Credential::application(app_id, secret));
+        if let Some(key) = key {
+            client = client.with_environment(EnvironmentKey::new(key).map_err(unavailable)?);
         }
         Ok(Self {
             client,
-            app_id,
-            testing: test,
+            app_id: app_id.into(),
+            testing: key.is_some(),
+            environment_id,
         })
+    }
+    /// Live IAM validation binds a supplied test secret to its application and exact realm.
+    pub async fn testing_environment(&self) -> Result<String> {
+        if !self.testing {
+            return Err(forbidden());
+        }
+        let context = self
+            .client
+            .applications()
+            .testing_context()
+            .await
+            .map_err(unavailable)?;
+        let environment = context.environment_id.to_string();
+        if context.application.app_id != self.app_id
+            || self
+                .environment_id
+                .as_ref()
+                .is_some_and(|expected| expected != &environment)
+        {
+            return Err(forbidden());
+        }
+        Ok(environment)
     }
     /// request_id must be durably retained for an exact login retry, including after a lost response.
     pub async fn login(&self, slt: &str, org: &str, request_id: &str) -> Result<IamSession> {
@@ -116,16 +161,7 @@ impl Iam {
     /// Always introspects online; no trust in unverified token payloads or caller identity fields.
     pub async fn verify(&self, access_token: &str, org: &str) -> Result<Identity> {
         let realm = if self.testing {
-            let context = self
-                .client
-                .applications()
-                .testing_context()
-                .await
-                .map_err(unavailable)?;
-            if context.application.app_id != self.app_id {
-                return Err(forbidden());
-            }
-            Some(context.environment_id.to_string())
+            Some(self.testing_environment().await?)
         } else {
             None
         };
@@ -292,6 +328,35 @@ impl Ting {
     }
     /// Test requests need Ting's own isolated app credential and the selected IAM environment.
     pub fn for_realm(testing: bool) -> Result<Self> {
+        Self::configured(if testing {
+            Some((
+                required_env("RING_TING_TEST_APP_SECRET")?,
+                required_env("RING_IAM_TEST_ENVIRONMENT_KEY")?,
+            ))
+        } else {
+            None
+        })
+    }
+    /// IAM returns the downstream audience's test credential with each OBO endpoint pair.
+    pub fn for_grant(context: &Value, expected_key: Option<&str>) -> Result<Self> {
+        let testing = match expected_key {
+            Some(key) => {
+                EnvironmentKey::new(key).map_err(unavailable)?;
+                if context["app_id"] != "ting" || context["iam_test_key"] != key {
+                    return Err(forbidden());
+                }
+                let secret = context["app_secret"]
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(forbidden)?;
+                Some((secret.into(), key.into()))
+            }
+            None if context.is_null() => None,
+            None => return Err(forbidden()),
+        };
+        Self::configured(testing)
+    }
+    fn configured(testing: Option<(String, String)>) -> Result<Self> {
         let origin = std::env::var("RING_TING_URL")
             .unwrap_or_else(|_| "https://ting.teamofsilicons.com".into());
         let url = reqwest::Url::parse(&origin).map_err(|_| {
@@ -314,14 +379,7 @@ impl Ting {
         Ok(Self {
             http: http()?,
             origin: origin.trim_end_matches('/').into(),
-            testing: if testing {
-                Some((
-                    required_env("RING_TING_TEST_APP_SECRET")?,
-                    required_env("RING_IAM_TEST_ENVIRONMENT_KEY")?,
-                ))
-            } else {
-                None
-            },
+            testing,
         })
     }
     fn request(&self, path: &str, token: &str) -> reqwest::RequestBuilder {
@@ -435,8 +493,11 @@ mod tests {
     }
 }
 
-/// Verify before parsing or persisting; the server must durably deduplicate event_id before HTTP204.
-pub fn verify_webhook(headers: &http::HeaderMap, body: &[u8]) -> Result<Value> {
+pub use silicon_iam_client::webhook::VerifiedWebhook as VerifiedIamWebhook;
+
+/// Authenticate the entire delivery before selecting a realm from its signed metadata.
+/// A testing event still requires verify_webhook_environment before any effects.
+pub fn verify_webhook(headers: &http::HeaderMap, body: &[u8]) -> Result<VerifiedIamWebhook> {
     use silicon_iam_client::webhook::{WebhookSecret, WebhookSecretKeyring, WebhookVerifier};
     let secret =
         WebhookSecret::new(required_env("RING_IAM_WEBHOOK_SECRET")?).map_err(|_| forbidden())?;
@@ -446,13 +507,10 @@ pub fn verify_webhook(headers: &http::HeaderMap, body: &[u8]) -> Result<Value> {
         .map_err(|_| forbidden())?;
     let verifier =
         WebhookVerifier::new(WebhookSecretKeyring::new(version, secret).map_err(|_| forbidden())?);
-    let verified = verifier.verify(headers, body).map_err(|_| forbidden())?;
-    if verified.is_testing() {
-        let key = EnvironmentKey::new(required_env("RING_IAM_TEST_ENVIRONMENT_KEY")?)
-            .map_err(unavailable)?;
-        verified
-            .verify_testing_environment(&key)
-            .map_err(|_| forbidden())?;
-    }
-    Ok(json!({"testing":verified.is_testing(),"event":verified.event()}))
+    verifier.verify(headers, body).map_err(|_| forbidden())
+}
+pub fn verify_webhook_environment(verified: &VerifiedIamWebhook, key: &str) -> Result<()> {
+    verified
+        .verify_testing_environment(&EnvironmentKey::new(key).map_err(unavailable)?)
+        .map_err(|_| forbidden())
 }

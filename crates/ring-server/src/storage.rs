@@ -3,10 +3,10 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 pub fn start(app: App) {
-    tokio::spawn(async move {
+    app.clone().spawn_draining(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
         loop {
-            interval.tick().await;
+            tokio::select! { biased; _ = app.activity.cancelled.cancelled() => break, _ = interval.tick() => {} }
             if !app.providers_disabled {
                 sync(&app).await;
                 evict_cache(&app).await;
@@ -14,6 +14,61 @@ pub fn start(app: App) {
             retention(&app).await;
         }
     });
+}
+/// The runtime is stopped before this runs. Never infer a bucket or delete a prefix.
+pub async fn purge_environment(app: &App) -> Result<()> {
+    let records = {
+        let e = app.engine.lock().unwrap();
+        e.state
+            .storage
+            .iter()
+            .map(|(id, record)| (e.state.assets.get(id).cloned(), record.clone()))
+            .collect::<Vec<_>>()
+    };
+    for (asset, record) in records {
+        // A failed upload may still have reached S3; every pinned location needs deletion.
+        let Some(value) = record.get("location") else {
+            if record.get("object_key").is_some() {
+                return Err(invalid(
+                    "Test cleanup requires the original pinned storage location",
+                ));
+            }
+            continue;
+        };
+        let asset = asset.ok_or_else(|| invalid("Stored test asset is missing its owner"))?;
+        let location: StorageLocation = serde_json::from_value(value.clone())
+            .map_err(|_| invalid("Invalid pinned storage location"))?;
+        let owner = asset.owner.split('|').collect::<Vec<_>>();
+        if owner.len() != 3
+            || app
+                .testing
+                .as_ref()
+                .is_none_or(|t| t.environment_id != owner[0])
+        {
+            return Err(forbidden());
+        }
+        let (store, _) = crate::settings::s3(
+            app,
+            owner[0],
+            owner[1],
+            &location.object_key,
+            Some(&location),
+        )
+        .await
+        .map_err(crate::provider_error)?
+        .ok_or_else(|| invalid("Original test asset storage is unavailable"))?;
+        store
+            .delete(&location.object_key)
+            .await
+            .map_err(crate::provider_error)?;
+        if asset.ringid.is_some() {
+            store
+                .delete(&format!("{}.transcript.json", location.object_key))
+                .await
+                .map_err(crate::provider_error)?;
+        }
+    }
+    Ok(())
 }
 async fn sync(app: &App) {
     let assets = {
@@ -39,6 +94,9 @@ async fn sync(app: &App) {
             .collect::<Vec<_>>()
     };
     for a in assets {
+        if app.activity.cancelled.is_cancelled() {
+            break;
+        }
         if a.ringid
             .as_ref()
             .is_some_and(|ring| app.media.lock().unwrap().transcribers.contains_key(ring))
@@ -54,7 +112,18 @@ async fn sync(app: &App) {
         if realm == "test" && !app.test_tokens.is_empty() {
             continue;
         }
-        let object = format!("{realm}/{}/{}/{}", digest(org), a.purpose, a.asset_id);
+        let object = if let Some(testing) = &app.testing {
+            format!(
+                "testing/{}/{}/{}/{}/{}",
+                testing.environment_id,
+                testing.generation,
+                digest(org),
+                a.purpose,
+                a.asset_id
+            )
+        } else {
+            format!("{realm}/{}/{}/{}", digest(org), a.purpose, a.asset_id)
+        };
         let bucket = asset_store(app, realm, org, &a.asset_id, &object).await;
         let Some((store, location)) = (match bucket {
             Ok(v) => v,
@@ -65,6 +134,9 @@ async fn sync(app: &App) {
         }) else {
             continue;
         };
+        if app.activity.cancelled.is_cancelled() {
+            break;
+        }
         let pinned = pin_location(&mut app.engine.lock().unwrap(), &a.asset_id, &location);
         if let Err(error) = pinned {
             failed(app, &a, &error.message);
@@ -317,6 +389,9 @@ async fn retention(app: &App) {
         ids
     };
     for (realm, org, id, aid, vm) in expired {
+        if app.activity.cancelled.is_cancelled() {
+            break;
+        }
         if let Some(aid) = &aid {
             let stored = app.engine.lock().unwrap().state.storage.get(aid).cloned();
             if let Some(stored) = stored {
@@ -490,6 +565,9 @@ mod tests {
 
     fn app(dir: &std::path::Path) -> App {
         App {
+            testing: None,
+            environments: None,
+            activity: Arc::default(),
             engine: Arc::new(Mutex::new(Engine::open(dir).unwrap())),
             media: Arc::new(Mutex::new(Media::default())),
             test_tokens: Arc::new(BTreeMap::new()),

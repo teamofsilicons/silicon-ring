@@ -16,6 +16,7 @@ pub struct Store {
     pub key: String,
     pub org: Option<String>,
     pub test: bool,
+    pub realm: String,
     pub socket_dir: PathBuf,
 }
 pub fn io_error(e: impl std::fmt::Display, step: &str) -> RingError {
@@ -35,7 +36,15 @@ pub fn invalid(message: impl Into<String>, step: &str) -> RingError {
     )
 }
 impl Store {
-    pub fn new(org: Option<String>, test: bool) -> Result<Self> {
+    pub fn new(
+        org: Option<String>,
+        test: bool,
+        testing_environment: Option<uuid::Uuid>,
+    ) -> Result<Self> {
+        let test = test || testing_environment.is_some();
+        let realm = testing_environment
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| if test { "test" } else { "production" }.into());
         let home = std::env::var_os("SILICON_HOME").ok_or_else(|| {
             RingError::new(
                 "SILICON_HOME_REQUIRED",
@@ -61,7 +70,7 @@ impl Store {
         platform::private_dir(&dir)?;
         let hash = hex::encode(Sha256::digest(format!(
             "{}:{}",
-            if test { "test" } else { "production" },
+            realm,
             org.as_deref().unwrap_or("default")
         )));
         #[cfg(unix)]
@@ -89,6 +98,7 @@ impl Store {
             key: hash[..16].into(),
             org,
             test,
+            realm,
             socket_dir,
         })
     }
@@ -148,7 +158,7 @@ impl Store {
                 .or_else(|| config["server_url"].as_str().map(str::to_owned))
                 .unwrap_or_else(|| DEFAULT_SERVER_URL.into()),
             org_id: self.org.clone(),
-            realm: if self.test { "test" } else { "production" }.into(),
+            realm: self.realm.clone(),
             test_app_secret: secret,
             client_name: "ring-daemon".into(),
         })

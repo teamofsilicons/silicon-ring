@@ -8,6 +8,12 @@ import WebKit
 
 private typealias Reply = (Result<[String: Any], Error>) -> Void
 private func failure(_ message: String) -> Error { NSError(domain: "SiliconRing", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+private func environmentRealm(_ value: String) throws -> String {
+    let realm = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard ["production", "test"].contains(realm) || UUID(uuidString: realm)?.uuidString.lowercased() == realm && realm != "00000000-0000-0000-0000-000000000000" else { throw failure("Choose production, legacy test, or a valid Honeycomb environment UUID.") }
+    return realm
+}
+private func acknowledgesRealm(_ realm: String, _ result: [String: Any]) -> Bool { result["realm"] as? String == realm || result["realm"] == nil && ["production", "test"].contains(realm) }
 private func audioLog(_ message: String) {
     #if DEBUG
     NSLog("RingAudio %@", message)
@@ -42,10 +48,15 @@ private final class RingTransport: NSObject {
     var device: String { credentials["device_id"] as? String ?? "" }
 
     func configure(_ values: [String: Any]) throws {
+        var values = values
         guard let raw = values["url"] as? String, let url = URL(string: raw), ["wss", "ws"].contains(url.scheme ?? ""), url.user == nil, url.password == nil,
               values["session_token"] is String, values["device_id"] is String, values["actor"] is String else { throw failure("Native calling needs a valid Ring endpoint and authenticated device session.") }
         guard url.scheme == "wss" || ["localhost", "127.0.0.1", "::1", "[::1]"].contains(url.host ?? "") else { throw failure("Use wss:// for remote Ring servers.") }
-        if credentials["session_token"] as? String != values["session_token"] as? String { disconnect(clear: false) }
+        guard values["realm"] == nil || values["realm"] is String else { throw failure("Choose production, legacy test, or a valid Honeycomb environment UUID.") }
+        let realm = try environmentRealm(values["realm"] as? String ?? "production")
+        guard realm == "production" || !(values["test_app_secret"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw failure("A test app secret is required for test environments.") }
+        values["realm"] = realm
+        if ["session_token", "device_id", "url", "realm", "org_id", "test_app_secret"].contains(where: { credentials[$0] as? String != values[$0] as? String }) { disconnect(clear: false) }
         credentials = values; enabled = true
         saveSession(try JSONSerialization.data(withJSONObject: values))
         connect { _ in }
@@ -57,16 +68,19 @@ private final class RingTransport: NSObject {
         guard enabled, let raw = credentials["url"] as? String, let url = URL(string: raw) else { finishConnect(failure("Sign in to Ring first.")); return }
         connecting = true
         let task = URLSession.shared.webSocketTask(with: url); socket = task; task.resume(); receive(task)
-        var hello: [String: Any] = ["versions": [1], "client": ["name": "ring-ios", "version": "0.1.2"], "realm": credentials["realm"] ?? "production", "org_id": credentials["org_id"] ?? ""]
-        if let secret = credentials["test_app_secret"] as? String, !secret.isEmpty { hello["test_app_secret"] = secret }
+        let realm = credentials["realm"] as? String ?? "production"
+        var hello: [String: Any] = ["versions": [1], "client": ["name": "ring-ios", "version": "0.1.3"], "realm": realm, "org_id": credentials["org_id"] ?? ""]
+        if realm != "production" { hello["test_app_secret"] = credentials["test_app_secret"] }
         rawRequest("protocol.hello", hello) { result in
             switch result {
             case .failure(let error): self.finishConnect(error)
-            case .success:
+            case .success(let hello):
+                guard acknowledgesRealm(realm, hello) else { self.finishConnect(failure("The server did not confirm the selected environment.")); return }
                 self.rawRequest("auth.resume", ["session_token": self.credentials["session_token"] ?? "", "device_id": self.device]) { result in
                     switch result {
                     case .failure(let error): self.finishConnect(error)
-                    case .success:
+                    case .success(let session):
+                        guard acknowledgesRealm(realm, session) else { self.finishConnect(failure("The session does not belong to the selected environment.")); return }
                         self.ready = true
                         self.rawRequest("events.subscribe", [:]) { _ in }
                         self.finishConnect(nil)

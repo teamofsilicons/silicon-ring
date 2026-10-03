@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 pub fn start(app: App) {
     let mixing = app.clone();
-    tokio::spawn(async move {
+    app.clone().spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(20));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
         loop {
@@ -23,17 +23,17 @@ pub fn start(app: App) {
         }
     });
     let publishing = app.clone();
-    tokio::spawn(async move {
+    app.clone().spawn_draining(async move {
         let mut timer = tokio::time::interval(Duration::from_millis(250));
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            timer.tick().await;
+            tokio::select! { biased; _ = publishing.activity.cancelled.cancelled() => break, _ = timer.tick() => {} }
             if !publishing.providers_disabled {
                 publish_pending(&publishing).await;
             }
         }
     });
-    tokio::spawn(async move {
+    app.clone().spawn(async move {
         let mut timer = tokio::time::interval(Duration::from_secs(1));
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut count = 0u64;
@@ -78,7 +78,7 @@ pub fn start(app: App) {
                         let app = app.clone();
                         let c = c.clone();
                         let p = p.clone();
-                        tokio::spawn(async move {
+                        app.clone().spawn(async move {
                             let result = representative(&app, &c, &p).await;
                             if let Err(error) = result {
                                 representative_failure(&app, &c, &p.actor, &error);
@@ -88,7 +88,7 @@ pub fn start(app: App) {
                 }
                 if !app.providers_disabled && transcription_started.insert(c.ringid.clone()) {
                     let a = app.clone();
-                    tokio::spawn(async move {
+                    app.clone().spawn(async move {
                         if let Err(error) = transcriber(&a, &c).await {
                             let mut e = a.engine.lock().unwrap();
                             if let Some(current) = e.state.calls.get(&c.ringid).cloned() {
@@ -106,7 +106,7 @@ pub fn start(app: App) {
                         && voice_jobs.insert(v.voicemail_id.clone())
                     {
                         let a = app.clone();
-                        tokio::spawn(async move {
+                        app.clone().spawn(async move {
                             synthesize_voicemail(a, v).await;
                         });
                     } else if v.state == "delivered"
@@ -116,7 +116,7 @@ pub fn start(app: App) {
                         && stt_jobs.insert(v.voicemail_id.clone())
                     {
                         let a = app.clone();
-                        tokio::spawn(async move {
+                        app.clone().spawn(async move {
                             transcribe_voicemail(a, v).await;
                         });
                     }
@@ -597,6 +597,9 @@ async fn publish_pending(app: &App) {
         rows
     };
     for entry in entries {
+        if app.activity.cancelled.is_cancelled() {
+            break;
+        }
         let result = if entry.realm == "test" && !app.test_tokens.is_empty() {
             Err(Fault::new(
                 "TEST_DELIVERY_ISOLATED",
@@ -604,23 +607,18 @@ async fn publish_pending(app: &App) {
                 "Inspect the isolated test outbox.",
             ))
         } else {
-            match crate::auth::ting_token(app, &entry).await {
-                Ok(token) => match ring_providers::Ting::for_realm(entry.realm == "test") {
-                    Ok(ting) => match prepare_publication(&entry) {
-                        Ok(bytes) => ting
-                            .publish(&token, &bytes)
-                            .await
-                            .map(|_| ())
-                            .map_err(crate::provider_error),
-                        Err(e) => Err(crate::provider_error(e)),
-                    },
-                    Err(e) => Err(crate::provider_error(e)),
-                },
-                Err(e) => Err(e),
+            match prepare_publication(&entry) {
+                Ok(bytes) => crate::auth::send_publication(app, &entry, &bytes).await,
+                Err(e) => Err(crate::provider_error(e)),
             }
         };
         let mut e = app.engine.lock().unwrap();
-        if let Some(n) = e.state.publications.get_mut(&entry.notification_id) {
+        if let Some(n) = e
+            .state
+            .publications
+            .get_mut(&entry.notification_id)
+            .filter(|n| n.status == "sending")
+        {
             match result {
                 Ok::<(), Fault>(()) => {
                     n.status = "delivered".into();
@@ -802,6 +800,9 @@ mod tests {
             Some(a.identity.actor.clone()),
         );
         let app = App {
+            testing: None,
+            environments: None,
+            activity: std::sync::Arc::default(),
             engine: std::sync::Arc::new(std::sync::Mutex::new(engine)),
             media: std::sync::Arc::new(std::sync::Mutex::new(crate::media::Media::default())),
             test_tokens: std::sync::Arc::new(Default::default()),

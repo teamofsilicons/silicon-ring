@@ -2,9 +2,11 @@ mod auth;
 mod engine;
 mod greetings;
 mod iam_webhook;
+mod lifecycle;
 mod media;
 mod model;
 mod push;
+mod runtime;
 mod settings;
 mod storage;
 mod vault;
@@ -46,6 +48,9 @@ const CAPABILITIES: &[&str] = &[
 
 #[derive(Clone)]
 pub struct App {
+    pub testing: Option<Arc<lifecycle::TestingContext>>,
+    pub environments: Option<Arc<lifecycle::Manager>>,
+    pub activity: Arc<runtime::Activity>,
     pub engine: Arc<Mutex<Engine>>,
     pub media: Arc<Mutex<media::Media>>,
     pub test_tokens: Arc<BTreeMap<String, Identity>>,
@@ -147,6 +152,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     )
     .ok();
     let app = App {
+        testing: None,
+        environments: Some(Arc::new(lifecycle::Manager::open(&dir)?)),
+        activity: Arc::default(),
         engine: Arc::new(Mutex::new(engine)),
         media: Arc::new(Mutex::new(media::Media::default())),
         test_tokens: Arc::new(test_tokens),
@@ -180,12 +188,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .ok(),
         ),
     };
-    workers::start(app.clone());
-    storage::start(app.clone());
-    auth::start_revalidation(app.clone());
-    push::start(app.clone());
+    app.start();
     let web = std::env::var("RING_WEB_DIR").unwrap_or_else(|_| "web/dist".into());
-    let router=Router::new().route("/health",get(||async{Json(json!({"status":"ok","app":"ring","version":env!("CARGO_PKG_VERSION"),"protocol_major":1}))})).route("/ws",get(ws)).route("/webhook/",axum::routing::post(iam_webhook::handle)).layer(axum::extract::DefaultBodyLimit::max(1024*1024)).fallback_service(tower_http::services::ServeDir::new(web.clone()).not_found_service(tower_http::services::ServeFile::new(format!("{web}/index.html")))).with_state(app);
+    let router=Router::new().route("/health",get(||async{Json(json!({"status":"ok","app":"ring","version":env!("CARGO_PKG_VERSION"),"protocol_major":1}))})).route("/ws",get(ws)).route("/internal/honeycomb/organizations/{org}/testing-environments/{environment}/operations/{operation}",axum::routing::put(lifecycle::handle)).route("/webhook/",axum::routing::post(iam_webhook::handle)).layer(axum::extract::DefaultBodyLimit::max(1024*1024)).fallback_service(tower_http::services::ServeDir::new(web.clone()).not_found_service(tower_http::services::ServeFile::new(format!("{web}/index.html")))).with_state(app);
     let bind = std::env::var("RING_BIND").unwrap_or_else(|_| "127.0.0.1:8765".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(%bind,"Ring server listening");
@@ -211,7 +216,9 @@ async fn ws(
         .max_message_size(128 * 1024)
         .on_upgrade(move |socket| connection(app, socket))
 }
-async fn connection(app: App, socket: WebSocket) {
+async fn connection(mut app: App, socket: WebSocket) {
+    let root = app.clone();
+    let mut scope_guard = app.activity.enter();
     let (mut sink, mut source) = socket.split();
     let (tx, mut rx) = mpsc::channel::<Value>(256);
     let mut peer = Peer {
@@ -221,8 +228,9 @@ async fn connection(app: App, socket: WebSocket) {
         token: None,
         subscriptions: BTreeMap::new(),
     };
-    let mut pending = VecDeque::new();
+    let mut pending: VecDeque<Value> = VecDeque::new();
     let mut control: Option<tokio::task::JoinHandle<(Peer, Value)>> = None;
+    let mut control_drains = false;
     let mut poll = tokio::time::interval(Duration::from_millis(100));
     let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
     let mut last_seen = Instant::now();
@@ -231,9 +239,43 @@ async fn connection(app: App, socket: WebSocket) {
     'connection: loop {
         if control.is_none() {
             if let Some(value) = pending.pop_front() {
+                if !peer.hello && value["method"] == "protocol.hello" {
+                    let realm = value["params"]["realm"].as_str().unwrap_or("production");
+                    let selected = if matches!(realm, "production" | "test") {
+                        Ok(root.clone())
+                    } else if let Some(manager) = &root.environments {
+                        manager.get(realm).await
+                    } else {
+                        Err(lifecycle::unavailable())
+                    };
+                    match selected.and_then(|selected| {
+                        let guard = selected
+                            .activity
+                            .enter()
+                            .ok_or_else(lifecycle::unavailable)?;
+                        Ok((selected, guard))
+                    }) {
+                        Ok((selected, guard)) => {
+                            app = selected;
+                            scope_guard = Some(guard);
+                        }
+                        Err(error) => {
+                            let response = json!({"id":value["id"],"ok":false,"error":error});
+                            if sink
+                                .send(Message::Text(response.to_string().into()))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+                    }
+                }
                 let app = app.clone();
                 let mut snapshot = peer.clone();
                 let out = tx.clone();
+                control_drains = value["method"] == "notifications.authorize";
                 control = Some(tokio::spawn(async move {
                     let response = request(&app, &mut snapshot, value, out).await;
                     (snapshot, response)
@@ -241,6 +283,8 @@ async fn connection(app: App, socket: WebSocket) {
             }
         }
         tokio::select! {
+            biased;
+            _ = app.activity.cancelled.cancelled() => break,
             incoming = source.next() => {
                 let Some(Ok(message)) = incoming else { break };
                 last_seen = Instant::now();
@@ -279,6 +323,7 @@ async fn connection(app: App, socket: WebSocket) {
             }
             completed = async { control.as_mut().unwrap().await }, if control.is_some() => {
                 control = None;
+                control_drains = false;
                 let Ok((mut updated, response)) = completed else { break };
                 // Event polling advances live cursors while IAM/provider calls await their response.
                 // Keep those advances, while honoring subscriptions added or removed by the request.
@@ -334,10 +379,15 @@ async fn connection(app: App, socket: WebSocket) {
         }
     }
     if let Some(control) = control {
-        control.abort();
+        // A consent exchange or Ting registration may already have reached its provider.
+        // Keep the environment's activity guard until the bounded external write settles.
+        if !control_drains {
+            control.abort();
+        }
         let _ = control.await;
     }
     app.media.lock().unwrap().disconnect(&tx);
+    drop(scope_guard);
 }
 
 async fn request(app: &App, peer: &mut Peer, v: Value, out: mpsc::Sender<Value>) -> Value {
@@ -381,8 +431,16 @@ async fn handle(
             ));
         }
         let realm = p["realm"].as_str().unwrap_or("production");
-        if !matches!(realm, "production" | "test") {
-            return Err(invalid("realm must be production or test"));
+        if let Some(testing) = &app.testing {
+            if realm != testing.environment_id || p["org_id"].as_str().is_none_or(str::is_empty) {
+                return Err(forbidden());
+            }
+            app.validate_test_secret(p["test_app_secret"].as_str().unwrap_or(""))
+                .await?;
+        } else if !matches!(realm, "production" | "test") {
+            return Err(invalid(
+                "realm must be production, test, or an active test environment UUID",
+            ));
         }
         if realm == "test" {
             let secret = p["test_app_secret"].as_str().unwrap_or("");
@@ -451,8 +509,7 @@ async fn handle(
                     "org_id is required in protocol.hello for IAM login",
                 ));
             }
-            let iam =
-                ring_providers::Iam::from_env(peer.realm == "test").map_err(provider_error)?;
+            let iam = app.iam(&peer.realm)?;
             let session = iam
                 .login(token, &peer.org, rid)
                 .await
@@ -504,6 +561,13 @@ async fn handle(
     auth::verify(app, &session.identity).await?;
     let session = app.engine.lock().unwrap().session(token)?;
     let i = &session.identity;
+    if m == "release.info" && app.testing.is_some() {
+        return Ok(
+            json!({"protocol_major":1,"realm":i.realm,"update_available":false,
+            "url":null,"signature":null,"managed_by":"honeycomb",
+            "reason":"Select and install this test environment's release through Honeycomb."}),
+        );
+    }
     let verified_recipient = if matches!(m, "calls.init" | "calls.invite") {
         let target = actor_id(required(&p, "target")?, &i.org_id)?;
         Some(auth::verify_recipient(app, i, &target).await?)
@@ -667,7 +731,7 @@ async fn handle(
             media::authorized_download(&e, i, a)?
         };
         result["size_bytes"] = json!(download.size_bytes);
-        tokio::spawn(download.stream(
+        app.spawn(download.stream(
             out,
             result["transfer_id"].clone(),
             result["asset_id"].clone(),

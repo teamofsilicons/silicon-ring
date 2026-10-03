@@ -107,7 +107,9 @@ async fn ensure_executable(store: &Store, executable: Option<&Path>) -> Result<(
     if let Some(org) = &store.org {
         cmd.args(["--org", org]);
     }
-    if store.test {
+    if !matches!(store.realm.as_str(), "production" | "test") {
+        cmd.args(["--testing-environment", &store.realm]);
+    } else if store.test {
         cmd.arg("--test");
     }
     #[cfg(unix)]
@@ -512,7 +514,7 @@ async fn dispatch(
         "local.status" => {
             let media = rt.media.lock().await;
             return Ok(
-                json!({"running":true,"pid":std::process::id(),"connected":rt.client.lock().await.is_some(),"active_media":media.as_ref().map(|m|json!({"ringid":m.ringid,"stream_id":m.stream_id,"muted":m.muted})),"private_recordings":rt.private_media.lock().await.len()}),
+                json!({"running":true,"pid":std::process::id(),"realm":rt.store.realm,"connected":rt.client.lock().await.is_some(),"active_media":media.as_ref().map(|m|json!({"ringid":m.ringid,"stream_id":m.stream_id,"muted":m.muted})),"private_recordings":rt.private_media.lock().await.len()}),
             );
         }
         "local.stop" => return Ok(json!({"stopping":true})),

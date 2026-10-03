@@ -76,6 +76,9 @@ jobs:
         run: npm ci && npm test && npm run build
       - name: Server contract
         run: cargo build --locked -p ring-server && node scripts/test-server.mjs
+      - name: Honeycomb environment isolation and lifecycle
+        timeout-minutes: 3
+        run: node scripts/test-managed-environments.mjs
       - name: Packaging signature and layout checks
         run: python scripts/test-packaging.py
       - name: Formatting and installer lint

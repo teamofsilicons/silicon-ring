@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeActor, isActor, socketUrl, defaultSocketUrl, RingSocket, coalesceTranscript, readTranscriptSince } from './protocol.ts';
+import { normalizeActor, normalizeRealm, bindSession, checkSessionContext, sessionToRestore, isActor, socketUrl, defaultSocketUrl, RingSocket, coalesceTranscript, readTranscriptSince, type Session } from './protocol.ts';
 test('packaged native clients use production while local web and development clients stay local', () => {
   assert.equal(defaultSocketUrl('localhost', true, false), 'wss://backend.ring.teamofsilicons.com/ws');
   assert.equal(defaultSocketUrl('localhost', true, true), 'ws://127.0.0.1:8765/ws');
@@ -22,6 +22,112 @@ test('call targets normalize to global public IDs without accepting malformed ID
 });
 test('offline mutations fail explicitly instead of disappearing', async () => {
   await assert.rejects(new RingSocket().request('calls.init', { target: 'c:alex' }), /offline/);
+});
+
+test('environment UUIDs are canonical and cached sessions stay bound to their connection', () => {
+  const realm = 'be0137a4-7901-4199-ae21-5a6ccf497a15';
+  const settings = { url: 'wss://example.com/ws', realm, org_id: 'team' };
+  const session = { actor: 'c:a', org_id: 'team', device_id: 'device', session_token: 'token', realm };
+  assert.equal(normalizeRealm(` ${realm.toUpperCase()} `), realm);
+  for (const invalid of ['', 'custom', '00000000-0000-0000-0000-000000000000', '1-1-1-1-1']) assert.throws(() => normalizeRealm(invalid), /UUID/);
+  const bound = bindSession(session, settings);
+  assert.equal(bound.realm, realm); assert.equal(bound.url, settings.url);
+  checkSessionContext(bound, settings);
+  for (const changed of [{ ...settings, realm: 'test' }, { ...settings, url: 'wss://other.example/ws' }, { ...settings, org_id: 'other' }]) assert.throws(() => checkSessionContext(bound, changed), /different connection settings/);
+  assert.throws(() => checkSessionContext(session, settings), /different connection settings/);
+  assert.throws(() => bindSession({ ...session, realm: undefined }, settings), /confirm the selected environment/);
+  assert.throws(() => bindSession({ ...session, realm: 'test' }, settings), /confirm the selected environment/);
+  for (const realm of ['production', 'test']) assert.equal(bindSession({ ...session, realm: undefined }, { ...settings, realm }).realm, realm);
+});
+
+test('WebSocket authentication waits for the selected environment and rejects cross-environment resumes', async () => {
+  const realm = 'be0137a4-7901-4199-ae21-5a6ccf497a15';
+  const settings = { url: 'wss://example.com/ws', realm, org_id: 'team', test_app_secret: 'test-secret' };
+  const session: Session = { actor: 'c:a', org_id: 'team', device_id: 'device', session_token: 'token', realm, url: settings.url };
+  const original = globalThis.WebSocket;
+  let hello: any = {}, resumed: any = session, requests: any[] = [], opened = 0;
+  class FakeWebSocket {
+    static OPEN = 1;
+    readyState = 1;
+    onopen?: () => void;
+    onclose?: () => void;
+    onmessage?: (message: { data: string }) => void;
+    constructor() { opened++; queueMicrotask(() => this.onopen?.()); }
+    send(value: string) {
+      const request = JSON.parse(value); requests.push(request);
+      queueMicrotask(() => this.onmessage?.({ data: JSON.stringify({ id: request.id, ok: true, result: request.method === 'protocol.hello' ? hello : request.method === 'auth.resume' ? resumed : {} }) }));
+    }
+    close() { this.readyState = 3; this.onclose?.(); }
+  }
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  try {
+    for (hello of [{}, { realm: 'test' }, { realm: 'production' }, { realm: '77777777-7777-4777-a777-777777777777' }, { realm: null }]) {
+      for (const cached of [undefined, session]) {
+        requests = [];
+        const api = new RingSocket(); api.session = cached;
+        await assert.rejects(api.connect(settings).then(() => api.request('auth.login', { token: 'iam-token' })), /confirm the selected environment/);
+        assert.deepEqual(requests.map(item => item.method), ['protocol.hello']);
+        assert.equal(api.ready, false); api.disconnect();
+      }
+    }
+    hello = { realm }; requests = [];
+    const api = new RingSocket(); api.session = session;
+    const connected = api.connect({ ...settings, realm: realm.toUpperCase() });
+    await assert.rejects(api.connect({ ...settings, realm: 'test' }), /current connection uses different settings/);
+    await assert.rejects(api.request('auth.login', { token: 'too-early' }), /offline/);
+    await connected;
+    assert.deepEqual(requests.map(item => item.method), ['protocol.hello', 'auth.resume', 'events.subscribe']);
+    assert.equal(requests[0].params.realm, realm); assert.equal(api.session?.realm, realm);
+    const before = opened;
+    await api.connect(settings);
+    assert.equal(opened, before);
+    for (const changed of [{ ...settings, realm: 'test' }, { ...settings, url: 'wss://other.example/ws' }, { ...settings, org_id: 'other' }, { ...settings, test_app_secret: 'other-secret' }]) await assert.rejects(api.connect(changed), /current connection uses different settings/);
+    assert.equal(api.ready, true); assert.equal(api.session?.realm, realm); assert.equal(opened, before);
+    api.disconnect();
+    for (resumed of [{ ...session, realm: 'test' }, { ...session, realm: undefined }]) {
+      requests = [];
+      const api = new RingSocket(); api.session = session;
+      await assert.rejects(api.connect(settings), /confirm the selected environment/);
+      assert.deepEqual(requests.map(item => item.method), ['protocol.hello', 'auth.resume']);
+      assert.equal(api.session, undefined); api.disconnect();
+    }
+    for (const changed of [{ ...settings, realm: 'test' }, { ...settings, url: 'wss://other.example/ws' }, { ...settings, org_id: 'other' }]) {
+      const api = new RingSocket(); api.session = session; const before = opened;
+      await assert.rejects(api.connect(changed), /different connection settings/);
+      assert.equal(opened, before);
+    }
+    for (const realm of ['test', settings.realm]) {
+      const before = opened;
+      await assert.rejects(new RingSocket().connect({ ...settings, realm, test_app_secret: ' ' }), /secret is required/);
+      assert.equal(opened, before);
+    }
+    for (const realm of ['production', 'test']) {
+      hello = {}; requests = []; resumed = { ...session, realm: undefined };
+      const api = new RingSocket(); api.session = { ...session, realm };
+      await api.connect({ ...settings, realm });
+      assert.equal(api.session?.realm, realm);
+      assert.equal(requests[0].params.test_app_secret, realm === 'production' ? undefined : 'test-secret');
+      api.disconnect();
+      hello = { realm: settings.realm };
+      await assert.rejects(new RingSocket().connect({ ...settings, realm }), /confirm the selected environment/);
+    }
+  } finally { globalThis.WebSocket = original; }
+});
+
+test('native session bindings migrate only the matching browser cache and respect explicit settings', () => {
+  const saved: Session = { actor: 'c:a', org_id: 'team', device_id: 'device', session_token: 'token' };
+  const native = { ...saved, realm: 'test', url: 'wss://example.com/ws' };
+  assert.equal(sessionToRestore(null, native), native);
+  assert.equal(sessionToRestore(saved, native), native);
+  assert.equal(sessionToRestore({ ...saved, realm: 'test' }, native), native);
+  assert.equal(sessionToRestore(saved, null), saved);
+  assert.equal(sessionToRestore(native, { ...native }), native);
+  for (const different of [{ ...native, session_token: 'other' }, { ...native, device_id: 'other' }, { ...native, url: undefined }, { ...native, realm: undefined }]) assert.equal(sessionToRestore(saved, different), saved);
+  const anotherRealm = { ...saved, realm: 'production' };
+  assert.equal(sessionToRestore(anotherRealm, native), anotherRealm);
+  const restored = sessionToRestore(saved, native)!;
+  checkSessionContext(restored, { url: native.url, realm: native.realm, org_id: 'team' });
+  for (const changed of [{ url: native.url, realm: 'production' }, { url: 'wss://other.example/ws', realm: native.realm }, { url: native.url, realm: native.realm, org_id: 'other' }]) assert.throws(() => checkSessionContext(restored, changed), /different connection settings/);
 });
 
 test('live transcript revisions replace interim text without repeating a segment', () => {

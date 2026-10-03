@@ -62,7 +62,37 @@ Ting's separate catalog consent was completed for `honeycomb.apps.list`, bound t
 
 A real-provider test was attempted in a dedicated Honeycomb shared environment, `05e6ad71-de4b-4c92-885b-11e7bf3517d7`. IAM, Honeycomb, Ting and Briefcase confirmed their imports, but Ring failed because Honeycomb has no protected lifecycle transport configured for it. Import operation `9425a1ad-2466-4268-9706-12701a4f59e5` remains pending at revision 2; coordinated clean returned HTTP 409 because the platform requires the pending operation to finish first. No test actors, calls or notifications were created.
 
-Recovery requires Ring's lifecycle receiver and a matching Honeycomb participant transport registration, followed by import retry and coordinated clean/delete. This is more than an endpoint registration: Ring currently supports one configured test realm, while Honeycomb requires independently addressable environment UUIDs, per-environment credentials, durable operation receipts, generation fencing, and complete environment-specific cleanup. A receiver that merely acknowledges lifecycle requests would leave the environment unusable and would not make cleanup safe. Honeycomb must also provision a dedicated lifecycle service token and HTTPS origin; catalog approval does not configure that transport. Test Ting calls require `RING_TING_TEST_APP_SECRET` and `RING_IAM_TEST_ENVIRONMENT_KEY`; production credentials are never a fallback.
+Recovery requires a deployed lifecycle receiver and matching Honeycomb participant transport registration, followed by retry of the original import and coordinated clean/delete. The published 0.1.2 runtime has only the configured legacy test realm. The source implementation below adds named environments; its deployment and live provider verification must be recorded separately. Legacy test Ting calls use `RING_TING_TEST_APP_SECRET` and `RING_IAM_TEST_ENVIRONMENT_KEY`. Named environments obtain Ting's own secret and root key from each verified IAM endpoint grant; production credentials are never a fallback.
+
+## Shared Honeycomb test environments
+
+Provision a dedicated service bearer of at least 32 visible ASCII characters in Ring's secret store as `RING_HONEYCOMB_CONTROL_TOKEN`. The Honeycomb operator must provision that same value under its chosen `token_env` and add this participant to `HONEYCOMB_LIFECYCLE_PARTICIPANTS`:
+
+```json
+{"app_id":"ring","base_url":"https://backend.ring.teamofsilicons.com","token_env":"RING_HONEYCOMB_CONTROL_TOKEN"}
+```
+
+The Honeycomb management adapter also requires its existing `IAM_HONEYCOMB_SERVICE_CREDENTIAL` configuration. Reload each service through its normal deployment process. The root testing key, Ring application secret and user token cannot authorize this transport. Catalog publication and IAM webhook approval are independent of participant registration.
+
+Honeycomb sends authenticated `PUT /internal/honeycomb/organizations/{org}/testing-environments/{uuid}/operations/{operation_uuid}` requests. Ring checks exact path/body identities, application ID, positive revision/generation/key fences and pinned import provenance. Revisions may skip numbers because unrelated app imports need not notify Ring. SQLite retains encrypted environment metadata and durable request fingerprints/receipts outside the environment's generation directory. Identical completed retries replay the saved receipt; changed payloads under the same operation ID conflict.
+
+Prepare/import durably establish the isolated runtime without waiting for IAM's later finalization. The first client hello validates its supplied Ring test secret through IAM, caches it encrypted, and starts workers only after the environment is active. Production, legacy test and each named UUID use separate state. Named scopes disable production telemetry and use a distinct S3 namespace while retaining original bucket/key/credential-source records for cleanup.
+
+Clean and purge first close admission, disconnect sockets and drain workers, including external writes already in flight. Cleanup deletes only that environment's pinned S3 audio/transcript objects before removing local state and credentials. Failed remote cleanup preserves retryable metadata and credentials; it never returns a completed receipt. Disable retains recoverable conversation data while removing session/grant authority. Restore and key rotation require fresh authentication; interrupted calls are ended. Ring retirement disables its runtime; Ting-only retirement drains sends and removes Ting grants, pending consent, queued publications and notification retry receipts while preserving Ring calls and sessions. Fresh notification authorization goes through IAM after Ting becomes available again. Purged environments retain a nonsecret tombstone and cannot be resurrected.
+
+After Honeycomb reports the import ready, connect using credentials issued inside that same environment:
+
+```sh
+export SILICON_RING_TEST_APP_SECRET_FILE=/secure/ring-test-app-secret
+ring --testing-environment ENVIRONMENT_UUID --org ACTOR_ORG login --token-stdin
+ring --testing-environment ENVIRONMENT_UUID --org ACTOR_ORG login status --json
+```
+
+The secret file must be protected from other users. In the web/native app choose **Honeycomb test environment**, enter the UUID and Ring test secret, and select the actor's own IAM organization. Each client requires the exact UUID acknowledgment before login/resume. Coordinate cleanup through Honeycomb so every participating service observes the same generation; do not call the internal receiver as a substitute for that workflow.
+
+Select and install a named test environment's release through Honeycomb. Its `release.info` response reports that package management is owned by Honeycomb and offers no automatic Ring update; it never reads the production release index. Production and configured legacy test update behavior is unchanged.
+
+Contract references: [Honeycomb participant transport](https://github.com/teamofsilicons/silicon-honeycomb/blob/89fcca926b640887470d1e4cf9262b27f7eeaaf4/crates/server/src/participant_management.rs), [coordinated lifecycle](https://github.com/teamofsilicons/silicon-honeycomb/blob/89fcca926b640887470d1e4cf9262b27f7eeaaf4/crates/server/src/lifecycle.rs), and the official IAM SDK pinned by this workspace.
 
 ## Voice providers
 

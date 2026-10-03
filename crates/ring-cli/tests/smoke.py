@@ -19,12 +19,14 @@ with tempfile.TemporaryDirectory(prefix="ring-cli-") as temp:
     server_log = (root / "server.log").open("w+")
     server = subprocess.Popen([str(SERVER)], cwd=ROOT, env=env, stdout=server_log, stderr=server_log)
     actors = ["alice", "bob"]
-    def run(actor, *args, code=0, stdin=None):
+    environments = ["b8ed3d58-724f-45bf-8992-dd0db2d620a8", "d9ca1eef-35a2-44ef-bbdd-b4b8b518f901"]
+    daemon_contexts = [(actor, ["--test"]) for actor in actors] + [("alice", ["--testing-environment", environment]) for environment in environments]
+    def run(actor, *args, code=0, stdin=None, test=True):
         print("CLI smoke:", actor, *args[:3], flush=True)
         actor_env = {**env, "SILICON_HOME": str(root / actor)}
         if actor == "alice":
             actor_env.pop("SILICON_RING_SERVER_URL")
-        result = subprocess.run([str(BIN), "--json", "--test", *args], input=stdin, capture_output=True, text=True, env=actor_env, timeout=30)
+        result = subprocess.run([str(BIN), "--json", *(["--test"] if test else []), *args], input=stdin, capture_output=True, text=True, env=actor_env, timeout=30)
         assert result.returncode == code, (args, result.returncode, result.stdout, result.stderr)
         text = result.stdout if code == 0 else result.stderr
         assert "alice-test-token" not in text and "bob-test-token" not in text
@@ -59,6 +61,28 @@ with tempfile.TemporaryDirectory(prefix="ring-cli-") as temp:
             session = next((root / actor / ".ring").glob("*-session.json"))
             if os.name != "nt":
                 assert session.stat().st_mode & 0o777 == 0o600
+        # A named environment implies test and never reuses the legacy session or another daemon.
+        legacy_pid = run("alice", "daemon", "status")["pid"]
+        environment_pids = []
+        for environment in environments:
+            assert run("alice", "--testing-environment", environment, "login", "status", test=False)["authenticated"] is False
+            daemon = run("alice", "--testing-environment", environment, "daemon", "start", test=False)
+            assert daemon["realm"] == environment and daemon["connected"] is False
+            assert run("alice", "--testing-environment", environment.upper(), "daemon", "status", test=False)["pid"] == daemon["pid"]
+            environment_pids.append(daemon["pid"])
+        assert len(set([legacy_pid, *environment_pids])) == 3
+        assert run("alice", "login", "status")["authenticated"] is True
+        run("alice", "--testing-environment", environments[0], "daemon", "stop", test=False)
+        for _ in range(100):
+            if not run("alice", "--testing-environment", environments[0], "daemon", "status", test=False)["running"]:
+                break
+            time.sleep(.05)
+        else:
+            raise AssertionError("Named test daemon did not stop")
+        assert run("alice", "--testing-environment", environments[1], "daemon", "status", test=False)["pid"] == environment_pids[1]
+        restarted = run("alice", "--testing-environment", environments[0], "daemon", "start", test=False)
+        assert restarted["realm"] == environments[0] and restarted["pid"] not in [legacy_pid, *environment_pids]
+        assert run("alice", "--testing-environment", environments[0], "login", "status", test=False)["authenticated"] is False
         photo=root/'avatar.png'
         photo.write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII='))
         uploaded=run('alice','--request-id','photo-upload','profile','set','--photo',str(photo))
@@ -100,8 +124,8 @@ with tempfile.TemporaryDirectory(prefix="ring-cli-") as temp:
         print("CLI/server smoke: authentication, privacy, approval, idempotency, lifecycle, daemon restart and validation passed", flush=True)
     finally:
         print("CLI smoke: cleanup", flush=True)
-        for actor in actors:
-            subprocess.run([str(BIN), "--test", "daemon", "stop"], env={**env, "SILICON_HOME": str(root / actor)}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        for actor, context in daemon_contexts:
+            subprocess.run([str(BIN), *context, "daemon", "stop"], env={**env, "SILICON_HOME": str(root / actor)}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         server.terminate()
         server.wait(timeout=10)
         server_log.close()

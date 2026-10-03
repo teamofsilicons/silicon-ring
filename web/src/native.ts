@@ -1,5 +1,5 @@
 import { CallAudio } from './audio';
-import type { RingSocket, Session } from './protocol';
+import { checkSessionContext, type RingSocket, type Session, type ConnectSettings } from './protocol';
 let mobile = false;
 export const isNativeMobile = () => mobile;
 const native = () => '__TAURI_INTERNALS__' in window;
@@ -7,8 +7,9 @@ async function command(action: string, payload: Record<string, unknown> = {}) {
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<any>('plugin:call-service|control', { payload: { action, ...payload } });
 }
-export async function configureNative(session: Session, settings: { url: string; org_id?: string; realm: string; test_app_secret?: string }) {
+export async function configureNative(session: Session, settings: ConnectSettings) {
   if (!native()) return;
+  checkSessionContext(session, settings);
   const { invoke } = await import('@tauri-apps/api/core');
   const result = await invoke<any>('plugin:call-service|configure', { payload: { ...settings, ...session } });
   mobile = result.mobile === true;

@@ -49,6 +49,7 @@ impl RingError {
             | "TEXT_TOO_LONG"
             | "SILICON_HOME_REQUIRED"
             | "INVALID_ACTOR" => 2,
+            "REALM_MISMATCH" | "TEST_APP_SECRET_REQUIRED" => 3,
             s if s.contains("AUTH")
                 || s.contains("FORBIDDEN")
                 || s.contains("PERMISSION")
@@ -93,7 +94,9 @@ impl std::error::Error for RingError {}
 pub struct ConnectOptions {
     pub server_url: String,
     pub org_id: Option<String>,
+    /// Production, legacy test, or a Honeycomb testing environment UUID.
     pub realm: String,
+    /// The selected test environment's app secret; never sent to production.
     pub test_app_secret: Option<String>,
     pub client_name: String,
 }
@@ -117,6 +120,34 @@ pub struct Client {
 }
 impl Client {
     pub async fn connect(options: &ConnectOptions) -> Result<Self> {
+        let realm = match options.realm.as_str() {
+            "production" | "test" => options.realm.clone(),
+            value => uuid::Uuid::parse_str(value)
+                .ok()
+                .filter(|id| !id.is_nil())
+                .map(|id| id.to_string())
+                .ok_or_else(|| {
+                    RingError::new(
+                        "INVALID_INPUT",
+                        "Realm must be production, test, or a non-nil testing environment UUID",
+                        "protocol.hello",
+                        "Select the intended Ring environment.",
+                    )
+                })?,
+        };
+        if realm != "production"
+            && options
+                .test_app_secret
+                .as_deref()
+                .is_none_or(|secret| secret.trim().is_empty())
+        {
+            return Err(RingError::new(
+                "TEST_APP_SECRET_REQUIRED",
+                "An isolated test app secret is required",
+                "protocol.hello",
+                "Supply the selected environment's app secret. For the CLI, use SILICON_RING_TEST_APP_SECRET_FILE or SILICON_RING_TEST_APP_SECRET.",
+            ));
+        }
         let url = url::Url::parse(&options.server_url).map_err(|_| {
             RingError::new(
                 "INVALID_INPUT",
@@ -198,14 +229,27 @@ impl Client {
             pending,
             events,
         };
-        let mut hello = json!({"versions":[PROTOCOL_MAJOR],"client":{"name":options.client_name,"version":env!("CARGO_PKG_VERSION")},"realm":options.realm,"capabilities":["events","audio.pcm_s16le","context.approval"]});
+        let mut hello = json!({"versions":[PROTOCOL_MAJOR],"client":{"name":options.client_name,"version":env!("CARGO_PKG_VERSION")},"realm":realm,"capabilities":["events","audio.pcm_s16le","context.approval"]});
         if let Some(org) = &options.org_id {
             hello["org_id"] = json!(org);
         }
-        if let Some(secret) = &options.test_app_secret {
-            hello["test_app_secret"] = json!(secret);
+        if realm != "production" {
+            if let Some(secret) = &options.test_app_secret {
+                hello["test_app_secret"] = json!(secret);
+            }
         }
-        client.request("protocol.hello", hello).await?;
+        let acknowledged = client.request("protocol.hello", hello).await?;
+        if acknowledged["realm"].as_str() != Some(realm.as_str())
+            && (!matches!(realm.as_str(), "production" | "test")
+                || !acknowledged["realm"].is_null())
+        {
+            return Err(RingError::new(
+                "REALM_MISMATCH",
+                "The server did not confirm the selected Ring environment",
+                "protocol.hello",
+                "Check the server and testing environment, or update the server before authenticating.",
+            ));
+        }
         Ok(client)
     }
     pub fn events(&self) -> broadcast::Receiver<Value> {
@@ -588,5 +632,94 @@ mod tests {
         assert_eq!(second.unwrap()["method"], "second");
         assert_eq!(events.recv().await.unwrap()["seq"], 7);
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn testing_environment_requires_exact_acknowledgment() {
+        let environment = "b8ed3d58-724f-45bf-8992-dd0db2d620a8";
+        for (requested, acknowledged, accepted) in [
+            (environment.to_uppercase(), json!(environment), true),
+            (environment.into(), Value::Null, false),
+            (environment.into(), json!("test"), false),
+            (environment.into(), json!("production"), false),
+            (
+                environment.into(),
+                json!("d9ca1eef-35a2-44ef-bbdd-b4b8b518f901"),
+                false,
+            ),
+            ("production".into(), Value::Null, true),
+            ("test".into(), Value::Null, true),
+            ("production".into(), json!("test"), false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let expected = requested.to_lowercase();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+                let hello: Value =
+                    serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                        .unwrap();
+                assert_eq!(hello["method"], "protocol.hello");
+                assert_eq!(hello["params"]["realm"], expected);
+                if expected == "production" {
+                    assert!(hello["params"].get("test_app_secret").is_none());
+                } else {
+                    assert_eq!(hello["params"]["test_app_secret"], "isolated-secret");
+                }
+                let mut reply = json!({"protocol_major":1});
+                if !acknowledged.is_null() {
+                    reply["realm"] = acknowledged;
+                }
+                socket
+                    .send(Message::Text(
+                        json!({"id":hello["id"],"ok":true,"result":reply})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            });
+            let result = Client::connect(&ConnectOptions {
+                server_url: format!("ws://{address}/ws"),
+                realm: requested,
+                test_app_secret: Some("isolated-secret".into()),
+                ..Default::default()
+            })
+            .await;
+            if accepted {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result.err().unwrap().code, "REALM_MISMATCH");
+            }
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_or_uncredentialed_test_realms_fail_before_connecting() {
+        for (realm, secret, code) in [
+            ("not-an-environment", Some("secret"), "INVALID_INPUT"),
+            (
+                "00000000-0000-0000-0000-000000000000",
+                Some("secret"),
+                "INVALID_INPUT",
+            ),
+            ("test", None, "TEST_APP_SECRET_REQUIRED"),
+            (
+                "b8ed3d58-724f-45bf-8992-dd0db2d620a8",
+                Some("  "),
+                "TEST_APP_SECRET_REQUIRED",
+            ),
+        ] {
+            let result = Client::connect(&ConnectOptions {
+                server_url: "ws://127.0.0.1:1/ws".into(),
+                realm: realm.into(),
+                test_app_secret: secret.map(String::from),
+                ..Default::default()
+            })
+            .await;
+            assert_eq!(result.err().unwrap().code, code);
+        }
     }
 }

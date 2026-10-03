@@ -4,6 +4,54 @@ use serde_json::{json, Value};
 // ponytail: serialize Ting credential updates globally; use per-owner locks if throughput requires it.
 static TING_CREDENTIALS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+impl App {
+    pub fn iam(&self, realm: &str) -> Result<ring_providers::Iam> {
+        if let Some(context) = &self.testing {
+            if realm != context.environment_id {
+                return Err(forbidden());
+            }
+            let saved = self
+                .vault
+                .get("testing:app-secret")
+                .map_err(storage_error)?
+                .ok_or_else(|| {
+                    Fault::new(
+                        "TEST_APP_AUTH_REQUIRED",
+                        "This testing environment has no verified Ring application credential.",
+                        "Connect with this environment's current Ring test application secret.",
+                    )
+                })?;
+            ring_providers::Iam::for_testing(
+                &context.environment_id,
+                &context.testing_key,
+                required(&saved, "app_secret")?,
+            )
+            .map_err(provider_error)
+        } else {
+            match realm {
+                "production" => ring_providers::Iam::from_env(false).map_err(provider_error),
+                "test" => ring_providers::Iam::from_env(true).map_err(provider_error),
+                _ => Err(forbidden()),
+            }
+        }
+    }
+    pub async fn validate_test_secret(&self, supplied: &str) -> Result<()> {
+        let context = self.testing.as_ref().ok_or_else(forbidden)?;
+        let iam = ring_providers::Iam::for_testing(
+            &context.environment_id,
+            &context.testing_key,
+            supplied,
+        )
+        .map_err(provider_error)?;
+        iam.testing_environment().await.map_err(provider_error)?;
+        self.vault
+            .set("testing:app-secret", &json!({"app_secret":supplied}))
+            .map_err(storage_error)?;
+        self.start();
+        Ok(())
+    }
+}
+
 pub fn storage_error(_: std::io::Error) -> Fault {
     Fault::new(
         "CREDENTIAL_STORAGE_FAILED",
@@ -15,7 +63,12 @@ pub fn credential_key(i: &Identity) -> String {
     format!("iam:{}", key(&i.realm, &i.org_id, &i.actor))
 }
 pub fn save(app: &App, s: &ring_providers::IamSession) -> Result<()> {
-    let realm = if s.identity.realm == "production" {
+    let realm = if let Some(context) = &app.testing {
+        if s.identity.realm != context.environment_id {
+            return Err(forbidden());
+        }
+        context.environment_id.as_str()
+    } else if s.identity.realm == "production" {
         "production"
     } else {
         "test"
@@ -40,7 +93,7 @@ pub async fn verify(app: &App, i: &Identity) -> Result<String> {
             "Log in with a fresh IAM token.",
         )
     })?;
-    let iam = ring_providers::Iam::from_env(i.realm == "test").map_err(provider_error)?;
+    let iam = app.iam(&i.realm)?;
     let token = if saved["expires_at"].as_i64().unwrap_or(0) <= chrono::Utc::now().timestamp() + 30
     {
         let refresh = required(&saved, "refresh_token")?;
@@ -112,7 +165,7 @@ pub async fn notifications(app: &App, i: &Identity, rid: &str, p: &Value) -> Res
     if let Some(result) = notification_retry(app, &cache_key, &fingerprint)? {
         return Ok(result);
     }
-    let iam = ring_providers::Iam::from_env(i.realm == "test").map_err(provider_error)?;
+    let iam = app.iam(&i.realm)?;
     let owner = key(&i.realm, &i.org_id, &i.actor);
     if let Some(code) = p["code"].as_str() {
         let aid = required(p, "authorization_id")?;
@@ -121,7 +174,11 @@ pub async fn notifications(app: &App, i: &Identity, rid: &str, p: &Value) -> Res
             .get(&format!("ting-consent:{owner}"))
             .map_err(storage_error)?
             .ok_or_else(|| invalid("Request a Ting consent URL before exchanging its code"))?;
-        if pending["authorization_id"] != aid {
+        if pending["id"]
+            .as_str()
+            .or_else(|| pending["authorization_id"].as_str())
+            != Some(aid)
+        {
             return Err(forbidden());
         }
         let stored = app
@@ -136,13 +193,11 @@ pub async fn notifications(app: &App, i: &Identity, rid: &str, p: &Value) -> Res
                 .map_err(provider_error)?;
             let value =
                 serde_json::to_value(grants).map_err(|_| invalid("Invalid IAM grant response"))?;
-            validate_grants(i, &value)?;
+            validate_grants(app, i, &value)?;
             app.vault.set(&format!("ting:{owner}"), &json!({"authorization_id":aid,"grants":value,"refresh_request_id":id("ting_refresh")})).map_err(storage_error)?;
         }
-        let registration = ting_endpoint_token(app, i, "subscriptions.register").await?;
-        ring_providers::Ting::for_realm(i.realm == "test")
-            .map_err(provider_error)?
-            .register_subscription(&registration, &i.org_id, &i.actor)
+        let (ting, registration) = ting_endpoint_client(app, i, "subscriptions.register").await?;
+        ting.register_subscription(&registration, &i.org_id, &i.actor)
             .await
             .map_err(provider_error)?;
         let mut e = app.engine.lock().unwrap();
@@ -213,7 +268,7 @@ fn notification_retry(app: &App, cache_key: &str, fingerprint: &str) -> Result<O
         })
         .transpose()
 }
-fn validate_grants(i: &Identity, value: &Value) -> Result<()> {
+fn validate_grants(app: &App, i: &Identity, value: &Value) -> Result<()> {
     let items = value["items"]
         .as_array()
         .ok_or_else(|| invalid("IAM returned no Ting grants"))?;
@@ -234,10 +289,24 @@ fn validate_grants(i: &Identity, value: &Value) -> Result<()> {
         if i.realm == "production" && !grant["testing_context"].is_null() {
             return Err(forbidden());
         }
+        if let Some(context) = &app.testing {
+            if i.realm != context.environment_id
+                || grant["testing_context"]["app_id"] != "ting"
+                || grant["testing_context"]["iam_test_key"] != context.testing_key
+                || grant["testing_context"]["app_secret"]
+                    .as_str()
+                    .is_none_or(str::is_empty)
+            {
+                return Err(forbidden());
+            }
+        } else if !matches!(i.realm.as_str(), "production" | "test") {
+            return Err(forbidden());
+        }
     }
     Ok(())
 }
-pub async fn ting_token(app: &App, n: &Publication) -> Result<String> {
+#[cfg(test)]
+pub async fn ting_client(app: &App, n: &Publication) -> Result<(ring_providers::Ting, String)> {
     let _credentials = TING_CREDENTIALS.lock().await;
     let i = Identity {
         actor: n.actor.clone(),
@@ -246,10 +315,109 @@ pub async fn ting_token(app: &App, n: &Publication) -> Result<String> {
         display_name: String::new(),
         admin: false,
     };
-    ting_endpoint_token(app, &i, "tings.send").await
+    ting_endpoint_client(app, &i, "tings.send").await
+}
+pub async fn send_publication(app: &App, n: &Publication, bytes: &[u8]) -> Result<()> {
+    let _credentials = TING_CREDENTIALS.lock().await;
+    if app.activity.cancelled.is_cancelled() {
+        return Err(crate::lifecycle::unavailable());
+    }
+    if !app
+        .engine
+        .lock()
+        .unwrap()
+        .state
+        .publications
+        .get(&n.notification_id)
+        .is_some_and(|current| current.status == "sending")
+    {
+        return Err(forbidden());
+    }
+    let identity = Identity {
+        actor: n.actor.clone(),
+        org_id: n.org_id.clone(),
+        realm: n.realm.clone(),
+        display_name: String::new(),
+        admin: false,
+    };
+    let (ting, token) = ting_endpoint_client(app, &identity, "tings.send").await?;
+    if app.activity.cancelled.is_cancelled() {
+        return Err(crate::lifecycle::unavailable());
+    }
+    ting.publish(&token, bytes)
+        .await
+        .map(|_| ())
+        .map_err(provider_error)
+}
+/// The same lock covers active registrations and sends, so this receipt cannot race a delivery.
+pub async fn retire_ting(app: &App) -> Result<()> {
+    let _credentials = TING_CREDENTIALS.lock().await;
+    app.testing.as_ref().ok_or_else(forbidden)?;
+    let owners = {
+        let e = app.engine.lock().unwrap();
+        let mut owners: std::collections::BTreeSet<String> = e
+            .state
+            .identities
+            .keys()
+            .chain(e.state.profiles.keys())
+            .cloned()
+            .collect();
+        owners.extend(
+            e.state
+                .sessions
+                .values()
+                .map(|s| key(&s.identity.realm, &s.identity.org_id, &s.identity.actor)),
+        );
+        owners.extend(
+            e.state
+                .publications
+                .values()
+                .map(|n| key(&n.realm, &n.org_id, &n.actor)),
+        );
+        owners
+    };
+    for owner in owners {
+        app.vault
+            .remove(&format!("ting:{owner}"))
+            .map_err(storage_error)?;
+        app.vault
+            .remove(&format!("ting-consent:{owner}"))
+            .map_err(storage_error)?;
+    }
+    let mut e = app.engine.lock().unwrap();
+    // Remove notifications.authorize results, including old durable receipts.
+    // Preserve unrelated operation receipts so retiring Ting cannot replay an active Ring call.
+    e.state.requests.retain(|_, cached| {
+        cached.response["result"]["authorized"].is_null()
+            && cached.response["result"]["authorization_id"].is_null()
+            && !(cached.response["result"]["app_id"] == "ring"
+                && cached.response["result"]["id"].is_string()
+                && cached.response["result"]["endpoints"].is_array())
+    });
+    for n in e
+        .state
+        .publications
+        .values_mut()
+        .filter(|n| matches!(n.status.as_str(), "pending" | "sending" | "failed"))
+    {
+        n.status = "cancelled".into();
+        n.retry_at = None;
+    }
+    e.persist()
 }
 // Callers hold TING_CREDENTIALS across read, refresh and durable replacement.
-async fn ting_endpoint_token(app: &App, i: &Identity, endpoint: &str) -> Result<String> {
+async fn ting_endpoint_client(
+    app: &App,
+    i: &Identity,
+    endpoint: &str,
+) -> Result<(ring_providers::Ting, String)> {
+    if app
+        .testing
+        .as_ref()
+        .is_some_and(|context| i.realm != context.environment_id)
+    {
+        return Err(forbidden());
+    }
     let owner = key(&i.realm, &i.org_id, &i.actor);
     let k = format!("ting:{owner}");
     let mut saved = app.vault.get(&k).map_err(storage_error)?.ok_or_else(|| {
@@ -259,6 +427,7 @@ async fn ting_endpoint_token(app: &App, i: &Identity, endpoint: &str) -> Result<
             "Run ring notifications authorize, approve the IAM consent, and exchange its code.",
         )
     })?;
+    validate_grants(app, i, &saved["grants"])?;
     let index = saved["grants"]["items"]
         .as_array()
         .and_then(|items| {
@@ -295,7 +464,7 @@ async fn ting_endpoint_token(app: &App, i: &Identity, endpoint: &str) -> Result<
             .into();
             app.vault.set(&k, &saved).map_err(storage_error)?;
         }
-        let iam = ring_providers::Iam::from_env(i.realm == "test").map_err(provider_error)?;
+        let iam = app.iam(&i.realm)?;
         let refreshed = iam
             .refresh_ting_consent(
                 required(&item, "refresh_token")?,
@@ -317,11 +486,28 @@ async fn ting_endpoint_token(app: &App, i: &Identity, endpoint: &str) -> Result<
         }
         // A root refresh returns only its own pair, not the complete consent grant set.
         saved["grants"]["items"][index] = replacement.clone();
-        validate_grants(i, &saved["grants"])?;
+        validate_grants(app, i, &saved["grants"])?;
         saved["refresh_request_ids"][endpoint] = id("ting_refresh").into();
         app.vault.set(&k, &saved).map_err(storage_error)?;
     }
-    required(&saved["grants"]["items"][index], "access_token").map(String::from)
+    let item = &saved["grants"]["items"][index];
+    let ting = if let Some(context) = &app.testing {
+        ring_providers::Ting::for_grant(&item["testing_context"], Some(&context.testing_key))
+    } else if i.realm == "test" {
+        // Existing single-environment deployments retain their explicit test configuration.
+        if item["testing_context"].is_null() {
+            ring_providers::Ting::for_realm(true)
+        } else {
+            let key = std::env::var("RING_IAM_TEST_ENVIRONMENT_KEY").map_err(|_| forbidden())?;
+            ring_providers::Ting::for_grant(&item["testing_context"], Some(&key))
+        }
+    } else if i.realm == "production" {
+        ring_providers::Ting::for_grant(&item["testing_context"], None)
+    } else {
+        return Err(forbidden());
+    }
+    .map_err(provider_error)?;
+    Ok((ting, required(item, "access_token")?.into()))
 }
 
 pub fn revoke_identity(app: &App, i: &Identity, reason: &str) -> Result<()> {
@@ -368,7 +554,7 @@ pub fn revoke_identity(app: &App, i: &Identity, reason: &str) -> Result<()> {
     e.persist()
 }
 pub fn start_revalidation(app: App) {
-    tokio::spawn(async move {
+    app.clone().spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             interval.tick().await;
@@ -418,6 +604,9 @@ mod tests {
 
     fn app(dir: &std::path::Path) -> App {
         App {
+            testing: None,
+            environments: None,
+            activity: Arc::new(crate::runtime::Activity::default()),
             engine: Arc::new(Mutex::new(Engine::open(dir).unwrap())),
             media: Arc::new(Mutex::new(Media::default())),
             test_tokens: Arc::new(BTreeMap::new()),
@@ -577,6 +766,306 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_credentials_bind_uuid_and_each_ting_endpoint_without_production_fallback() {
+        const CHILD: &str = "RING_MANAGED_AUTH_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "auth::tests::managed_credentials_bind_uuid_and_each_ting_endpoint_without_production_fallback", "--nocapture"])
+                .env(CHILD, "1").env("RING_ENV", "development").env_remove("RING_ENCRYPTION_KEY")
+                .output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use axum::{
+            extract::State,
+            http::{HeaderMap, StatusCode},
+            routing::{get, post},
+            Json, Router,
+        };
+        use base64::Engine as _;
+        const A: &str = "00000000-0000-4000-8000-000000000001";
+        const B: &str = "00000000-0000-4000-8000-000000000002";
+        async fn context(headers: HeaderMap) -> (StatusCode, Json<Value>) {
+            let key = headers
+                .get("x-testing-environment-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let credential = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let basic = |secret: &str| {
+                format!(
+                    "Basic {}",
+                    base64::engine::general_purpose::STANDARD.encode(format!("ring:{secret}"))
+                )
+            };
+            let environment = if key == "A".repeat(32) && credential == basic("secret-a") {
+                A
+            } else if key == "B".repeat(32) && credential == basic("secret-b") {
+                B
+            } else if credential == basic("wrong-environment") {
+                B
+            } else {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(
+                        json!({"error":{"code":"unauthenticated","message":"Wrong test credential"}}),
+                    ),
+                );
+            };
+            (
+                StatusCode::OK,
+                Json(
+                    json!({"environment_id":environment,"application":{"app_id":"ring","base_url":"https://ring.example","app_scope":{"iam":[],"external":[]},"webhook_scope":[],"testing_idle_days":7}}),
+                ),
+            )
+        }
+        async fn ting(
+            State(seen): State<Arc<Mutex<Vec<(String, String)>>>>,
+            headers: HeaderMap,
+            Json(body): Json<Value>,
+        ) -> Json<Value> {
+            assert_eq!(headers["x-testing-environment-key"], "A".repeat(32));
+            seen.lock().unwrap().push((
+                headers["authorization"].to_str().unwrap().into(),
+                headers["iam_test_app_secret"].to_str().unwrap().into(),
+            ));
+            if body["for"] == "si:alice" && body["app_id"] == "ring" {
+                Json(json!({"app_id":"ring","for":"si:alice","active":true}))
+            } else {
+                Json(json!({"accepted":true}))
+            }
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let ting_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let consent_active = ting_active.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let router = Router::new()
+            .route("/api/v1/application/testing-context", get(context))
+            .route("/api/v1/oauth/introspect", post(|| async {
+                Json(json!({"active":true,"public_id":"si:alice","actor_type":"silicon","client_id":"ring","expires_at":i64::MAX,"authorization":{"public_id":"si:alice","actor_type":"silicon","organization_id":A,"org_id":"org","membership_id":"si:alice[org]","membership_version":1,"authorization_epoch":1,"audience":"ring","testing_environment_id":A,"scopes":[],"org_role":"owner"}}))
+            }))
+            .route("/api/v1/me", get(|| async { Json(json!({"display_name":"Alice"})) }))
+            .route("/api/v1/obo-access/authorizations", post(move || {
+                let active = consent_active.clone();
+                async move {
+                    if !active.load(std::sync::atomic::Ordering::Acquire) {
+                        return (StatusCode::FORBIDDEN, Json(json!({"error":{"code":"forbidden","message":"Ting is retired"}})));
+                    }
+                    (StatusCode::OK, Json(json!({"id":B,"app_id":"ring","app_name":"Ring","actor":{"type":"silicon","public_id":"si:alice"},"org_id":"org","status":"pending","version":1,"expires_at":after(600),"endpoints":[],"authorization_url":"https://iam.example/consent"})))
+                }
+            }))
+            .route("/api/v1/obo-access/tokens", post(|| async {
+                let items = ["tings.send", "subscriptions.register"].map(|endpoint| json!({"grant_id":B,"audience":"ting","endpoint_id":endpoint,"org_id":"org","actor":{"type":"silicon","public_id":"si:alice"},"scope":"","access_token":format!("{endpoint}-token"),"refresh_token":format!("{endpoint}-refresh"),"token_type":"Bearer","expires_in":3600,"expires_at":after(3600),"testing_context":{"app_id":"ting","app_secret":format!("{endpoint}-secret"),"iam_test_key":"A".repeat(32)}}));
+                Json(json!({"items": items}))
+            }))
+            .route("/v1/subscriptions", post(ting))
+            .route("/v1/tings", post(ting))
+            .with_state(seen.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        std::env::set_var("RING_IAM_URL", &url);
+        std::env::set_var("RING_TING_URL", &url);
+        std::env::set_var("RING_IAM_APP_SECRET", "must-never-be-used");
+        std::env::set_var("RING_TING_TEST_APP_SECRET", "must-never-be-used");
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let managed = |dir: &std::path::Path, id: &str, key: &str| {
+            let mut service = app(dir);
+            service.testing = Some(Arc::new(crate::lifecycle::TestingContext {
+                environment_id: id.into(),
+                org_id: "owner".into(),
+                generation: 1,
+                key_version: 1,
+                testing_key: key.into(),
+            }));
+            service
+        };
+        let service = managed(dir_a.path(), A, &"A".repeat(32));
+        let second = managed(dir_b.path(), B, &"B".repeat(32));
+        assert!(service.iam(A).is_err());
+        assert!(service.validate_test_secret("secret-b").await.is_err());
+        assert!(service
+            .validate_test_secret("wrong-environment")
+            .await
+            .is_err());
+        assert!(service.vault.get("testing:app-secret").unwrap().is_none());
+        service.validate_test_secret("secret-a").await.unwrap();
+        second.validate_test_secret("secret-b").await.unwrap();
+        assert!(service.iam("production").is_err());
+        assert!(service.iam("test").is_err());
+        assert!(service.iam(B).is_err());
+        assert!(app(tempfile::tempdir().unwrap().path()).iam(A).is_err());
+        let identity = Identity {
+            realm: A.into(),
+            org_id: "org".into(),
+            actor: "si:alice".into(),
+            display_name: "Alice".into(),
+            admin: false,
+        };
+        let session = ring_providers::IamSession {
+            identity: ring_providers::iam::Identity {
+                actor_id: identity.actor.clone(),
+                org_id: identity.org_id.clone(),
+                display_name: "Alice".into(),
+                admin: false,
+                expires_at: i64::MAX,
+                realm: A.into(),
+            },
+            access_token: "actor-access".into(),
+            refresh_token: Some("actor-refresh".into()),
+        };
+        save(&service, &session).unwrap();
+        assert!(service
+            .vault
+            .get(&credential_key(&identity))
+            .unwrap()
+            .is_some());
+        assert!(service
+            .vault
+            .get("iam:test|org|si:alice")
+            .unwrap()
+            .is_none());
+        assert!(save(&second, &session).is_err());
+        let pair = |endpoint: &str| json!({"audience":"ting","endpoint_id":endpoint,"org_id":"org","access_token":format!("{endpoint}-token"),"expires_at":after(3600),"testing_context":{"app_id":"ting","app_secret":format!("{endpoint}-secret"),"iam_test_key":"A".repeat(32)}});
+        let value =
+            json!({"grants":{"items":[pair("tings.send"), pair("subscriptions.register")]}});
+        let owner = format!("ting:{}", key(A, "org", "si:alice"));
+        service.vault.set(&owner, &value).unwrap();
+        let (send, token) = ting_endpoint_client(&service, &identity, "tings.send")
+            .await
+            .unwrap();
+        send.publish(
+            &token,
+            &serde_json::to_vec(&json!({"org_id":"org","key":"stable"})).unwrap(),
+        )
+        .await
+        .unwrap();
+        let (register, token) = ting_endpoint_client(&service, &identity, "subscriptions.register")
+            .await
+            .unwrap();
+        register
+            .register_subscription(&token, "org", "si:alice")
+            .await
+            .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                ("Bearer tings.send-token".into(), "tings.send-secret".into()),
+                (
+                    "Bearer subscriptions.register-token".into(),
+                    "subscriptions.register-secret".into()
+                )
+            ]
+        );
+        let mut bad = value.clone();
+        bad["grants"]["items"][0]["testing_context"]["iam_test_key"] = json!("B".repeat(32));
+        service.vault.set(&owner, &bad).unwrap();
+        assert!(ting_endpoint_client(&service, &identity, "tings.send")
+            .await
+            .is_err());
+        service.vault.set(&owner, &value).unwrap();
+        let consent_key = format!("ting-consent:{}", key(A, "org", "si:alice"));
+        service
+            .vault
+            .set(&consent_key, &json!({"authorization_id":"old"}))
+            .unwrap();
+        let login = service
+            .engine
+            .lock()
+            .unwrap()
+            .login(identity.clone(), None)
+            .unwrap();
+        {
+            let mut e = service.engine.lock().unwrap();
+            for (request, result) in [
+                ("authorized", json!({"authorized":true,"queued":3})),
+                (
+                    "consent",
+                    json!({"id":B,"app_id":"ring","endpoints":[],"authorization_url":"https://iam.example/old"}),
+                ),
+                ("call", json!({"ringid":"active-call"})),
+            ] {
+                e.state.requests.insert(
+                    format!("{}|{request}", key(A, "org", "si:alice")),
+                    Cached {
+                        fingerprint: request.into(),
+                        response: json!({"id":request,"ok":true,"result":result}),
+                    },
+                );
+            }
+            e.persist().unwrap();
+        }
+        retire_ting(&service).await.unwrap();
+        retire_ting(&service).await.unwrap();
+        assert!(service.vault.get(&owner).unwrap().is_none());
+        assert!(service.vault.get(&consent_key).unwrap().is_none());
+        assert!(service.vault.get("testing:app-secret").unwrap().is_some());
+        assert!(service
+            .vault
+            .get(&credential_key(&identity))
+            .unwrap()
+            .is_some());
+        {
+            let e = service.engine.lock().unwrap();
+            assert!(e.session(login["session_token"].as_str().unwrap()).is_ok());
+            assert!(!e
+                .state
+                .requests
+                .contains_key(&format!("{}|authorized", key(A, "org", "si:alice"))));
+            assert!(!e
+                .state
+                .requests
+                .contains_key(&format!("{}|consent", key(A, "org", "si:alice"))));
+            assert!(e
+                .state
+                .requests
+                .contains_key(&format!("{}|call", key(A, "org", "si:alice"))));
+        }
+        assert_eq!(
+            notifications(&service, &identity, "fresh", &json!({}))
+                .await
+                .unwrap_err()
+                .code,
+            "IAM_AUTH_FAILED"
+        );
+        // Reimporting only Ting need not notify Ring; IAM's current authority restores consent.
+        ting_active.store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(
+            notifications(&service, &identity, "fresh", &json!({}))
+                .await
+                .unwrap()["id"],
+            B
+        );
+        assert_eq!(
+            notifications(
+                &service,
+                &identity,
+                "exchange",
+                &json!({"authorization_id":B,"code":"fresh-approved-code"})
+            )
+            .await
+            .unwrap()["authorized"],
+            true
+        );
+        for path in std::fs::read_dir(dir_a.path().join("credentials")).unwrap() {
+            let bytes = std::fs::read(path.unwrap().path()).unwrap();
+            assert!(!bytes
+                .windows(b"secret-a".len())
+                .any(|bytes| bytes == b"secret-a"));
+        }
+        service.stop().await.unwrap();
+        second.stop().await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn interrupted_notification_consent_refreshes_only_its_endpoint_and_replays_safely() {
         // Isolate provider configuration from the other tests; every request stays on loopback.
         const CHILD: &str = "RING_AUTH_REFRESH_TEST_CHILD";
@@ -714,7 +1203,7 @@ mod tests {
             error: None,
         };
         assert_eq!(
-            ting_token(&service, &publication).await.unwrap(),
+            ting_client(&service, &publication).await.unwrap().1,
             "tings.send-access-true"
         );
         let pending = service.vault.get(owner).unwrap().unwrap();

@@ -6,7 +6,7 @@ Call targets are global `c:handle` or `si:handle` IDs. The selected organization
 
 ## Connections and storage
 
-`SILICON_HOME/.ring` contains local config, protected session files, process metadata and redacted JSON Lines logs. Session names are partitioned by selected organization and production/test realm. The directory is mode `0700` and files `0600` on Unix. Windows uses an ACL restricted to the current user's SID, inherited by new files.
+`SILICON_HOME/.ring` contains local config, protected session files, process metadata and redacted JSON Lines logs. Sessions and daemon endpoints are partitioned by selected organization and realm, including each `--testing-environment UUID`. Production and legacy `--test` keys remain compatible with older installations. The directory is mode `0700` and files `0600` on Unix. Windows uses an ACL restricted to the current user's SID, inherited by new files.
 
 From CLI 0.1.1, server selection is `SILICON_RING_SERVER_URL`, local `server_url`, then `wss://backend.ring.teamofsilicons.com/ws`. Existing configuration and environment overrides are preserved. For a local server, set `SILICON_RING_SERVER_URL=ws://127.0.0.1:8765/ws`. Remote servers require `wss://`; URL user/password authentication is rejected. `ISI` adds request origin metadata and never changes verified identity.
 

@@ -31,11 +31,26 @@ pub struct Cli {
     #[arg(
         long,
         global = true,
+        value_name = "UUID",
+        value_parser = testing_environment,
+        help = "Use this isolated Honeycomb testing environment (implies --test)"
+    )]
+    pub testing_environment: Option<uuid::Uuid>,
+    #[arg(
+        long,
+        global = true,
         help = "Stable ID for exact retries; changed input requires a new ID"
     )]
     pub request_id: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+fn testing_environment(value: &str) -> Result<uuid::Uuid, String> {
+    uuid::Uuid::parse_str(value)
+        .ok()
+        .filter(|id| !id.is_nil())
+        .ok_or_else(|| "Testing environment must be a non-nil UUID".into())
 }
 #[derive(Subcommand, Debug)]
 pub enum Command {
@@ -527,4 +542,37 @@ pub enum Bug {
         #[arg(long)]
         pr: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn testing_environment_flag_is_global_and_validates_uuid() {
+        let environment = "B8ED3D58-724F-45BF-8992-DD0DB2D620A8";
+        let cli = Cli::try_parse_from([
+            "ring",
+            "daemon",
+            "start",
+            "--testing-environment",
+            environment,
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.testing_environment.unwrap().to_string(),
+            environment.to_lowercase()
+        );
+        assert!(
+            Cli::try_parse_from(["ring", "--test", "version"])
+                .unwrap()
+                .test
+        );
+        for invalid in ["test", "production", "00000000-0000-0000-0000-000000000000"] {
+            assert!(
+                Cli::try_parse_from(["ring", "--testing-environment", invalid, "version"]).is_err()
+            );
+        }
+        assert!(Cli::try_parse_from(["ring", "--testing-environment"]).is_err());
+    }
 }

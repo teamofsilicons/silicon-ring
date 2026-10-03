@@ -37,6 +37,16 @@ fn sync_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 impl Vault {
+    /// Remove application/session grants while preserving the key used by sealed settings.
+    pub fn clear_records(&self) -> io::Result<()> {
+        for entry in fs::read_dir(&self.directory)? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|v| v == "bin") {
+                fs::remove_file(path)?;
+            }
+        }
+        sync_directory(&self.directory)
+    }
     pub fn open(data_dir: &Path) -> io::Result<Self> {
         let encoded = std::env::var("RING_ENCRYPTION_KEY").ok();
         let production = std::env::var("RING_ENV").as_deref() == Ok("production");

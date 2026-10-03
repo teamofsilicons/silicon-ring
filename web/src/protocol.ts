@@ -1,6 +1,7 @@
 export type RingError = { code: string; message: string; next_action?: string; retryable?: boolean };
 export type RingEvent = { type: string; data: any; seq?: number; event_id?: string };
-export type Session = { actor: string; actor_id?: string; display_name?: string; org_id: string; device_id: string; session_token: string; expires_at?: string };
+export type Session = { actor: string; actor_id?: string; display_name?: string; org_id: string; device_id: string; session_token: string; expires_at?: string; realm?: string; url?: string };
+export type ConnectSettings = { url: string; realm: string; org_id?: string; test_app_secret?: string };
 export type Call = { ringid: string; caller: string; target: string; state: string; created_at: string; answered_at?: string; ended_at?: string; outcome?: string; recording_status?: string; participants: { actor: string; display_name?: string; device_id?: string; left_at?: string | null }[]; invitations: { invitation_id: string; inviter: string; target: string; state: string; reason?: string; expires_at: string }[] };
 export const normalizeActor = (value: string) => value.trim().replace(/^@/, '').replace(/^((?:c|si):[^\s\[\]]+)\[[^\s\[\]]+\]$/, '$1');
 export const isActor = (value: string) => /^(?:c|si):[^\s\[\]]+$/.test(normalizeActor(value));
@@ -12,6 +13,32 @@ export function socketUrl(value: string) {
   return url.toString();
 }
 export const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+export function normalizeRealm(value: string) {
+  const realm = value.trim().toLowerCase();
+  if (realm === 'production' || realm === 'test' || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(realm) && realm !== '00000000-0000-0000-0000-000000000000') return realm;
+  throw new Error('Choose production, legacy test, or a valid Honeycomb environment UUID.');
+}
+function checkRealm(realm: string, acknowledged: unknown) {
+  if (acknowledged === realm || acknowledged === undefined && ['production', 'test'].includes(realm)) return;
+  throw Object.assign(new Error('The server did not confirm the selected environment. Sign in again after checking connection settings.'), { code: 'SESSION_REALM_MISMATCH' });
+}
+export function checkSessionContext(session: Session, settings: ConnectSettings) {
+  if (session.realm !== normalizeRealm(settings.realm) || session.url !== socketUrl(settings.url) || settings.org_id && session.org_id !== settings.org_id) {
+    throw Object.assign(new Error('The saved session belongs to different connection settings. Sign in again.'), { code: 'SESSION_CONTEXT_MISMATCH' });
+  }
+}
+export function bindSession(session: Session, settings: ConnectSettings): Session {
+  const realm = normalizeRealm(settings.realm);
+  checkRealm(realm, session.realm);
+  const bound = { ...session, realm, url: socketUrl(settings.url) };
+  checkSessionContext(bound, settings);
+  return bound;
+}
+export function sessionToRestore(saved: Session | null, native: Session | null): Session | null {
+  if (!saved) return native;
+  if (!saved.url && native?.url && native.realm && native.session_token === saved.session_token && native.device_id === saved.device_id && (!saved.realm || saved.realm === native.realm)) return native;
+  return saved;
+}
 
 export class RingSocket {
   private socket?: WebSocket;
@@ -20,14 +47,24 @@ export class RingSocket {
   private retry?: ReturnType<typeof setTimeout>;
   private closed = false;
   private opening?: Promise<void>;
-  private settings?: { url: string; realm: string; org_id?: string; test_app_secret?: string };
+  private settings?: ConnectSettings;
+  private helloReady = false;
   session?: Session;
   onStatus: (state: 'offline' | 'connecting' | 'connected' | 'reconnecting') => void = () => {};
   onExpired: () => void = () => {};
   subscribe(listener: (event: RingEvent) => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-  get ready() { return this.socket?.readyState === WebSocket.OPEN; }
-  async connect(settings: { url: string; realm: string; org_id?: string; test_app_secret?: string }) {
-    this.settings = { ...settings, url: socketUrl(settings.url) };
+  get ready() { return this.socket?.readyState === WebSocket.OPEN && this.helloReady; }
+  async connect(settings: ConnectSettings) {
+    const next = { ...settings, realm: normalizeRealm(settings.realm), url: socketUrl(settings.url), org_id: settings.org_id?.trim() || undefined };
+    if (next.realm !== 'production' && !next.test_app_secret?.trim()) throw new Error('A test app secret is required for test environments.');
+    if (this.settings && (this.opening || this.ready) && (['url', 'realm', 'org_id', 'test_app_secret'] as const).some(key => (this.settings![key] || '') !== (next[key] || ''))) throw new Error('The current connection uses different settings. Wait for it to finish and disconnect before changing environments.');
+    this.settings = next;
+    if (this.session) {
+      try { checkSessionContext(this.session, this.settings); }
+      catch (error) { this.disconnect(); this.onExpired(); throw error; }
+    }
+    if (this.ready && !this.opening) return;
+    clearTimeout(this.retry);
     this.closed = false;
     await this.open();
   }
@@ -38,6 +75,8 @@ export class RingSocket {
   }
   private async openConnection() {
     if (!this.settings) throw new Error('A server is required.');
+    const settings = this.settings;
+    this.helloReady = false;
     this.onStatus(this.session ? 'reconnecting' : 'connecting');
     const ws = new WebSocket(this.settings.url);
     this.socket = ws;
@@ -54,6 +93,7 @@ export class RingSocket {
     };
     ws.onclose = () => {
       if (this.socket !== ws) return;
+      this.helloReady = false;
       for (const request of this.pending.values()) { clearTimeout(request.timer); request.reject(new Error('Connection lost. Check the current call before retrying.')); }
       this.pending.clear();
       this.onStatus(this.closed || !this.session ? 'offline' : 'reconnecting');
@@ -66,21 +106,24 @@ export class RingSocket {
       ws.onerror = () => { clearTimeout(timeout); reject(new Error('Could not reach Ring. Make sure the server is running and its address is correct.')); };
     });
     try {
-      await this.request('protocol.hello', { versions: [1], client: { name: 'ring-web', version: '0.1.2' }, realm: this.settings.realm, org_id: this.settings.org_id || undefined, capabilities: ['audio.pcm16', 'events', 'handoff'], ...(this.settings.test_app_secret ? { test_app_secret: this.settings.test_app_secret } : {}) });
+      const hello = await this.request('protocol.hello', { versions: [1], client: { name: 'ring-web', version: '0.1.3' }, realm: settings.realm, org_id: settings.org_id || undefined, capabilities: ['audio.pcm16', 'events', 'handoff'], ...(settings.realm !== 'production' ? { test_app_secret: settings.test_app_secret } : {}) });
+      checkRealm(settings.realm, hello?.realm);
+      this.helloReady = true;
       if (this.session) {
         const result = await this.request('auth.resume', { session_token: this.session.session_token, device_id: this.session.device_id });
-        this.session = { ...this.session, ...result };
+        this.session = bindSession({ ...this.session, ...result, realm: result.realm }, settings);
         await this.request('events.subscribe', {});
         for (const listener of this.listeners) listener({ type: 'connection.restored', data: {} });
       }
       this.onStatus('connected');
     } catch (error) {
+      this.helloReady = false;
       if ((error as any).code?.includes('AUTH') || (error as any).code?.includes('SESSION')) { this.session = undefined; this.onExpired(); }
       ws.close(); throw error;
     }
   }
   request<T = any>(method: string, params: Record<string, any> = {}, id: string = crypto.randomUUID()): Promise<T> {
-    if (!this.ready) return Promise.reject(new Error('You are offline. Reconnect to Ring and try again.'));
+    if (!this.ready && !(method === 'protocol.hello' && this.socket?.readyState === WebSocket.OPEN)) return Promise.reject(new Error('You are offline. Reconnect to Ring and try again.'));
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`${method} timed out. Refresh the current state before retrying.`)); }, method === 'voicemail.begin' ? 120000 : 20000);
       this.pending.set(id, { resolve, reject, timer });
@@ -91,7 +134,7 @@ export class RingSocket {
     if (this.ready && this.socket!.bufferedAmount < 256000) this.socket!.send(JSON.stringify({ type, data }));
   }
   disconnect() {
-    this.closed = true; this.session = undefined; clearTimeout(this.retry); this.socket?.close(); this.onStatus('offline');
+    this.closed = true; this.helloReady = false; this.session = undefined; clearTimeout(this.retry); this.socket?.close(); this.onStatus('offline');
   }
 }
 

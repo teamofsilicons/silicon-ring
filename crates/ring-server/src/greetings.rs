@@ -146,6 +146,9 @@ mod tests {
     async fn greeting_cache_uses_pinned_recipient_context_with_legacy_fallback() {
         let dir = tempfile::tempdir().unwrap();
         let app = App {
+            testing: None,
+            environments: None,
+            activity: Arc::default(),
             engine: Arc::new(Mutex::new(crate::engine::Engine::open(dir.path()).unwrap())),
             media: Arc::new(Mutex::new(crate::media::Media::default())),
             test_tokens: Arc::new(Default::default()),

@@ -244,10 +244,10 @@ pub fn start(app: App) {
         }
     };
     let test_push_enabled = std::env::var("RING_TEST_NATIVE_PUSH_ENABLED").as_deref() == Ok("true");
-    tokio::spawn(async move {
+    app.clone().spawn_draining(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(250));
         loop {
-            tick.tick().await;
+            tokio::select! { biased; _ = app.activity.cancelled.cancelled() => break, _ = tick.tick() => {} }
             let tasks = {
                 let mut e = app.engine.lock().unwrap();
                 let events: Vec<_> = e
@@ -328,6 +328,7 @@ pub fn start(app: App) {
                     .collect::<Vec<_>>()
             };
             for (id, task) in tasks {
+                if app.activity.cancelled.is_cancelled() { break; }
                 let device = {
                     let e = app.engine.lock().unwrap();
                     pending_push_device(&e.state, &task, test_push_enabled)
@@ -351,6 +352,7 @@ pub fn start(app: App) {
                                     },
                                 )
                             };
+                            if app.activity.cancelled.is_cancelled() { break; }
                             if let Some((d, _)) = current {
                                 push.send(
                                     d.push_platform.as_deref().unwrap_or(""),
@@ -437,7 +439,7 @@ fn push_identity(
         .map(|s| s.identity.clone())
 }
 fn allowed_environment(realm: &str, device: &Device, test_push_enabled: bool) -> bool {
-    realm != "test"
+    realm == "production"
         || (test_push_enabled
             && matches!(device.push_platform.as_deref(), Some("apns_voip" | "fcm"))
             && device.push_environment.as_deref() == Some("sandbox"))

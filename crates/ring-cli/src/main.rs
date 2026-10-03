@@ -345,7 +345,7 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         return Ok(None);
     }
     let app = App {
-        store: Store::new(cli.org, cli.test)?,
+        store: Store::new(cli.org, cli.test, cli.testing_environment)?,
         id: cli
             .request_id
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
@@ -684,7 +684,7 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             }
         }
         Command::Doctor { output, overwrite } => {
-            let mut checks = json!({"local_storage":"ready","protocol_major":1,"version":env!("CARGO_PKG_VERSION"),"realm":if app.store.test{"test"}else{"production"}});
+            let mut checks = json!({"local_storage":"ready","protocol_major":1,"version":env!("CARGO_PKG_VERSION"),"realm":app.store.realm});
             for (key, method) in [
                 ("app", "app.info"),
                 ("auth", "auth.status"),

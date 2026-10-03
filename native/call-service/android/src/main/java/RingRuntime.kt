@@ -24,6 +24,13 @@ import kotlin.concurrent.thread
 import kotlin.math.sqrt
 
 internal typealias RingReply = (JSONObject?, String?) -> Unit
+private fun environmentRealm(value: String): String {
+    val realm = value.trim().lowercase()
+    val uuid = runCatching { UUID.fromString(realm) }.getOrNull()
+    require(realm in listOf("production", "test") || uuid?.toString() == realm && uuid != UUID(0, 0)) { "Choose production, legacy test, or a valid Honeycomb environment UUID." }
+    return realm
+}
+private fun acknowledgesRealm(realm: String, result: JSONObject?): Boolean = result?.optString("realm") == realm || result?.has("realm") != true && realm in listOf("production", "test")
 internal class RingRuntime private constructor(val context: Context) {
     companion object {
         @Volatile private var instance: RingRuntime? = null
@@ -46,12 +53,15 @@ internal class RingRuntime private constructor(val context: Context) {
     val phoneAccount = PhoneAccountHandle(ComponentName(context, RingConnectionService::class.java), "ring")
     val calls = mutableMapOf<String, JSONObject>()
     private var pushToken = ""
-    private fun restore() { SessionVault.load(context)?.let { configure(it) } }
+    private fun restore() { SessionVault.load(context)?.let { runCatching { configure(it) } } }
     fun configure(value: JSONObject) {
         val endpoint = java.net.URI(value.optString("url"))
         require(endpoint.scheme in listOf("ws", "wss") && endpoint.userInfo == null && value.optString("session_token").isNotEmpty() && value.optString("device_id").isNotEmpty()) { "Native calling needs a valid endpoint and authenticated session." }
         require(endpoint.scheme == "wss" || endpoint.host in listOf("localhost", "127.0.0.1", "::1", "[::1]")) { "Use a secure wss:// endpoint outside localhost." }
-        if (value.optString("session_token") != credentials.optString("session_token")) disconnect()
+        val realm = environmentRealm(if (value.has("realm")) value.getString("realm") else "production")
+        require(realm == "production" || value.optString("test_app_secret").isNotBlank()) { "A test app secret is required for test environments." }
+        value.put("realm", realm)
+        if (listOf("session_token", "device_id", "url", "realm", "org_id", "test_app_secret").any { value.optString(it) != credentials.optString(it) }) disconnect()
         credentials = value; enabled = true; SessionVault.save(context, value)
         val telecom = context.getSystemService(TelecomManager::class.java)
         telecom.registerPhoneAccount(PhoneAccount.builder(phoneAccount, "Silicon Ring").setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED).setSupportedUriSchemes(listOf(PhoneAccount.SCHEME_SIP)).build())
@@ -67,10 +77,13 @@ internal class RingRuntime private constructor(val context: Context) {
         socket = client.newWebSocket(Request.Builder().url(credentials.getString("url")).build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) { main.post {
                 if (socket !== webSocket) return@post
-                val hello = JSONObject().put("versions", org.json.JSONArray().put(1)).put("client", JSONObject().put("name", "ring-android").put("version", "0.1.2")).put("realm", credentials.optString("realm", "production")).put("org_id", credentials.optString("org_id"))
-                credentials.optString("test_app_secret").takeIf { it.isNotEmpty() }?.let { hello.put("test_app_secret", it) }
-                rawRequest("protocol.hello", hello) { _, error ->
-                    if (error != null) connected(error) else rawRequest("auth.resume", JSONObject().put("session_token", credentials.optString("session_token")).put("device_id", device)) { _, authError ->
+                val realm = credentials.getString("realm")
+                val hello = JSONObject().put("versions", org.json.JSONArray().put(1)).put("client", JSONObject().put("name", "ring-android").put("version", "0.1.3")).put("realm", realm).put("org_id", credentials.optString("org_id"))
+                if (realm != "production") hello.put("test_app_secret", credentials.getString("test_app_secret"))
+                rawRequest("protocol.hello", hello) { result, error ->
+                    val helloError = error ?: if (!acknowledgesRealm(realm, result)) "The server did not confirm the selected environment." else null
+                    if (helloError != null) connected(helloError) else rawRequest("auth.resume", JSONObject().put("session_token", credentials.optString("session_token")).put("device_id", device)) { session, error ->
+                        val authError = error ?: if (!acknowledgesRealm(realm, session)) "The session does not belong to the selected environment." else null
                         if (authError != null) connected(authError) else {
                             ready = true; rawRequest("events.subscribe", JSONObject()) { _, _ -> }; connected(null); registerPush(pushToken)
                             request("calls.list", JSONObject().put("state", "active")) { result, _ ->

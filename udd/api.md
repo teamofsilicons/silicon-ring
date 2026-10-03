@@ -27,7 +27,7 @@ Call `protocol.hello` first, then `auth.login` or `auth.resume`.
 
 | Operation | Input | Result / purpose |
 |---|---|---|
-| `protocol.hello` | `versions`, `client`, `realm`, optional `org_id`, `capabilities` | Agrees on protocol major and capabilities; returns limits, heartbeat settings and compatibility. |
+| `protocol.hello` | `versions`, `client`, `realm`, optional `org_id`, `capabilities`, `test_app_secret` | Agrees on protocol major and capabilities; returns the selected realm, limits and heartbeat settings. |
 | `auth.login` | `token` | Accepts a short-lived IAM token; returns actor, org, device, expiring Ring session and permissions. No passwords. |
 | `auth.resume` | `session_token`, optional `device_id` | Authenticates a new connection using an existing unexpired session. |
 | `auth.status` | — | Returns `authenticated`, actor, org, realm, device and expiry; no credentials. |
@@ -35,6 +35,10 @@ Call `protocol.hello` first, then `auth.login` or `auth.resume`.
 | `app.info` | — | App handle (`ring`, proposed), owning org, versions, capabilities, repository/docs/Rust-package/install URLs and compatibility policy. |
 
 App ownership and the user's selected org are different fields. Public metadata and login/status work without an authenticated session; other operations require one. Expired sessions cannot send control or media. Losing a CLI connection does not end a server-hosted silicon representative.
+
+`realm` is `production`, the configured legacy `test` realm, or a canonical non-nil Honeycomb environment UUID. UUID realms require an explicit actor organization and the environment's Ring `test_app_secret`; the server validates that secret with IAM before acknowledging hello. Clients must verify that the returned realm exactly matches the requested UUID before sending login or resume credentials. The selected UUID remains in auth/session responses. Unknown, inactive or changing environments fail closed. Environment ownership does not restrict the actor's selected IAM organization, and catalog source ownership supplies no actor authority.
+
+Each UUID has independent state, encrypted credentials and assets. Lifecycle cleanup or key rotation disconnects the affected clients and drains its workers before changing the environment. Clean also advances the data generation; old sessions, streams, uploads and request IDs cannot access the new generation. Normal protocol calls never select another environment implicitly.
 
 ## Profiles, devices and configuration
 
