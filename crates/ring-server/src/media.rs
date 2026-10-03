@@ -328,6 +328,7 @@ impl Media {
                 && p.left_at.is_none()
         });
         if !active || st.muted {
+            st.queue.clear();
             return Ok(());
         }
         if st.queue.len() > SAMPLES * 10 {
@@ -431,6 +432,18 @@ impl Media {
             if !valid {
                 s.connected = false;
                 s.disconnected_at = Some(Instant::now());
+                s.queue.clear();
+            }
+            if s.voicemail_id.is_none()
+                && e.state.calls.get(&s.ringid).is_some_and(|call| {
+                    !call.participants.iter().any(|p| {
+                        p.actor == s.actor
+                            && p.left_at.is_none()
+                            && p.device_id.as_deref() == Some(s.device_id.as_str())
+                    })
+                })
+            {
+                // A device that hands off must not replay its buffered microphone on return.
                 s.queue.clear();
             }
         }
@@ -821,6 +834,7 @@ mod tests {
         };
         let (a, token) = sign_in("c:alice");
         let (b, _) = sign_in("c:bob");
+        let (a2, token2) = sign_in("c:alice");
         let call = e
             .dispatch(&a, "calls.init", &json!({"target":"c:bob"}))
             .unwrap();
@@ -839,6 +853,39 @@ mod tests {
             )
             .unwrap();
         let old = attached["stream_id"].as_str().unwrap();
+        media
+            .streams
+            .get_mut(old)
+            .unwrap()
+            .queue
+            .extend([123i16; SAMPLES]);
+        let (standby, _standby_rx) = mpsc::channel(8);
+        media
+            .attach(
+                &mut e,
+                &a2,
+                &token2,
+                &json!({"ringid":ring,"device_id":a2.device_id}),
+                standby,
+            )
+            .unwrap();
+        e.dispatch(
+            &a,
+            "calls.handoff",
+            &json!({"ringid":ring,"to_device_id":a2.device_id}),
+        )
+        .unwrap();
+        media.tick(&mut e);
+        assert!(
+            media.streams[old].queue.is_empty(),
+            "handoff retained stale microphone samples"
+        );
+        e.dispatch(
+            &a2,
+            "calls.handoff",
+            &json!({"ringid":ring,"to_device_id":a.device_id}),
+        )
+        .unwrap();
         media
             .streams
             .get_mut(old)
