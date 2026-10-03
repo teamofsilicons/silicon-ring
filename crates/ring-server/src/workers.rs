@@ -501,6 +501,20 @@ async fn transcribe_voicemail(app: App, vm: Voicemail) {
     );
     let _ = e.persist();
 }
+fn prepare_publication(entry: &Publication) -> std::result::Result<Vec<u8>, ring_providers::Error> {
+    let event_type = match entry.event_type.as_str() {
+        "call.invitation.busy" => "call.invitation_busy",
+        other => other,
+    };
+    ring_providers::Ting::prepare(
+        &entry.org_id,
+        &entry.actor,
+        &format!("ring.{event_type}"),
+        &entry.notification_id,
+        entry.data.clone(),
+    )
+}
+
 async fn publish_pending(app: &App) {
     let entries = {
         let mut e = app.engine.lock().unwrap();
@@ -553,13 +567,7 @@ async fn publish_pending(app: &App) {
         } else {
             match crate::auth::ting_token(app, &entry).await {
                 Ok(token) => match ring_providers::Ting::for_realm(entry.realm == "test") {
-                    Ok(ting) => match ring_providers::Ting::prepare(
-                        &entry.org_id,
-                        &entry.actor,
-                        &format!("ring.{}", entry.event_type),
-                        &entry.notification_id,
-                        entry.data.clone(),
-                    ) {
+                    Ok(ting) => match prepare_publication(&entry) {
                         Ok(bytes) => ting
                             .publish(&token, &bytes)
                             .await
@@ -696,6 +704,42 @@ fn transcription_result(app: &App, call: &Call, event: &Value, offset: u64, revi
 mod tests {
     use super::*;
     use crate::engine::Engine;
+
+    #[test]
+    fn ting_busy_invitation_preserves_event_payload_and_retry_identity() {
+        for (internal, external) in [
+            ("call.invitation.busy", "ring.call.invitation_busy"),
+            ("call.incoming", "ring.call.incoming"),
+        ] {
+            let mut state = State::default();
+            let identity = Identity {
+                actor: "c:caller".into(),
+                org_id: "org".into(),
+                realm: "production".into(),
+                display_name: "Caller".into(),
+                admin: false,
+            };
+            let data = json!({"ringid":"ring_test","target":"si:recipient"});
+            state.event(
+                &identity,
+                vec!["si:recipient".into()],
+                internal,
+                data.clone(),
+            );
+            let entry = state.publications.values().next().unwrap();
+            let bytes = prepare_publication(entry).unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["type"], external);
+            assert_eq!(body["data"], data);
+            assert_eq!(body["key"], entry.notification_id);
+            assert_eq!(body["for"], "si:recipient");
+            assert_eq!(body["org_id"], "org");
+            assert_eq!(prepare_publication(entry).unwrap(), bytes);
+            assert_eq!(entry.event_type, internal);
+            assert_eq!(state.events[0].kind, internal);
+            assert_eq!(state.events[0].data, data);
+        }
+    }
 
     #[test]
     fn pending_representative_messages_survive_startup_and_exact_retries() {
