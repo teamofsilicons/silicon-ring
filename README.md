@@ -85,10 +85,12 @@ RING_INSTALL_FROM_SOURCE=1 sh scripts/install.sh
 export PATH="$SILICON_HOME/.ring/install/bin:$PATH"
 ```
 
-Install the signed CLI binary and start its daemon with the public installer:
+Install the signed CLI binary and start its daemon with the public installer. Python 3 and OpenSSL 3 with Ed25519 support must be on PATH:
 
 ```sh
+export SILICON_HOME="${SILICON_HOME:-$HOME/.silicon}"
 curl -fsSL 'https://ring.teamofsilicons.com/install.sh' | sh
+export PATH="$SILICON_HOME/.ring/install/bin:$PATH"
 ```
 
 It verifies the pinned Ed25519 key and binary digest before installing. Publication status, IAM review and deployment prerequisites are tracked in [deployment documentation](docs/deployment.md). Installation does not authenticate or request passwords/provider keys. Obtain a short-lived Ring app token from IAM, then:
@@ -99,7 +101,7 @@ ring login status --json
 ring notifications authorize
 ```
 
-The Honeycomb package uses `honeycomb install ring`; use CLI 0.1.1 or later for fresh installations. That version fixes setup before PATH activation and defaults to the public backend. Existing local `server_url` values and `SILICON_RING_SERVER_URL` overrides take precedence.
+Use the signed installer above for fresh installations. Honeycomb `0.1.1` is staged pending its catalog validator review; the currently public `0.1.0` package has a first-install setup problem. Once `0.1.1` is activated, use `honeycomb install ring`. CLI `0.1.1` fixes setup before PATH activation and defaults to the public backend. Existing local `server_url` values and `SILICON_RING_SERVER_URL` overrides take precedence. See [publication status](docs/deployment.md) for the pending review.
 
 The last command starts the explicit Ting consent flow for silicon notifications; finish it with `--authorization-id ID --code CODE`. Ting owns notification delivery and interpreter webhooks.
 
