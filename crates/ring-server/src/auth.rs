@@ -107,6 +107,11 @@ pub async fn notifications(app: &App, i: &Identity, rid: &str, p: &Value) -> Res
             json!({"status":"isolated_test","authorized":false,"message":"Local test notifications are retained in the outbox and never sent to production Ting."}),
         );
     }
+    let cache_key = format!("{}|{rid}", key(&i.realm, &i.org_id, &i.actor));
+    let fingerprint = digest(&format!("notifications.authorize:{p}"));
+    if let Some(result) = notification_retry(app, &cache_key, &fingerprint)? {
+        return Ok(result);
+    }
     let iam = ring_providers::Iam::from_env(i.realm == "test").map_err(provider_error)?;
     let owner = key(&i.realm, &i.org_id, &i.actor);
     if let Some(code) = p["code"].as_str() {
@@ -157,10 +162,8 @@ pub async fn notifications(app: &App, i: &Identity, rid: &str, p: &Value) -> Res
             .register_subscription(registration, &i.org_id, &i.actor)
             .await
             .map_err(provider_error)?;
-        app.vault
-            .remove(&format!("ting-consent:{owner}"))
-            .map_err(storage_error)?;
         let mut e = app.engine.lock().unwrap();
+        let before = e.state.clone();
         let mut queued = 0;
         for n in e.state.publications.values_mut().filter(|n| {
             n.realm == i.realm && n.org_id == i.org_id && n.actor == i.actor && n.status == "failed"
@@ -168,8 +171,24 @@ pub async fn notifications(app: &App, i: &Identity, rid: &str, p: &Value) -> Res
             n.status = "pending".into();
             queued += 1;
         }
-        e.persist()?;
-        return Ok(json!({"authorized":true,"queued":queued}));
+        let result = json!({"authorized":true,"queued":queued});
+        e.state.requests.insert(
+            cache_key,
+            Cached {
+                fingerprint,
+                response: json!({"id":rid,"ok":true,"result":result}),
+            },
+        );
+        if let Err(error) = e.persist() {
+            e.state = before;
+            return Err(error);
+        }
+        drop(e);
+        // Keep the completed response durable before retiring the one-time code receipt.
+        app.vault
+            .remove(&format!("ting-consent:{owner}"))
+            .map_err(storage_error)?;
+        return Ok(result);
     }
     let token = verify(app, i).await?;
     let consent = iam
@@ -179,7 +198,37 @@ pub async fn notifications(app: &App, i: &Identity, rid: &str, p: &Value) -> Res
     app.vault
         .set(&format!("ting-consent:{owner}"), &consent)
         .map_err(storage_error)?;
+    let mut e = app.engine.lock().unwrap();
+    e.state.requests.insert(
+        cache_key.clone(),
+        Cached {
+            fingerprint,
+            response: json!({"id":rid,"ok":true,"result":consent}),
+        },
+    );
+    if let Err(error) = e.persist() {
+        e.state.requests.remove(&cache_key);
+        return Err(error);
+    }
     Ok(consent)
+}
+fn notification_retry(app: &App, cache_key: &str, fingerprint: &str) -> Result<Option<Value>> {
+    let e = app.engine.lock().unwrap();
+    e.state
+        .requests
+        .get(cache_key)
+        .map(|cached| {
+            if cached.fingerprint == fingerprint {
+                Ok(cached.response["result"].clone())
+            } else {
+                Err(Fault::new(
+                    "REQUEST_ID_REUSED",
+                    "Request ID was already used with different input.",
+                    "Use a new request ID for changed input.",
+                ))
+            }
+        })
+        .transpose()
 }
 fn validate_grants(i: &Identity, value: &Value) -> Result<()> {
     let items = value["items"]
@@ -443,5 +492,41 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, "RECIPIENT_UNAVAILABLE");
         assert!(!error.retryable);
+    }
+
+    #[tokio::test]
+    async fn completed_notification_consent_survives_lost_reply_and_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = app(dir.path());
+        let identity = login(&service, "si:alice").identity;
+        let params = json!({"authorization_id":"consent-1","code":"one-use-code"});
+        let result = json!({"authorized":true,"queued":3});
+        {
+            let mut e = service.engine.lock().unwrap();
+            e.state.requests.insert(
+                "production|org|si:alice|retry-consent".into(),
+                Cached {
+                    fingerprint: digest(&format!("notifications.authorize:{params}")),
+                    response: json!({"id":"retry-consent","ok":true,"result":result}),
+                },
+            );
+            e.persist().unwrap();
+        }
+        drop(service);
+        let restarted = app(dir.path());
+        assert_eq!(
+            notifications(&restarted, &identity, "retry-consent", &params)
+                .await
+                .unwrap(),
+            result
+        );
+        let changed = json!({"authorization_id":"consent-2","code":"different-code"});
+        assert_eq!(
+            notifications(&restarted, &identity, "retry-consent", &changed)
+                .await
+                .unwrap_err()
+                .code,
+            "REQUEST_ID_REUSED"
+        );
     }
 }
