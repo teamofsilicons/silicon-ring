@@ -1,0 +1,226 @@
+{
+  "passed": true,
+  "timestamp": "2026-10-03T15:14:20.272Z",
+  "mode": "local",
+  "scope": "PCM relay and local recording; provider network calls disabled in automatic local fixtures",
+  "server_binary": "/Users/unlikefraction/shubham/unlikefraction/tos/silicon-ring/target/release/ring-server",
+  "host": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "logical_cpus": 10
+  },
+  "calls": 15,
+  "input_streams": 30,
+  "requested_seconds": 30,
+  "elapsed_seconds": 30.37,
+  "pcm": {
+    "sample_rate": 24000,
+    "channels": 1,
+    "frame_ms": 20,
+    "sent_frames": 45000,
+    "received_frames": 45000,
+    "expected_frames": 45000,
+    "received_pcm_mib_per_second": 1.356,
+    "sent_websocket_bytes": 63490020,
+    "received_websocket_bytes": 95204203
+  },
+  "relay_latency_ms": {
+    "p50": 30.68,
+    "p95": 47.87,
+    "max": 267.45
+  },
+  "sender_lateness_ms": {
+    "p95": 2.93,
+    "max": 172.93
+  },
+  "server_resources": {
+    "pid": 32418,
+    "samples": 32,
+    "max_rss_mib": 19.27,
+    "cpu_seconds": 4.11,
+    "cpu_percent_of_one_core": 13.53
+  },
+  "recordings": [
+    {
+      "ringid": "ring_2394016d37e34ec2862ec50f4054f031",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 30469,
+      "audio_duration_ms": 30460,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_05af1a8fefab4316950159b1b24307f5",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 30532,
+      "audio_duration_ms": 30532,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_337b21552ffe47e8ad7c886c77d0ba22",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 30591,
+      "audio_duration_ms": 30580,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_18973c48d2d049f28faedc5bb5cb11fd",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 30654,
+      "audio_duration_ms": 30654,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_9393ed0e36ff481f9ae3d0459298f9bb",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 30715,
+      "audio_duration_ms": 30715,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_81eb1f82a121444f9851ec45f29ebdf6",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 30777,
+      "audio_duration_ms": 30777,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_1fee511987254ea4904a85976b699287",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 30840,
+      "audio_duration_ms": 30840,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_727dff2692d8408ebac52c55c755d2a9",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 30880,
+      "audio_duration_ms": 30880,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_0a8376e4354d44049d040c62665ac481",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 30943,
+      "audio_duration_ms": 30940,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_c40fded551594ba1b41fea74f72d30a9",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 31012,
+      "audio_duration_ms": 31012,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_3c804a193e564cba9ebc79b1c263cc78",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 31080,
+      "audio_duration_ms": 31080,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_01968283c84d4c839ce0d63d26f2363a",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 31122,
+      "audio_duration_ms": 31120,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_03573c748fa34b3db1613e5283f55e51",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 31187,
+      "audio_duration_ms": 31180,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_7407dd5899924a70882cd8d0d7942f9f",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 31232,
+      "audio_duration_ms": 31232,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    },
+    {
+      "ringid": "ring_e55d9e54dc944f9fa10f1108faef5db0",
+      "status": "ready",
+      "coverage": "full",
+      "missing_intervals": [],
+      "duration_ms": 31292,
+      "audio_duration_ms": 31280,
+      "frames_by_sender": [
+        1500,
+        1500
+      ]
+    }
+  ],
+  "errors": []
+}

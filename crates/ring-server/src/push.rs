@@ -115,6 +115,7 @@ impl Push {
         &mut self,
         platform: &str,
         token: &str,
+        environment: Option<&str>,
         payload: &Value,
         delivery_id: &str,
         expires: i64,
@@ -132,7 +133,7 @@ impl Push {
                     .map_err(|_| config_error("APNs JWT signing failed"))?;
                 apple.token = Some((now, signed));
             }
-            let host = if apple.sandbox {
+            let host = if environment.map_or(apple.sandbox, |e| e == "sandbox") {
                 "api.sandbox.push.apple.com"
             } else {
                 "api.push.apple.com"
@@ -242,6 +243,7 @@ pub fn start(app: App) {
             return;
         }
     };
+    let test_push_enabled = std::env::var("RING_TEST_NATIVE_PUSH_ENABLED").as_deref() == Ok("true");
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(250));
         loop {
@@ -256,9 +258,6 @@ pub fn start(app: App) {
                     .cloned()
                     .collect();
                 for event in events {
-                    if event.realm == "test" && !app.test_tokens.is_empty() {
-                        continue;
-                    }
                     let Some(ring) = event.data["ringid"].as_str() else {
                         continue;
                     };
@@ -285,6 +284,11 @@ pub fn start(app: App) {
                                 && d.ring_enabled
                                 && !d.revoked
                                 && d.push_token.is_some()
+                                && allowed_environment(&call.realm, d, test_push_enabled)
+                                && e.state
+                                    .sessions
+                                    .values()
+                                    .any(|s| s.device_id == d.device_id && s.expires_at > now())
                         })
                         .cloned()
                         .collect();
@@ -303,11 +307,14 @@ pub fn start(app: App) {
                         e.state.pushes.entry(did).or_insert(json!({"device_id":device.device_id,"ringid":ring,"invitation_id":offer.invitation_id,"payload":payload,"apns_id":uuid::Uuid::new_v4().to_string(),"status":"pending","attempts":0,"retry_at":now()}));
                     }
                 }
-                let latest = e.state.events.last().map_or(0, |v| v.seq);
-                let changed = latest != e.state.push_cursor;
+                let latest = e.state.latest_event_seq();
+                let previous_cursor = e.state.push_cursor;
+                let changed = latest != previous_cursor;
                 e.state.push_cursor = latest;
-                if changed {
-                    let _ = e.persist();
+                if changed && e.persist().is_err() {
+                    // Reprocess these stable event/device IDs before sending anything.
+                    e.state.push_cursor = previous_cursor;
+                    continue;
                 }
                 e.state
                     .pushes
@@ -335,7 +342,19 @@ pub fn start(app: App) {
                     e.state
                         .devices
                         .get(task["device_id"].as_str().unwrap_or(""))
-                        .filter(|d| valid && !d.revoked && d.ring_enabled)
+                        .filter(|d| {
+                            valid
+                                && !d.revoked
+                                && d.ring_enabled
+                                && d.push_token.is_some()
+                                && call.is_some_and(|c| {
+                                    allowed_environment(&c.realm, d, test_push_enabled)
+                                })
+                                && e.state
+                                    .sessions
+                                    .values()
+                                    .any(|s| s.device_id == d.device_id && s.expires_at > now())
+                        })
                         .cloned()
                 };
                 let outcome = if let Some(d) = device {
@@ -347,6 +366,7 @@ pub fn start(app: App) {
                     push.send(
                         d.push_platform.as_deref().unwrap_or(""),
                         d.push_token.as_deref().unwrap_or(""),
+                        d.push_environment.as_deref(),
                         &task["payload"],
                         task["apns_id"].as_str().unwrap_or(""),
                         expiry,
@@ -379,9 +399,36 @@ pub fn start(app: App) {
         }
     });
 }
+fn allowed_environment(realm: &str, device: &Device, test_push_enabled: bool) -> bool {
+    realm != "test"
+        || (test_push_enabled
+            && device.push_platform.as_deref() == Some("apns_voip")
+            && device.push_environment.as_deref() == Some("sandbox"))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn isolated_calls_never_wake_production_push_tokens() {
+        let mut device = Device {
+            device_id: "device".into(),
+            owner: "test:org:c:alice".into(),
+            name: "iPhone".into(),
+            ring_enabled: true,
+            revoked: false,
+            push_token: Some("token".into()),
+            push_platform: Some("apns_voip".into()),
+            push_environment: Some("production".into()),
+        };
+        assert!(!allowed_environment("test", &device, false));
+        assert!(!allowed_environment("test", &device, true));
+        device.push_environment = Some("sandbox".into());
+        assert!(!allowed_environment("test", &device, false));
+        assert!(allowed_environment("test", &device, true));
+        device.push_platform = Some("fcm".into());
+        assert!(!allowed_environment("test", &device, true));
+        assert!(allowed_environment("production", &device, false));
+    }
     #[test]
     fn uuid_of_call_is_stable() {
         let c = id("ring");

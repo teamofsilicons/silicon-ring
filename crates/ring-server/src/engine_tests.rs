@@ -1,6 +1,88 @@
 use super::*;
 use tempfile::TempDir;
 
+#[test]
+fn logout_clears_push_registration_and_pending_delivery() {
+    let mut f = Fixture::new();
+    op(
+        &mut f.engine,
+        &f.alice,
+        "devices.update",
+        json!({"device_id":f.alice.device_id,"push_platform":"apns_voip","push_environment":"sandbox","push_token":"private-device-token"}),
+    );
+    f.engine.state.pushes.insert(
+        "queued".into(),
+        json!({"device_id":f.alice.device_id,"status":"pending"}),
+    );
+    op(&mut f.engine, &f.alice, "auth.logout", json!({}));
+    assert!(f.engine.state.devices[&f.alice.device_id]
+        .push_token
+        .is_none());
+    assert!(f.engine.state.pushes.is_empty());
+}
+
+#[test]
+fn delayed_captions_are_scoped_to_the_audio_participation_window() {
+    let mut f = Fixture::new();
+    let ring = dial(&mut f.engine, &f.alice, "si:bob");
+    op(
+        &mut f.engine,
+        &f.bob,
+        "calls.accept",
+        json!({"ringid":ring}),
+    );
+    let call = f.engine.state.calls.get_mut(&ring).unwrap();
+    call.answered_at = Some("2026-01-01T00:00:00Z".into());
+    let bob = call
+        .participants
+        .iter_mut()
+        .find(|p| p.actor == "si:bob")
+        .unwrap();
+    bob.joined_at = "2026-01-01T00:00:10Z".into();
+    bob.left_at = Some("2026-01-01T00:00:20Z".into());
+    let mut caption = Entry {
+        seq: 999,
+        occurred_at: "2026-01-01T00:00:30Z".into(),
+        kind: "speech".into(),
+        actor: None,
+        data: json!({"start_ms":12000,"end_ms":14000}),
+        private_to: None,
+    };
+    assert!(entry_visible(call, &caption, "si:bob"));
+    caption.data = json!({"start_ms":2000,"end_ms":4000});
+    assert!(!entry_visible(call, &caption, "si:bob"));
+    caption.data = json!({"start_ms":9000,"end_ms":12000});
+    assert!(!entry_visible(call, &caption, "si:bob"));
+    caption.data = json!({"start_ms":19000,"end_ms":21000});
+    assert!(!entry_visible(call, &caption, "si:bob"));
+}
+
+#[test]
+fn event_cursors_stay_monotonic_after_retention_and_outbox_sends_recover() {
+    let mut f = Fixture::new();
+    f.engine.state.event(
+        &f.alice.identity,
+        vec!["si:alice".into()],
+        "call.incoming",
+        json!({"ringid":"example"}),
+    );
+    let first = f.engine.state.latest_event_seq();
+    f.engine.state.events.clear();
+    f.engine.state.event(
+        &f.alice.identity,
+        vec!["si:alice".into()],
+        "call.ended",
+        json!({"ringid":"example"}),
+    );
+    assert_eq!(f.engine.state.latest_event_seq(), first + 1);
+    let notification = f.engine.state.publications.values_mut().next().unwrap();
+    notification.status = "sending".into();
+    let id = notification.notification_id.clone();
+    f.engine.persist().unwrap();
+    let reopened = Engine::open(f._dir.path()).unwrap();
+    assert_eq!(reopened.state.publications[&id].status, "pending");
+}
+
 struct Fixture {
     engine: Engine,
     _dir: TempDir,

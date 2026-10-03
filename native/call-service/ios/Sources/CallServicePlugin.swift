@@ -39,6 +39,7 @@ private final class RingTransport: NSObject {
     func configure(_ values: [String: Any]) throws {
         guard let raw = values["url"] as? String, let url = URL(string: raw), ["wss", "ws"].contains(url.scheme ?? ""), url.user == nil, url.password == nil,
               values["session_token"] is String, values["device_id"] is String, values["actor"] is String else { throw failure("Native calling needs a valid Ring endpoint and authenticated device session.") }
+        guard url.scheme == "wss" || ["localhost", "127.0.0.1", "::1", "[::1]"].contains(url.host ?? "") else { throw failure("Use wss:// for remote Ring servers.") }
         if credentials["session_token"] as? String != values["session_token"] as? String { disconnect(clear: false) }
         credentials = values; enabled = true
         saveSession(try JSONSerialization.data(withJSONObject: values))
@@ -130,6 +131,7 @@ private final class NativeAudio {
     private var queuedOutput = 0
     private var capturingSince = ProcessInfo.processInfo.systemUptime
     private var starting = false
+    private var callKitActive = false
     private var startWaiters: [Reply] = []
     private(set) var streamId = ""
     private(set) var ringid = ""
@@ -158,9 +160,13 @@ private final class NativeAudio {
         } }
     }
     private func openAudio() throws {
+        // CallKit owns activation for calls, including lock-screen answers.
+        // Private voicemail recordings activate their own audio session.
+        if !voicemail && !callKitActive { return }
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
-        try session.setPreferredSampleRate(24000); try session.setPreferredIOBufferDuration(0.02); try session.setActive(true)
+        try session.setPreferredSampleRate(24000); try session.setPreferredIOBufferDuration(0.02)
+        if voicemail { try session.setActive(true) }
         let engine = AVAudioEngine(), player = AVAudioPlayerNode()
         self.engine = engine; self.player = player
         let output = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1)!
@@ -215,6 +221,11 @@ private final class NativeAudio {
             reply(result)
         }
     }
+    func activate() { callKitActive = true; if !streamId.isEmpty && engine == nil { do { try openAudio() } catch { transport.event?("error", ["message": error.localizedDescription]) } } }
+    func deactivate() {
+        callKitActive = false
+        engine?.inputNode.removeTap(onBus: 0); player?.stop(); engine?.stop(); engine = nil; player = nil; buffered.removeAll(); queuedOutput = 0
+    }
     func stop(_ reply: @escaping Reply) {
         let id = streamId; let last = sequence - 1; let privateAudio = voicemail
         streamId = ""; ringid = ""; engine?.inputNode.removeTap(onBus: 0); player?.stop(); engine?.stop(); engine = nil; player = nil; buffered.removeAll(); queuedOutput = 0
@@ -259,6 +270,7 @@ final class CallServicePlugin: Plugin, PKPushRegistryDelegate, CXProviderDelegat
         let payload = try JSONSerialization.jsonObject(with: Data(invoke.getRawArgs().utf8)) as? [String: Any] ?? [:]
         let reply: Reply = { result in switch result { case .success(let value): invoke.resolve(value.mapValues { $0 as Any? }); case .failure(let error): invoke.reject(error.localizedDescription) } }
         switch payload["action"] as? String {
+        case "restore": invoke.resolve((savedSession() ?? [:]).mapValues { $0 as Any? })
         case "start": guard let ring = payload["ringid"] as? String else { invoke.reject("A call ID is required."); return }; audio.start(ring, voicemailId: payload["voicemail_id"] as? String, reply: reply)
         case "stop": audio.stop(reply)
         case "mute": audio.mute(payload["muted"] as? Bool ?? false, reply: reply)
@@ -308,7 +320,12 @@ final class CallServicePlugin: Plugin, PKPushRegistryDelegate, CXProviderDelegat
         provider.reportNewIncomingCall(with: uuid, update: update) { error in if error != nil { self.calls.removeValue(forKey: ring) }; completion() }
     }
     private func registerPush() {
-        if !pushToken.isEmpty && transport.ready { transport.request("devices.update", ["device_id": transport.device, "push_platform": "apns_voip", "push_token": pushToken]) { _ in } }
+        #if DEBUG
+        let environment = "sandbox"
+        #else
+        let environment = "production"
+        #endif
+        if !pushToken.isEmpty && transport.ready { transport.request("devices.update", ["device_id": transport.device, "push_platform": "apns_voip", "push_token": pushToken, "push_environment": environment]) { _ in } }
     }
     func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) { pushToken = pushCredentials.token.map { String(format: "%02x", $0) }.joined(); registerPush() }
     func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) { pushToken = ""; if transport.ready { transport.request("devices.update", ["device_id": transport.device, "push_token": NSNull(), "push_platform": NSNull()]) { _ in } } }
@@ -316,7 +333,13 @@ final class CallServicePlugin: Plugin, PKPushRegistryDelegate, CXProviderDelegat
         let data = payload.dictionaryPayload
         guard let ring = data["ringid"] as? String else { completion(); return }
         reportIncoming(ring, caller: data["caller"] as? String ?? "Ring", name: data["display_name"] as? String ?? "Incoming Ring call", completion: completion)
-        transport.connect { _ in }
+        transport.connect { error in
+            guard error == nil else { return }
+            self.transport.request("calls.get", ["ringid": ring]) { result in
+                if case .success(let call) = result { self.reconcile(call) }
+                else if let uuid = self.calls.removeValue(forKey: ring) { self.provider.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded); self.pendingCalls.remove(ring) }
+            }
+        }
     }
     func providerDidReset(_ provider: CXProvider) { audio.stop { _ in }; calls.removeAll(); pendingCalls.removeAll() }
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
@@ -334,8 +357,8 @@ final class CallServicePlugin: Plugin, PKPushRegistryDelegate, CXProviderDelegat
         }
     }
     func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) { audio.mute(action.isMuted) { result in switch result { case .success: action.fulfill(); case .failure: action.fail() } } }
-    func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {}
-    func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {}
+    func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) { audio.activate() }
+    func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) { audio.deactivate() }
 }
 
 @_cdecl("init_plugin_call_service")

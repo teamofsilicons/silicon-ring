@@ -25,6 +25,8 @@ Keep server credentials in an environment file with mode `0600`, or AWS Secrets 
 
 Set `RING_ENV=production` and a base64-encoded 32-byte `RING_ENCRYPTION_KEY`. Back up this key independently: the credential vault cannot recover IAM access/refresh tokens without it. In local development the vault can generate a protected local master key. The SQLite state, credential vault and unfinished recording files must survive restarts. A restarted media session is marked interrupted rather than represented as still connected.
 
+Ring device sessions expire after 30 days so idle native listeners remain available. IAM is rechecked on control operations and every 30 seconds for connected identities and active representatives, including representatives whose CLI session has expired. Logout and authority revocation clear push registrations and pending pushes. Test native push is disabled by default; `RING_TEST_NATIVE_PUSH_ENABLED=true` permits only APNs sandbox tokens in an isolated test server.
+
 For this setup, protected registration and table-key receipts live in `deploy/*.private.json`; the assembled runtime environment is `deploy/server.env`. These files are excluded from Git. Preserve them privately and never paste their contents into support reports.
 
 ## IAM and notifications
@@ -74,6 +76,8 @@ RING_ENV_FILE=./server.env docker compose -f deploy/compose.yaml up -d --build
 
 Caddy terminates TLS for both public hosts and proxies HTTP/WebSocket traffic to the Rust service. `/health` is the readiness endpoint. The Docker build copies only manifests, source folders and frontend build output; it never copies `.env` or registration receipts.
 
+Use Docker BuildKit (`docker buildx build`) for the image. The frontend and Rust compiler run on the build machine's native architecture; Debian's cross compiler links the requested Linux AMD64 or ARM64 backend. This avoids running Vite and the Rust compiler under CPU emulation. Cargo download and compilation caches survive source-only rebuilds.
+
 For AWS, build and push an image to ECR, capture its immutable SHA-256 digest, and store the runtime environment as a Secrets Manager JSON object. Choose a public subnet with an internet gateway. Then run:
 
 ```sh
@@ -98,5 +102,16 @@ node scripts/load-test.mjs --binary target/release/ring-server --calls 15 --seco
 The script starts an isolated server and thirty test identities, sends 20 ms PCM frames in both directions of fifteen calls for thirty seconds, measures relay latency and process CPU/RSS, and downloads every finalized recording through the real protocol. Distinct audio patterns verify that each receiver gets only the other sender and that every input frame survives in the recording. Missing frames, wrong audio, unfinished calls, or partial recording coverage produce a nonzero exit. Automatic local runs disable external voice providers and telemetry; this benchmark does not measure external Live, STT, IAM, Ting or S3 capacity.
 
 For a server already configured with isolated fixture credentials, use `--url wss://HOST/ws --secrets-file FILE`. Generate protected inputs with `--prepare-fixtures FILE`; the companion `FILE.tokens.private.json` is the server's `RING_TEST_TOKENS_FILE`, and `test_app_secret` supplies `RING_TEST_APP_SECRET`. Keep these credentials private and use a separate benchmark process/data directory. `--pid PID` can collect resource usage when the target process is on the same machine. The initial development-machine debug run failed recording completeness, so it is not evidence for the AWS instance's supported capacity.
+
+The optimized development-machine baseline in `docs/benchmarks/2026-10-03-local-release.json` passed: 45,000 of 45,000 frames relayed, all fifteen recordings complete with no missing intervals, relay p50 30.68 ms / p95 47.87 ms, server CPU 13.53% of one core, and peak RSS 19.27 MiB. These are local relay/recording measurements with external providers disabled.
+
+Run the same isolated workload against the deployed image and host through SSM:
+
+```sh
+python3 deploy/benchmark-aws.py --instance-id i-... --image "$RING_IMAGE_URI" \
+  --bucket BUCKET --report docs/benchmarks/aws-instance.json
+```
+
+The helper creates its own protected fixture identities, data directory, loopback-only server container and Node load generator. It measures the server through Linux `/proc`, preserves the report in private S3, and removes its temporary process and local data afterward. It does not use production account tokens. To verify the actual S3 SDK separately, run `RING_S3_BUCKET=BUCKET AWS_REGION=us-west-1 cargo run --release -p ring-providers --features s3 --example smoke -- s3`; the command writes a unique small verification object, checks its bytes and deletes it.
 
 `aws cloudformation validate-template --template-body file://deploy/aws.yaml` passed. The environment had working AWS account, GitHub and Namecheap access. Docker was installed but its Colima daemon was initially stopped. Those observations do not themselves confirm a deployed service. Check the actual stack, HTTPS endpoints, IAM login, real media, S3 persistence, notification receipt and recovery after deployment.

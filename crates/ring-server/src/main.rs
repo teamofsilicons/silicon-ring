@@ -43,6 +43,9 @@ pub struct App {
     pub providers_disabled: bool,
     pub vault: Arc<vault::Vault>,
     pub telemetry: Arc<Option<ring_providers::Telemetry>>,
+    pub web_analytics: Arc<Option<ring_providers::Telemetry>>,
+    pub web_events: Arc<Option<ring_providers::Telemetry>>,
+    pub cli_telemetry: Arc<Option<ring_providers::Telemetry>>,
 }
 struct Peer {
     hello: bool,
@@ -139,6 +142,31 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         providers_disabled: std::env::var("RING_DISABLE_PROVIDERS").as_deref() == Ok("1"),
         vault: Arc::new(vault::Vault::open(&dir)?),
         telemetry: Arc::new(telemetry),
+        web_analytics: Arc::new(
+            ring_providers::Telemetry::new(
+                std::env::var("RING_TELEMETRY_WEB_ANALYTICS_KEY")
+                    .ok()
+                    .as_deref(),
+                std::env::var("RING_TELEMETRY_ENABLED").as_deref() != Ok("false"),
+            )
+            .ok(),
+        ),
+        web_events: Arc::new(
+            ring_providers::Telemetry::new(
+                std::env::var("RING_TELEMETRY_WEB_EVENTS_KEY")
+                    .ok()
+                    .as_deref(),
+                std::env::var("RING_TELEMETRY_ENABLED").as_deref() != Ok("false"),
+            )
+            .ok(),
+        ),
+        cli_telemetry: Arc::new(
+            ring_providers::Telemetry::new(
+                std::env::var("RING_TELEMETRY_CLI_KEY").ok().as_deref(),
+                std::env::var("RING_TELEMETRY_ENABLED").as_deref() != Ok("false"),
+            )
+            .ok(),
+        ),
     };
     workers::start(app.clone());
     storage::start(app.clone());
@@ -190,7 +218,7 @@ async fn connection(app: App, socket: WebSocket) {
         tokio::select! {
         incoming=source.next()=>{let Some(Ok(message))=incoming else{break};last_seen=Instant::now();match message{Message::Text(raw)=>{let value=match serde_json::from_str::<Value>(&raw){Ok(v)=>v,Err(_)=>{let _=sink.send(Message::Text(json!({"ok":false,"error":invalid("Malformed JSON frame")}).to_string().into())).await;continue}};if value.get("method").is_some(){if window.elapsed()>Duration::from_secs(1){window=Instant::now();controls=0}controls+=1;if controls>60{let _=sink.send(Message::Text(json!({"id":value["id"],"ok":false,"error":Fault::new("RATE_LIMITED","Too many control requests.","Wait a second before retrying.")}).to_string().into())).await;continue}let response=request(&app,&mut peer,value,tx.clone()).await;if sink.send(Message::Text(response.to_string().into())).await.is_err(){break}}else{let result=frame(&app,&peer,&value);if let Some(response)=result{if sink.send(Message::Text(response.to_string().into())).await.is_err(){break}}}},Message::Ping(data)=>{if sink.send(Message::Pong(data)).await.is_err(){break}},Message::Pong(_)=>{},Message::Close(_)=>break,_=>{}}},
         outgoing=rx.recv()=>{if let Some(v)=outgoing{let valid=peer.token.as_ref().is_some_and(|t|app.engine.lock().unwrap().session(t).is_ok());if valid&&sink.send(Message::Text(v.to_string().into())).await.is_err(){break}}},
-        _=poll.tick()=>{let events={let e=app.engine.lock().unwrap();let session=peer.token.as_ref().and_then(|t|e.session(t).ok());let mut out=Vec::new();if let Some(s)=session{for(id,sub)in &mut peer.subscriptions{for event in e.state.events.iter().filter(|v|v.seq>sub.after_seq){if event.org_id==s.identity.org_id&&event.realm==s.identity.realm&&event.recipients.contains(&s.identity.actor)&&sub.ring.as_ref().is_none_or(|r|event.data["ringid"]==*r)&&(sub.topics.is_empty()||sub.topics.iter().any(|t|event.kind.starts_with(t))){let mut v=json!(event);v["subscription_id"]=json!(id);v.as_object_mut().unwrap().remove("recipients");v.as_object_mut().unwrap().remove("org_id");v.as_object_mut().unwrap().remove("realm");out.push(v);}}sub.after_seq=e.state.events.last().map_or(sub.after_seq,|x|x.seq);}}out};for event in events{if sink.send(Message::Text(event.to_string().into())).await.is_err(){return}}},
+        _=poll.tick()=>{let events={let e=app.engine.lock().unwrap();let session=peer.token.as_ref().and_then(|t|e.session(t).ok());let mut out=Vec::new();if let Some(s)=session{for(id,sub)in &mut peer.subscriptions{for event in e.state.events.iter().filter(|v|v.seq>sub.after_seq){if event.org_id==s.identity.org_id&&event.realm==s.identity.realm&&event.recipients.contains(&s.identity.actor)&&sub.ring.as_ref().is_none_or(|r|event.data["ringid"]==*r)&&(sub.topics.is_empty()||sub.topics.iter().any(|t|event.kind.starts_with(t))){let mut v=json!(event);v["subscription_id"]=json!(id);v.as_object_mut().unwrap().remove("recipients");v.as_object_mut().unwrap().remove("org_id");v.as_object_mut().unwrap().remove("realm");out.push(v);}}sub.after_seq=e.state.latest_event_seq().max(sub.after_seq);}}out};for event in events{if sink.send(Message::Text(event.to_string().into())).await.is_err(){return}}},
         _=heartbeat.tick()=>{if last_seen.elapsed()>Duration::from_secs(90){break}if sink.send(Message::Ping(vec![].into())).await.is_err(){break}},
         }
     }
@@ -360,8 +388,65 @@ async fn handle(
     auth::verify(app, &session.identity).await?;
     let session = app.engine.lock().unwrap().session(token)?;
     let i = &session.identity;
+    if matches!(m, "calls.init" | "calls.invite") {
+        let target = actor_id(required(&p, "target")?, &i.org_id)?;
+        auth::verify_recipient(app, i, &target).await?;
+    }
     if m == "notifications.authorize" {
         return auth::notifications(app, i, rid, &p).await;
+    }
+    if m == "telemetry.record" {
+        let source = required(&p, "source")?;
+        let step = required(&p, "step")?;
+        let progress = required(&p, "progress")?;
+        let trace = required(&p, "trace_id")?;
+        if !matches!(source, "web_analytics" | "web_events" | "cli")
+            || !matches!(
+                step,
+                "page_view" | "call_action" | "connection" | "change_settings" | "command"
+            )
+            || !matches!(
+                progress,
+                "viewed"
+                    | "started"
+                    | "succeeded"
+                    | "failed"
+                    | "connected"
+                    | "reconnecting"
+                    | "offline"
+            )
+            || uuid::Uuid::parse_str(trace).is_err()
+        {
+            return Err(invalid(
+                "Telemetry accepts only Ring diagnostic enums and a random trace UUID",
+            ));
+        }
+        let enabled = {
+            let e = app.engine.lock().unwrap();
+            i.realm == "production"
+                && e.state.config(i).values.get("telemetry.enabled") != Some(&Value::Bool(false))
+                && e.state
+                    .configs
+                    .get(&key(&i.realm, &i.org_id, "*"))
+                    .is_none_or(|c| c.values.get("telemetry.enabled") != Some(&Value::Bool(false)))
+        };
+        let table = match source {
+            "web_analytics" => &app.web_analytics,
+            "cli" => &app.cli_telemetry,
+            _ => &app.web_events,
+        };
+        if enabled {
+            if let Some(table) = table.as_ref() {
+                table.record(
+                    source,
+                    step,
+                    progress,
+                    trace,
+                    p["duration_ms"].as_u64().map(|n| n.min(86400000)),
+                );
+            }
+        }
+        return Ok(json!({"accepted":enabled && table.is_some()}));
     }
     if m == "events.subscribe" {
         let e = app.engine.lock().unwrap();
@@ -372,7 +457,7 @@ async fn handle(
         if let Some(r) = &ring {
             e.state.call(i, r)?;
         }
-        let latest = e.state.events.last().map_or(0, |v| v.seq);
+        let latest = e.state.latest_event_seq();
         let after = p["after_seq"].as_u64().unwrap_or(latest);
         if after > latest {
             return Err(invalid("after_seq is ahead of the server event cursor"));

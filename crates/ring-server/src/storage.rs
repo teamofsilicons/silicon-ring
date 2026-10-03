@@ -12,6 +12,7 @@ pub fn start(app: App) {
             }
             sync(&app).await;
             retention(&app).await;
+            evict_cache(&app).await;
         }
     });
 }
@@ -33,6 +34,12 @@ async fn sync(app: &App) {
             .collect::<Vec<_>>()
     };
     for a in assets {
+        if a.ringid
+            .as_ref()
+            .is_some_and(|ring| app.media.lock().unwrap().transcribers.contains_key(ring))
+        {
+            continue;
+        }
         let owner = a.owner.split('|').collect::<Vec<_>>();
         if owner.len() != 3 {
             continue;
@@ -53,18 +60,7 @@ async fn sync(app: &App) {
             continue;
         };
         let object = format!("{realm}/{}/{}/{}", digest(org), a.purpose, a.asset_id);
-        let bytes = match std::fs::read(&a.path) {
-            Ok(v) => v,
-            Err(_) => {
-                failed(
-                    app,
-                    &a,
-                    "Local audio is missing; no S3 upload was attempted.",
-                );
-                continue;
-            }
-        };
-        let result = store.put(&object, &a.mime_type, bytes).await;
+        let result = store.put_file(&object, &a.mime_type, &a.path).await;
         match result {
             Ok(()) => {
                 let transcript = if let Some(ring) = &a.ringid {
@@ -143,11 +139,26 @@ pub async fn ensure_local(app: &App, i: &Identity, asset_id: &str) -> Result<()>
                 "Configure the recording's organization storage.",
             )
         })?;
-    let bytes = store
-        .get(required(&stored, "object_key")?)
+    let temporary = format!("{}.{}", a.path, id("download"));
+    let result = store
+        .get_to_file(required(&stored, "object_key")?, &temporary)
         .await
-        .map_err(crate::provider_error)?;
-    std::fs::write(&a.path, bytes).map_err(storage_error)?;
+        .map_err(crate::provider_error);
+    match result {
+        Ok(length) if length == a.size_bytes as u64 => tokio::fs::rename(&temporary, &a.path)
+            .await
+            .map_err(storage_error)?,
+        Ok(_) => {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(invalid(
+                "Stored audio length does not match its committed metadata",
+            ));
+        }
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(error);
+        }
+    }
     Ok(())
 }
 async fn retention(app: &App) {
@@ -237,10 +248,44 @@ async fn retention(app: &App) {
             }
         }
         let mut e = app.engine.lock().unwrap();
+        e.state.event_seq = e.state.latest_event_seq();
+        if vm {
+            e.state.events.retain(|v| v.data["voicemail_id"] != id);
+            e.state
+                .publications
+                .retain(|_, v| v.data["voicemail_id"] != id);
+            e.state.greetings.remove(&id);
+        } else {
+            let message_ids = e
+                .state
+                .calls
+                .get(&id)
+                .map(|c| {
+                    c.transcript
+                        .iter()
+                        .filter_map(|t| t.data["message_id"].as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for mid in message_ids {
+                e.state.sent_messages.remove(&mid);
+            }
+            e.state.events.retain(|v| v.data["ringid"] != id);
+            e.state.publications.retain(|_, v| v.data["ringid"] != id);
+            e.state.delegations.retain(|_, v| v.ringid != id);
+            e.state.recording_gaps.remove(&id);
+            e.state
+                .transcript_cursors
+                .retain(|k, _| !k.starts_with(&format!("{id}|")));
+        }
         if let Some(aid) = aid {
             e.state.assets.remove(&aid);
             e.state.storage.remove(&aid);
         }
+        e.state.requests.retain(|_, cached| {
+            cached.response["result"]["ringid"] != id
+                && cached.response["result"]["voicemail_id"] != id
+        });
         if vm {
             if let Some(v) = e.state.voicemails.get_mut(&id) {
                 v.state = "purged".into();
@@ -258,5 +303,55 @@ async fn retention(app: &App) {
             }
         }
         let _ = e.persist();
+    }
+}
+
+// S3 is the durable store. Keep only a bounded, recently used cache of completed audio.
+async fn evict_cache(app: &App) {
+    let assets = {
+        let e = app.engine.lock().unwrap();
+        e.state
+            .assets
+            .values()
+            .filter(|a| {
+                a.complete
+                    && e.state
+                        .storage
+                        .get(&a.asset_id)
+                        .is_some_and(|s| s["status"] == "ready")
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let limit = std::env::var("RING_CACHE_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(512 * 1024 * 1024);
+    let mut rows = Vec::new();
+    let mut total = 0u64;
+    for a in assets {
+        if let Ok(metadata) = tokio::fs::metadata(&a.path).await {
+            total = total.saturating_add(metadata.len());
+            rows.push((
+                metadata
+                    .modified()
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                metadata.len(),
+                a.path,
+            ));
+        }
+    }
+    rows.sort_by_key(|r| r.0);
+    for (modified, size, path) in rows {
+        let age = modified.elapsed().unwrap_or_default().as_secs();
+        if age < 60 {
+            continue;
+        }
+        if total <= limit && age < 3600 {
+            continue;
+        }
+        if tokio::fs::remove_file(path).await.is_ok() {
+            total = total.saturating_sub(size);
+        }
     }
 }

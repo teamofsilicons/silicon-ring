@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import { RingTone } from './audio';
-import { PhoneAudio, configureNative, logoutNative, isNativeMobile } from './native';
+import { PhoneAudio, configureNative, logoutNative, restoreNative, isNativeMobile } from './native';
 import { RingSocket, type Call, type Session, displayActor, downloadAsset, uploadAsset, coalesceTranscript, errorMessage, isActor, normalizeActor } from './protocol';
 
 type IconName = 'phone' | 'history' | 'voicemail' | 'devices' | 'settings' | 'arrow' | 'plus' | 'search' | 'close' | 'chevron' | 'mic' | 'muted' | 'end' | 'download' | 'check' | 'logout' | 'user' | 'bell' | 'spark' | 'refresh' | 'play' | 'back';
@@ -32,6 +32,7 @@ export default function App() {
   const [devices, setDevices] = createSignal<any[]>([]);
   const [profile, setProfile] = createSignal<any>({});
   const [config, setConfig] = createSignal<any>({});
+  const [configReady, setConfigReady] = createSignal(false);
   const [selected, setSelected] = createSignal('');
   const [transcript, setTranscript] = createSignal<any[]>([]);
   const [filter, setFilter] = createSignal('all');
@@ -81,11 +82,22 @@ export default function App() {
   const unread = () => voicemails().filter(vm => !vm.read).length;
   const ownParticipant = () => activeCall()?.participants?.find(p => p.actor === me() && !p.left_at);
   const callHere = () => ownParticipant()?.device_id === session()?.device_id;
+  const telemetryAllowed = createMemo(() => !!session() && configReady() && config()['telemetry.enabled'] !== false);
+  function track(source: 'web_analytics' | 'web_events', step: 'page_view' | 'call_action' | 'connection' | 'change_settings', progress: string, trace_id = crypto.randomUUID(), duration_ms?: number) {
+    if (!telemetryAllowed() || !api.ready) return;
+    void api.request('telemetry.record', { source, step, progress, trace_id, ...(duration_ms === undefined ? {} : { duration_ms }) }).catch(() => {});
+  }
 
   api.onStatus = setStatus;
-  api.onExpired = () => { setSession(null); sessionStorage.removeItem('ring.session'); setError('Your session expired. Sign in with a new IAM token.'); };
+  api.onExpired = () => { setSession(null); setConfigReady(false); sessionStorage.removeItem('ring.session'); setError('Your session expired. Sign in with a new IAM token.'); };
   audio.onLevel = setAudioLevel; audio.onMute = setMuted;
-  const run = async (task: () => Promise<void>) => { setError(''); setBusy(true); try { await task(); } catch (e) { setError(errorMessage(e)); } finally { setBusy(false); } };
+  const run = async (task: () => Promise<void>, step?: 'call_action' | 'change_settings') => {
+    setError(''); setBusy(true); const started = performance.now(), trace = crypto.randomUUID();
+    if (step) track('web_events', step, 'started', trace);
+    try { await task(); if (step) track('web_events', step, 'succeeded', trace, Math.round(performance.now() - started)); }
+    catch (e) { if (step) track('web_events', step, 'failed', trace, Math.round(performance.now() - started)); setError(errorMessage(e)); }
+    finally { setBusy(false); }
+  };
   async function refresh() {
     if (!api.ready || !session()) return;
     const results = await Promise.allSettled([api.request('calls.list', { limit: 200 }), api.request('voicemail.list', { unread: false }), api.request('devices.list'), api.request('profile.get'), api.request('config.get', { scope: 'actor' })]);
@@ -95,7 +107,7 @@ export default function App() {
     if (v.status === 'fulfilled') setVoicemails(v.value.items || []);
     if (d.status === 'fulfilled') setDevices(d.value.items || []);
     if (p.status === 'fulfilled') { setProfile(p.value); if (!settingsDirty) setName(p.value.display_name || displayActor(me())); if (p.value.photo_asset_id && ownPhotoId !== p.value.photo_asset_id) { ownPhotoId = p.value.photo_asset_id; void downloadAsset(api, ownPhotoId).then(blob => { if (profilePhoto()) URL.revokeObjectURL(profilePhoto()); setProfilePhoto(URL.createObjectURL(blob)); }).catch(() => {}); } }
-    if (conf.status === 'fulfilled') { const values = conf.value.effective || conf.value.values || conf.value; setConfig(values); if (!settingsDirty) { setGreeting(values['voicemail.greetings.declined']?.text || ''); setTelemetry(values['telemetry.enabled'] !== false); setVoicemailEnabled(values['voicemail.enabled'] !== false); } }
+    if (conf.status === 'fulfilled') { const values = conf.value.effective || conf.value.values || conf.value; setConfig(values); setConfigReady(true); if (!settingsDirty) { setGreeting(values['voicemail.greetings.declined']?.text || ''); setTelemetry(values['telemetry.enabled'] !== false); setVoicemailEnabled(values['voicemail.enabled'] !== false); } }
     if (c.status === 'rejected') throw c.reason;
     if (selected()) await loadTranscript(selected());
   }
@@ -114,14 +126,18 @@ export default function App() {
   }
   async function login() {
     await run(async () => {
-      api.disconnect(); await connect();
+      setConfigReady(false); api.disconnect(); await connect();
       const result = await api.request<Session>('auth.login', { token: token().trim() });
       api.session = result; await configureNative(result, { url: server(), realm: realm(), org_id: org(), test_app_secret: testSecret() }); setSession(result); storage.write('ring.session', result); setToken('');
       await api.request('events.subscribe', {}); await refresh(); window.scrollTo(0, 0);
     });
   }
   async function logout() {
-    await run(async () => { if (api.ready) await api.request('auth.logout', {}); await audio.stop(api); await logoutNative(); tone.stop(); api.disconnect(); sessionStorage.removeItem('ring.session'); setSession(null); setCalls([]); setVoicemails([]); setSelected(''); setAudioReady(false); audioCall = ''; });
+    await run(async () => {
+      await audio.stop(api).catch(() => {});
+      try { if (api.ready) await api.request('auth.logout', {}); }
+      finally { try { await logoutNative(); } finally { tone.stop(); api.disconnect(); sessionStorage.removeItem('ring.session'); setSession(null); setConfigReady(false); setCalls([]); setVoicemails([]); setSelected(''); setAudioReady(false); audioCall = ''; setProfile({}); setName(''); setConfig({}); setPeople({}); if (profilePhoto()) URL.revokeObjectURL(profilePhoto()); setProfilePhoto(''); ownPhotoId = ''; Object.values(photos()).forEach(url => URL.revokeObjectURL(url)); setPhotos({}); } }
+    });
   }
   function selectCall(call: Call) { setSelected(call.ringid); setTranscript([]); setDeclineOpen(false); void loadTranscript(call.ringid); }
   function openDial(invite = false) { setInviteMode(invite); setTarget(''); setDialOpen(true); }
@@ -130,10 +146,10 @@ export default function App() {
     await run(async () => {
       const result = await api.request(inviteMode() ? 'calls.invite' : 'calls.init', { target: normalizeActor(target()), ...(inviteMode() ? { ringid: selected() } : { device_id: session()?.device_id }) });
       setDialOpen(false); await refresh(); setSelected(result.ringid || selected());
-    });
+    }, 'call_action');
   }
   async function callAction(method: string, extras = {}) {
-    await run(async () => { await api.request(method, { ringid: selected(), ...extras }); setDeclineOpen(false); await refresh(); });
+    await run(async () => { await api.request(method, { ringid: selected(), ...extras }); setDeclineOpen(false); await refresh(); }, 'call_action');
   }
   async function startAudio(call: Call) {
     if (audioCall === call.ringid || vmDraft()) return;
@@ -142,10 +158,10 @@ export default function App() {
     catch (e) { audioCall = ''; setAudioReady(false); setError(`Microphone: ${errorMessage(e)}`); }
   }
   async function moveHere() {
-    await run(async () => { const call = activeCall()!; await startAudio(call); if (!audioReady()) return; try { await api.request('calls.handoff', { ringid: call.ringid, to_device_id: session()!.device_id }); await refresh(); } catch (e) { audioCall = ''; setAudioReady(false); await audio.stop(api); throw e; } });
+    await run(async () => { const call = activeCall()!; await startAudio(call); if (!audioReady()) return; try { await api.request('calls.handoff', { ringid: call.ringid, to_device_id: session()!.device_id }); await refresh(); } catch (e) { audioCall = ''; setAudioReady(false); await audio.stop(api); throw e; } }, 'call_action');
   }
   async function saveSettings() {
-    await run(async () => { await api.request('profile.update', { display_name: name().trim() }); await api.request('config.set', { scope: 'actor', values: { 'voicemail.enabled': voicemailEnabled(), 'telemetry.enabled': telemetry(), ...(greeting().trim() ? { 'voicemail.greetings.declined': { text: greeting().trim() } } : {}) } }); settingsDirty = false; await refresh(); if (!greeting().trim()) await api.request('config.reset', { scope: 'actor', keys: ['voicemail.greetings.declined'] }); setNotice('Your changes are saved.'); });
+    await run(async () => { await api.request('profile.update', { display_name: name().trim() }); await api.request('config.set', { scope: 'actor', values: { 'voicemail.enabled': voicemailEnabled(), 'telemetry.enabled': telemetry(), ...(greeting().trim() ? { 'voicemail.greetings.declined': { text: greeting().trim() } } : {}) } }); if (!greeting().trim()) await api.request('config.reset', { scope: 'actor', keys: ['voicemail.greetings.declined'] }); settingsDirty = false; await refresh(); setNotice('Your changes are saved.'); }, 'change_settings');
   }
   async function photoUpload(file?: File) {
     if (!file) return;
@@ -183,6 +199,8 @@ export default function App() {
   async function notifications() {
     await run(async () => { if (!('Notification' in window)) throw new Error('This browser does not support notifications.'); const permission = await Notification.requestPermission(); setNotice(permission === 'granted' ? 'Notifications enabled while Ring is open.' : 'Notifications are blocked. You can allow them in browser settings.'); });
   }
+  createEffect(() => { page(); if (telemetryAllowed()) track('web_analytics', 'page_view', 'viewed'); });
+  createEffect(() => { const state = status(); if (telemetryAllowed() && ['connected', 'reconnecting', 'offline'].includes(state)) track('web_events', 'connection', state); });
   createEffect(() => {
     const call = activeCall(); const here = callHere();
     if (call && here && !me().startsWith('si:') && !vmDraft()) void startAudio(call);
@@ -210,7 +228,15 @@ export default function App() {
       if (event.type === 'call.incoming') { setSelected(event.data.ringid); setPage('calls'); if ('Notification' in window && Notification.permission === 'granted' && document.visibilityState !== 'visible') new Notification('Incoming Ring call', { body: 'Open Ring to see who is calling.', icon: '/ring.svg' }); }
       clearTimeout(refreshTimer); refreshTimer = setTimeout(() => { void refresh().catch(e => setError(errorMessage(e))); }, 150);
     });
-    if (saved) void run(async () => { api.session = saved; await connect(); setSession(api.session || null); if (api.session) { storage.write('ring.session', api.session); await configureNative(api.session, { url: server(), realm: realm(), org_id: org(), test_app_secret: testSecret() }); } await refresh(); });
+    void run(async () => {
+      const restored = saved ? null : await restoreNative();
+      if (restored) { setServer(restored.url); setRealm(restored.realm); setOrg(restored.org_id); setTestSecret(restored.test_app_secret || ''); }
+      const previous = saved || restored;
+      if (!previous) return;
+      api.session = previous; await connect(); setSession(api.session || null);
+      if (api.session) { storage.write('ring.session', api.session); await configureNative(api.session, { url: server(), realm: realm(), org_id: org(), test_app_secret: testSecret() }); }
+      await refresh();
+    });
     onCleanup(() => { alive = false; document.removeEventListener('keydown', keyboard); clearInterval(timer); clearTimeout(refreshTimer); unsubscribe(); tone.stop(); void audio.stop(); api.disconnect(); if (vmAudio()) URL.revokeObjectURL(vmAudio()); if (profilePhoto()) URL.revokeObjectURL(profilePhoto()); Object.values(photos()).forEach(url => URL.revokeObjectURL(url)); });
   });
 

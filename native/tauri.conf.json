@@ -21,7 +21,7 @@
     "copyright": "Team of Silicons",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "macOS": { "minimumSystemVersion": "12.0", "entitlements": "Entitlements.plist", "infoPlist": "Info.plist" },
-    "iOS": { "infoPlist": "Info.ios.plist", "minimumSystemVersion": "15.0" },
+    "iOS": { "infoPlist": "Info.ios.plist", "minimumSystemVersion": "15.0", "developmentTeam": "LTBSK59BJ2" },
     "android": { "minSdkVersion": 26 }
   }
 }

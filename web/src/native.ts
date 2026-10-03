@@ -14,6 +14,11 @@ export async function configureNative(session: Session, settings: { url: string;
   mobile = result.mobile === true;
 }
 export async function logoutNative() { if (native()) await command('logout'); mobile = false; }
+export async function restoreNative(): Promise<(Session & { url: string; realm: string; test_app_secret?: string }) | null> {
+  if (!native()) return null;
+  const stored = await command('restore');
+  return stored.session_token && stored.device_id && stored.url ? stored : null;
+}
 export class PhoneAudio {
   private browser = new CallAudio();
   private nativeStream = '';

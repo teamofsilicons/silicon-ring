@@ -8,6 +8,7 @@ export const displayActor = (value = '') => value.replace(/^(?:c|si):/, '').repl
 export function socketUrl(value: string) {
   const url = new URL(value);
   if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password) throw new Error('Enter a WebSocket URL starting with ws:// or wss://.');
+  if (url.protocol === 'ws:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new Error('Use wss:// for remote servers. Plain WebSockets are allowed only on this device.');
   return url.toString();
 }
 export const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);

@@ -49,6 +49,7 @@ internal class RingRuntime private constructor(val context: Context) {
     fun configure(value: JSONObject) {
         val endpoint = java.net.URI(value.optString("url"))
         require(endpoint.scheme in listOf("ws", "wss") && endpoint.userInfo == null && value.optString("session_token").isNotEmpty() && value.optString("device_id").isNotEmpty()) { "Native calling needs a valid endpoint and authenticated session." }
+        require(endpoint.scheme == "wss" || endpoint.host in listOf("localhost", "127.0.0.1", "::1", "[::1]")) { "Use a secure wss:// endpoint outside localhost." }
         if (value.optString("session_token") != credentials.optString("session_token")) disconnect()
         credentials = value; enabled = true; SessionVault.save(context, value)
         val telecom = context.getSystemService(TelecomManager::class.java)
@@ -64,6 +65,7 @@ internal class RingRuntime private constructor(val context: Context) {
         connecting = true
         socket = client.newWebSocket(Request.Builder().url(credentials.getString("url")).build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) { main.post {
+                if (socket !== webSocket) return@post
                 val hello = JSONObject().put("versions", org.json.JSONArray().put(1)).put("client", JSONObject().put("name", "ring-android").put("version", "0.1.0")).put("realm", credentials.optString("realm", "production")).put("org_id", credentials.optString("org_id"))
                 credentials.optString("test_app_secret").takeIf { it.isNotEmpty() }?.let { hello.put("test_app_secret", it) }
                 rawRequest("protocol.hello", hello) { _, error ->
@@ -90,6 +92,7 @@ internal class RingRuntime private constructor(val context: Context) {
     private fun lost(error: String) {
         ready = false; connecting = false; socket = null; audio.close()
         val callbacks = pending.values.toList(); pending.clear(); callbacks.forEach { it(null, error) }
+        val connections = waiting.toList(); waiting.clear(); connections.forEach { it(error) }
         if (enabled) main.postDelayed({ connect {} }, 2000)
     }
     fun request(method: String, params: JSONObject = JSONObject(), callback: RingReply) {
@@ -167,7 +170,12 @@ internal class RingRuntime private constructor(val context: Context) {
     fun mute(muted: Boolean, reply: RingReply) {
         request("media.state", JSONObject().put("stream_id", audio.streamId).put("muted", muted)) { value, error -> if (error == null) audio.muted = muted; reply(value, error) }
     }
-    private fun disconnect() { enabled = false; ready = false; connecting = false; socket?.close(1000, "Signed out"); socket = null; audio.close() }
+    private fun disconnect() {
+        enabled = false; ready = false; connecting = false
+        socket?.close(1000, "Signed out"); socket = null; audio.close()
+        val callbacks = pending.values.toList(); pending.clear(); callbacks.forEach { it(null, "Signed out") }
+        val connections = waiting.toList(); waiting.clear(); connections.forEach { it("Signed out") }
+    }
     fun logout() { disconnect(); SessionVault.save(context, null); calls.clear(); RingConnectionService.connections.keys.toList().forEach { RingConnectionService.end(it) }; context.stopService(Intent(context, RingCallService::class.java)) }
 }
 
@@ -177,7 +185,7 @@ internal class RingAudio(private val runtime: RingRuntime) {
     @Volatile var muted = false
     @Volatile var voicemail = false; private set
     @Volatile private var recording = false
-    private var recorder: AudioRecord? = null
+    @Volatile private var recorder: AudioRecord? = null
     private var track: AudioTrack? = null
     private var seq = 0
     private var starting = false
@@ -216,9 +224,14 @@ internal class RingAudio(private val runtime: RingRuntime) {
         track = output; output.play(); input.startRecording(); recording = true
         thread(name = "ring-microphone", isDaemon = true) {
             val samples = ShortArray(480)
-            while (recording) {
+            while (recording && recorder === input) {
                 var count = 0
-                while (count < samples.size && recording) { val read = input.read(samples, count, samples.size - count, AudioRecord.READ_BLOCKING); if (read <= 0) { recording = false; break }; count += read }
+                while (count < samples.size && recording && recorder === input) {
+                    val read = input.read(samples, count, samples.size - count, AudioRecord.READ_BLOCKING)
+                    if (read <= 0) { if (recorder === input) recording = false; break }
+                    count += read
+                }
+                if (recorder !== input) break
                 if (count != 480 || muted || !runtime.ready || streamId.isEmpty()) continue
                 val bytes = ByteBuffer.allocate(960).order(ByteOrder.LITTLE_ENDIAN); for (sample in samples) bytes.putShort(sample)
                 val number = seq++; val offset = maxOf(lastOffset + 20, (android.os.SystemClock.elapsedRealtime() - startedAt).toInt()); lastOffset = offset

@@ -20,7 +20,7 @@ async fn configure<R: Runtime>(app: AppHandle<R>, payload: Value) -> Result<Valu
 #[tauri::command]
 async fn control<R: Runtime>(app: AppHandle<R>, payload: Value) -> Result<Value, String> {
     let action = payload["action"].as_str().unwrap_or("");
-    if !matches!(action, "start" | "stop" | "mute" | "logout" | "status") { return Err("Unknown native call action".into()); }
+    if !matches!(action, "start" | "stop" | "mute" | "logout" | "status" | "restore") { return Err("Unknown native call action".into()); }
     #[cfg(mobile)]
     return app.state::<NativeCalls<R>>().0.run_mobile_plugin("control", payload).map_err(|e| e.to_string());
     #[cfg(desktop)]

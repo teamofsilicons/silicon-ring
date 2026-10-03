@@ -83,6 +83,7 @@ class CallServicePlugin(private val activity: Activity) : Plugin(activity) {
             "stop" -> runtime.stopAudio(reply)
             "mute" -> runtime.mute(payload.optBoolean("muted"), reply)
             "logout" -> { runtime.logout(); invoke.resolve() }
+            "restore" -> reply(runtime.credentials, null)
             "status" -> reply(JSONObject().put("mobile", true).put("stream_id", runtime.audio.streamId).put("muted", runtime.audio.muted), null)
             else -> invoke.reject("Unknown native call action")
         }

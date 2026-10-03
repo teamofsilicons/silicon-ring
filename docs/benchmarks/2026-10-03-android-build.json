@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-03",
+  "target": "aarch64-linux-android",
+  "build_mode": "debug",
+  "android_package": "com.teamofsilicons.ring",
+  "version": "0.1.0",
+  "min_sdk": 26,
+  "target_sdk": 36,
+  "artifact": "dist/native/silicon-ring-android-arm64-debug.apk",
+  "bytes": 136927125,
+  "sha256": "16950f5aadee8995a13d58db35d1dbc0b6b7f321772a05828ceaf78a381c0e82",
+  "verified": [
+    "Tauri Android build completes with Rust, Kotlin, bundled web assets and Gradle packaging",
+    "APK Signature Scheme v2 verification passes",
+    "APK installs on Android 16/API36 arm64 emulator",
+    "MainActivity launches and renders Ring login screen",
+    "No Ring process crash observed during launch inspection"
+  ],
+  "screenshot": "dist/native/android-launch.png",
+  "not_verified": [
+    "Interactive Android login and cold-session restoration",
+    "Physical Android microphone and speaker routing",
+    "Background Android push delivery and lock-screen answering"
+  ],
+  "runtime_note": "UI automation and keyboard input timed out in the emulator during concurrent native builds; emulator stopped and its disposable AVD removed to free resources for physical iOS validation. Installed SDK, NDK and system image preserved."
+}

@@ -13,7 +13,7 @@ impl Engine {
         std::fs::create_dir_all(dir.join("assets"))?;
         let db = Connection::open(dir.join("ring.sqlite3"))?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL);")?;
-        let state = db
+        let mut state: State = db
             .query_row("SELECT json FROM state WHERE id=1", [], |r| {
                 r.get::<_, String>(0)
             })
@@ -21,6 +21,14 @@ impl Engine {
             .map(|s| serde_json::from_str(&s))
             .transpose()?
             .unwrap_or_default();
+        // A crash after publication may leave an uncertain send. Retry its same logical ID.
+        for publication in state
+            .publications
+            .values_mut()
+            .filter(|n| n.status == "sending")
+        {
+            publication.status = "pending".into();
+        }
         Ok(Self {
             state,
             db,
@@ -59,12 +67,15 @@ impl Engine {
                 revoked: false,
                 push_token: None,
                 push_platform: None,
+                push_environment: None,
             });
         let token = id("session");
         let s = Session {
             identity: identity.clone(),
             device_id: device_id.clone(),
-            expires_at: after(3600),
+            // Native incoming-call listeners must survive an idle night; IAM authority is
+            // still checked online on every control operation and every 30 seconds.
+            expires_at: after(30 * 24 * 3600),
         };
         self.state.profiles.entry(owner).or_insert_with(|| Profile {
             actor: identity.actor.clone(),
@@ -163,6 +174,21 @@ impl Engine {
             ),
             "auth.logout" => {
                 let all = p["all_devices"].as_bool().unwrap_or(false);
+                let mut removed = Vec::new();
+                for device in self
+                    .state
+                    .devices
+                    .values_mut()
+                    .filter(|d| d.owner == owner && (all || d.device_id == s.device_id))
+                {
+                    device.push_token = None;
+                    removed.push(device.device_id.clone());
+                }
+                self.state.pushes.retain(|_, task| {
+                    !task["device_id"]
+                        .as_str()
+                        .is_some_and(|id| removed.iter().any(|d| d == id))
+                });
                 self.state.sessions.retain(|_, x| {
                     !(key(&x.identity.realm, &x.identity.org_id, &x.identity.actor) == owner
                         && (all || x.device_id == s.device_id))
@@ -232,6 +258,7 @@ impl Engine {
                     .ok_or_else(forbidden)?;
                 if m == "devices.revoke" {
                     d.revoked = true;
+                    d.push_token = None;
                 } else {
                     if let Some(name) = p.get("name") {
                         d.name = name
@@ -255,6 +282,21 @@ impl Engine {
                                     .filter(|p| matches!(*p, "apns_voip" | "fcm"))
                                     .ok_or_else(|| {
                                         invalid("push_platform must be apns_voip or fcm")
+                                    })?
+                                    .into(),
+                            )
+                        };
+                    }
+                    if let Some(environment) = p.get("push_environment") {
+                        d.push_environment = if environment.is_null() {
+                            None
+                        } else {
+                            Some(
+                                environment
+                                    .as_str()
+                                    .filter(|v| matches!(*v, "sandbox" | "production"))
+                                    .ok_or_else(|| {
+                                        invalid("push_environment must be sandbox or production")
                                     })?
                                     .into(),
                             )
@@ -1554,6 +1596,7 @@ impl Engine {
                             data: json!({"ringid":id,"from_seq":entries[0].seq,"to_seq":upper,"entries":entries}),
                             status: "pending".into(),
                             attempts: 0,
+                            retry_at: None,
                             error: None,
                         };
                         self.state.publications.insert(n.notification_id.clone(), n);
@@ -1599,6 +1642,26 @@ pub fn public_call(c: &Call, actor: &str) -> Value {
 pub fn entry_visible(c: &Call, e: &Entry, actor: &str) -> bool {
     if let Some(owner) = &e.private_to {
         return owner == actor;
+    }
+    if e.kind == "speech" {
+        if let (Some(base), Some(from), Some(to)) = (
+            c.answered_at
+                .as_deref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()),
+            e.data["start_ms"].as_u64(),
+            e.data["end_ms"].as_u64(),
+        ) {
+            let from = base + chrono::Duration::milliseconds(from.min(i64::MAX as u64) as i64);
+            let to = base + chrono::Duration::milliseconds(to.min(i64::MAX as u64) as i64);
+            return c.participants.iter().any(|p| {
+                p.actor == actor
+                    && chrono::DateTime::parse_from_rfc3339(&p.joined_at)
+                        .is_ok_and(|join| from >= join)
+                    && p.left_at.as_deref().is_none_or(|s| {
+                        chrono::DateTime::parse_from_rfc3339(s).is_ok_and(|left| to <= left)
+                    })
+            });
+        }
     }
     c.participants.iter().any(|p| {
         p.actor == actor
@@ -1715,7 +1778,7 @@ fn redact_config(value: &mut Value) {
 mod tests;
 
 fn public_device(device: &Device) -> Value {
-    json!({"device_id":device.device_id,"name":device.name,"ring_enabled":device.ring_enabled,"revoked":device.revoked,"push_enabled":device.push_token.is_some(),"push_platform":device.push_platform})
+    json!({"device_id":device.device_id,"name":device.name,"ring_enabled":device.ring_enabled,"revoked":device.revoked,"push_enabled":device.push_token.is_some(),"push_platform":device.push_platform,"push_environment":device.push_environment})
 }
 
 fn release_info(params: &Value) -> Result<Value> {

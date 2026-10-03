@@ -39,7 +39,6 @@ struct Runtime {
     events: broadcast::Sender<Value>,
     shutdown: tokio::sync::Notify,
     generation: AtomicU64,
-    telemetry: Option<ring_providers::Telemetry>,
     telemetry_enabled: AtomicBool,
     restart: AtomicBool,
     #[cfg(windows)]
@@ -205,14 +204,6 @@ pub async fn run(store: Store) -> Result<()> {
     store.write("daemon.json", &metadata)?;
     let (events, _) = broadcast::channel(2048);
     let telemetry_enabled = store.local()?["telemetry.enabled"] != false;
-    let telemetry_key = std::env::var(if store.test {
-        "RING_TELEMETRY_TEST_CLI_KEY"
-    } else {
-        "RING_TELEMETRY_CLI_KEY"
-    })
-    .ok();
-    let telemetry =
-        ring_providers::Telemetry::new(telemetry_key.as_deref(), telemetry_enabled).ok();
     let runtime = Arc::new(Runtime {
         store: store.clone(),
         client: Mutex::new(None),
@@ -220,7 +211,6 @@ pub async fn run(store: Store) -> Result<()> {
         events,
         shutdown: tokio::sync::Notify::new(),
         generation: AtomicU64::new(0),
-        telemetry,
         telemetry_enabled: AtomicBool::new(telemetry_enabled),
         restart: AtomicBool::new(false),
         #[cfg(windows)]
@@ -249,9 +239,6 @@ pub async fn run(store: Store) -> Result<()> {
     let _ = fs::remove_file(store.socket());
     let _ = fs::remove_file(store.path("daemon.json"));
     log(&store, "daemon.stopped", None);
-    if let Some(telemetry) = &runtime.telemetry {
-        telemetry.flush();
-    }
     drop(listener);
     drop(lock);
     if runtime.restart.load(Ordering::SeqCst) {
@@ -438,22 +425,32 @@ async fn serve(rt: Arc<Runtime>, stream: IpcStream) -> Result<()> {
     }
     let started = std::time::Instant::now();
     let result = dispatch(&rt, id, method, params, req["isi"].as_str()).await;
-    if rt.telemetry_enabled.load(Ordering::Relaxed)
+    if id != "daemon-probe"
+        && rt.telemetry_enabled.load(Ordering::Relaxed)
         && rt
             .store
             .local()
             .is_ok_and(|c| c["telemetry.enabled"] != false)
     {
-        if let Some(telemetry) = &rt.telemetry {
-            telemetry.record(
-                "ring-cli",
-                method,
-                if result.is_ok() { "accepted" } else { "failed" },
-                id,
-                Some(started.elapsed().as_millis() as u64),
-            );
+        if let Some(connection) = rt.client.try_lock().ok().and_then(|client| client.clone()) {
+            // The authenticated server chooses the realm's private CLI table and enforces opt-outs.
+            // Only fixed operation labels and a fresh trace ID leave the daemon, never CLI arguments.
+            let event = json!({
+                "source": "cli", "step": "command",
+                "progress": if result.is_ok() { "succeeded" } else { "failed" },
+                "trace_id": uuid::Uuid::new_v4().to_string(),
+                "duration_ms": started.elapsed().as_millis() as u64
+            });
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    connection.request("telemetry.record", event),
+                )
+                .await;
+            });
         }
     }
+
     if let Err(error) = &result {
         log(
             &rt.store,

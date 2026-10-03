@@ -61,7 +61,7 @@ class RingCallService : Service() {
         private const val CHANNEL = "ring-calls"
         fun show(context: Context, ringid: String, title: String, incoming: Boolean) {
             val intent = Intent(context, RingCallService::class.java).putExtra("ringid", ringid).putExtra("title", title).putExtra("incoming", incoming)
-            try { ContextCompat.startForegroundService(context, intent) } catch (_: IllegalStateException) { /* Android may reject non-FCM background starts; next foreground launch restores calls. */ }
+            try { ContextCompat.startForegroundService(context, intent) } catch (_: IllegalStateException) { /* Android may reject non-FCM background starts; next foreground launch restores calls. */ } catch (_: SecurityException) { /* Missing call/notification permissions are requested on the next foreground launch. */ }
         }
     }
     override fun onBind(intent: Intent?): IBinder? = null
@@ -75,7 +75,7 @@ class RingCallService : Service() {
         }
         val incoming = intent.getBooleanExtra("incoming", false)
         val title = intent.getStringExtra("title") ?: "Silicon Ring"
-        if (incoming && ringtone == null) { ringtone = android.media.RingtoneManager.getRingtone(this, android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)); ringtone?.play() }
+        if (incoming && ringtone == null) { ringtone = android.media.RingtoneManager.getRingtone(this, android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)); if (Build.VERSION.SDK_INT >= 28) ringtone?.isLooping = true; ringtone?.play() }
         else if (!incoming) { ringtone?.stop(); ringtone = null }
         getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CHANNEL, "Ring calls", NotificationManager.IMPORTANCE_HIGH).apply { description = "Incoming and ongoing Ring calls"; setSound(null, null) })
         val launch = packageManager.getLaunchIntentForPackage(packageName) ?: Intent()

@@ -2798,7 +2798,6 @@ dependencies = [
  "libc",
  "reqwest 0.12.28",
  "ring-client",
- "ring-providers",
  "self-replace",
  "serde",
  "serde_json",

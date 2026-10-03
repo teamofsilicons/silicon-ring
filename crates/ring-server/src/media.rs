@@ -794,3 +794,83 @@ impl Download {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_replaces_stale_audio_and_timeout_leaves_the_room() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = Engine::open(dir.path()).unwrap();
+        let mut sign_in = |actor: &str| {
+            let login = e
+                .login(
+                    Identity {
+                        actor: actor.into(),
+                        org_id: "org".into(),
+                        realm: "test".into(),
+                        display_name: actor.into(),
+                        admin: false,
+                    },
+                    None,
+                )
+                .unwrap();
+            let token = login["session_token"].as_str().unwrap().to_owned();
+            (e.session(&token).unwrap(), token)
+        };
+        let (a, token) = sign_in("c:alice");
+        let (b, _) = sign_in("c:bob");
+        let call = e
+            .dispatch(&a, "calls.init", &json!({"target":"c:bob"}))
+            .unwrap();
+        let ring = call["ringid"].as_str().unwrap();
+        e.dispatch(&b, "calls.accept", &json!({"ringid":ring}))
+            .unwrap();
+        let mut media = Media::default();
+        let (tx, _rx) = mpsc::channel(8);
+        let attached = media
+            .attach(
+                &mut e,
+                &a,
+                &token,
+                &json!({"ringid":ring,"device_id":a.device_id}),
+                tx.clone(),
+            )
+            .unwrap();
+        let old = attached["stream_id"].as_str().unwrap();
+        media
+            .streams
+            .get_mut(old)
+            .unwrap()
+            .queue
+            .extend([123i16; SAMPLES]);
+        media.disconnect(&tx);
+        assert!(media.streams[old].queue.is_empty());
+        let (replacement, _rx) = mpsc::channel(8);
+        let attached = media
+            .attach(
+                &mut e,
+                &a,
+                &token,
+                &json!({"ringid":ring,"device_id":a.device_id}),
+                replacement.clone(),
+            )
+            .unwrap();
+        assert!(!media.streams.contains_key(old));
+        media.ticks = 49;
+        media.tick(&mut e);
+        assert_eq!(e.state.calls[ring].state, "active");
+        let sid = attached["stream_id"].as_str().unwrap();
+        media.disconnect(&replacement);
+        media.streams.get_mut(sid).unwrap().disconnected_at =
+            Some(Instant::now() - std::time::Duration::from_secs(31));
+        media.ticks = 99;
+        media.tick(&mut e);
+        assert_eq!(e.state.calls[ring].state, "ended");
+        assert!(e.state.calls[ring]
+            .transcript
+            .iter()
+            .any(|t| t.kind == "media.reconnect_timeout"));
+    }
+}

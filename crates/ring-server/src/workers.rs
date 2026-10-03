@@ -22,6 +22,17 @@ pub fn start(app: App) {
             }
         }
     });
+    let publishing = app.clone();
+    tokio::spawn(async move {
+        let mut timer = tokio::time::interval(Duration::from_millis(250));
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            timer.tick().await;
+            if !publishing.providers_disabled {
+                publish_pending(&publishing).await;
+            }
+        }
+    });
     tokio::spawn(async move {
         let mut timer = tokio::time::interval(Duration::from_secs(1));
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -108,12 +119,6 @@ pub fn start(app: App) {
                     }
                 }
             }
-            if count % 5 == 0 && !app.providers_disabled {
-                let a = app.clone();
-                tokio::spawn(async move {
-                    publish_pending(&a).await;
-                });
-            }
         }
     });
 }
@@ -135,6 +140,12 @@ async fn representative(
     let mut socket = provider
         .connect_live(&voice, &p.context, Some(&p.start))
         .await?;
+    let live_offset = c
+        .answered_at
+        .as_deref()
+        .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+        .map(|t| (chrono::Utc::now().timestamp_millis() - t.timestamp_millis()).max(0) as u64)
+        .unwrap_or(0);
     let (tx, mut audio) = mpsc::channel::<Vec<u8>>(100);
     let sid = app.media.lock().unwrap().representative(c, &p.actor, tx);
     let mut check = tokio::time::interval(Duration::from_millis(200));
@@ -159,7 +170,11 @@ async fn representative(
                                 if let Ok(bytes) = STANDARD.decode(raw) { app.media.lock().unwrap().push_representative(&sid, &bytes); }
                             }
                         },
-                        Some("session.output_transcript.delta") => add_transcript(app, &c.ringid, Some(p.actor.clone()), vec![p.actor.clone()], &event, "live"),
+                        Some("session.output_transcript.delta") => {
+                            let mut caption = event.clone();
+                            for field in ["start_ms", "end_ms"] { if let Some(value) = caption[field].as_u64() { caption[field] = json!(value + live_offset); } }
+                            add_transcript(app, &c.ringid, Some(p.actor.clone()), vec![p.actor.clone()], &caption, "live");
+                        },
                         Some("session.delegation.created") if event["delegation"]["target"] == "client" => create_delegation(app, c, &p.actor, &event),
                         Some("session.thinking.appended" | "session.commentary.appended") => message_status(app, c, &p.actor, event["client_event_id"].as_str(), "accepted"),
                         Some("error") => {
@@ -311,24 +326,12 @@ pub fn add_transcript(
         admin: false,
     };
     // Speech is batched for Ting every ten seconds; clients still see each delta immediately.
-    let before = e.state.publications.len();
     e.state.event(
         &i,
         recipients,
         "transcript.delta",
         json!({"ringid":ring,"entry":entry}),
     );
-    if e.state.publications.len() > before {
-        let prefix = e
-            .state
-            .events
-            .last()
-            .map(|v| v.event_id.clone())
-            .unwrap_or_default();
-        e.state
-            .publications
-            .retain(|id, _| !id.starts_with(&prefix));
-    }
     let _ = e.persist();
 }
 fn create_delegation(app: &App, c: &Call, actor: &str, event: &Value) {
@@ -501,11 +504,23 @@ async fn transcribe_voicemail(app: App, vm: Voicemail) {
 async fn publish_pending(app: &App) {
     let entries = {
         let mut e = app.engine.lock().unwrap();
-        let rows = e
+        let timestamp = now();
+        let mut ready = e
             .state
             .publications
             .values_mut()
-            .filter(|n| n.status == "pending")
+            .filter(|n| {
+                n.status == "pending"
+                    || n.status == "failed" && n.retry_at.as_ref().is_some_and(|t| t <= &timestamp)
+            })
+            .collect::<Vec<_>>();
+        ready.sort_by_key(|n| match n.event_type.as_str() {
+            "delegation.created" => 0,
+            "call.incoming" => 1,
+            _ => 2,
+        });
+        let rows = ready
+            .into_iter()
             .take(20)
             .map(|n| {
                 n.status = "sending".into();
@@ -513,7 +528,19 @@ async fn publish_pending(app: &App) {
                 n.clone()
             })
             .collect::<Vec<_>>();
-        let _ = e.persist();
+        if rows.is_empty() {
+            return;
+        }
+        if let Err(error) = e.persist() {
+            for row in rows {
+                if let Some(n) = e.state.publications.get_mut(&row.notification_id) {
+                    n.status = "pending".into();
+                    n.attempts = n.attempts.saturating_sub(1);
+                }
+            }
+            tracing::error!(code=%error.code, "Notification outbox persistence failed");
+            return;
+        }
         rows
     };
     for entry in entries {
@@ -551,9 +578,11 @@ async fn publish_pending(app: &App) {
                 Ok::<(), Fault>(()) => {
                     n.status = "delivered".into();
                     n.error = None;
+                    n.retry_at = None;
                 }
                 Err(error) => {
                     n.status = "failed".into();
+                    n.retry_at = error.retryable.then(|| after(2i64.pow(n.attempts.min(8))));
                     n.error = Some(format!("{}: {}", error.code, error.message));
                 }
             }
@@ -577,16 +606,146 @@ async fn transcriber(app: &App, call: &Call) -> std::result::Result<(), ring_pro
         .unwrap()
         .transcribers
         .insert(call.ringid.clone(), tx);
-    let mut check = tokio::time::interval(Duration::from_secs(1));
+    let mut check = tokio::time::interval(Duration::from_millis(100));
     let mut revision = 0u64;
+    let mut closing = None;
     let result = loop {
         tokio::select! {
-        bytes=audio.recv()=>{if let Some(bytes)=bytes{if socket.send(tokio_tungstenite::tungstenite::Message::Binary(bytes.into())).await.is_err(){break Err(ring_providers::Error::new("TRANSCRIPTION_CONNECTION_LOST","Deepgram streaming connection was interrupted.",true))}}else{break Ok(())}},
-        message=socket.next()=>{match message{Some(Ok(tokio_tungstenite::tungstenite::Message::Text(raw)))=>{if let Ok(event)=serde_json::from_str::<Value>(&raw){if event["type"]=="Results"{let text=event["channel"]["alternatives"][0]["transcript"].as_str().unwrap_or("");if !text.is_empty(){let start=(event["start"].as_f64().unwrap_or(0.0)*1000.0)as u64+offset;let end=start+(event["duration"].as_f64().unwrap_or(0.0)*1000.0)as u64;let speakers=app.media.lock().unwrap().speakers(&call.ringid,start,end);revision+=1;add_transcript(app,&call.ringid,if speakers.len()==1{Some(speakers[0].clone())}else{None},speakers,&json!({"delta":text,"start_ms":start,"end_ms":end,"segment_id":format!("stt_{start}"),"revision":revision,"final":event["is_final"]}),"deepgram");}}}},Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(data)))=>{let _=socket.send(tokio_tungstenite::tungstenite::Message::Pong(data)).await;},Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))|None|Some(Err(_))=>break Err(ring_providers::Error::new("TRANSCRIPTION_CONNECTION_LOST","Deepgram streaming connection was interrupted.",true)),_=>{}}},
-        _=check.tick()=>{let active=app.engine.lock().unwrap().state.calls.get(&call.ringid).is_some_and(|c|c.state=="active");if !active{let _=socket.send(tokio_tungstenite::tungstenite::Message::Text(json!({"type":"CloseStream"}).to_string().into())).await;break Ok(())}}
+            bytes = audio.recv(), if closing.is_none() => {
+                if let Some(bytes) = bytes {
+                    if socket.send(tokio_tungstenite::tungstenite::Message::Binary(bytes.into())).await.is_err() { break Err(transcription_lost()); }
+                }
+            },
+            message = socket.next() => match message {
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(raw))) => {
+                    if let Ok(event) = serde_json::from_str::<Value>(&raw) {
+                        if event["type"] == "Results" { transcription_result(app, call, &event, offset, &mut revision); }
+                        else if event["type"] == "Metadata" && closing.is_some() { break Ok(()); }
+                        else if event["type"] == "Error" { break Err(transcription_lost()); }
+                    }
+                },
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(data))) => { let _ = socket.send(tokio_tungstenite::tungstenite::Message::Pong(data)).await; },
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => { break if closing.is_some() { Ok(()) } else { Err(transcription_lost()) }; },
+                Some(Err(_)) => break Err(transcription_lost()),
+                _ => {}
+            },
+            _ = check.tick() => {
+                if closing.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                    break Err(ring_providers::Error::new("TRANSCRIPTION_FINALIZATION_UNCONFIRMED", "The transcription provider did not confirm final captions within five seconds.", true));
+                }
+                let active = app.engine.lock().unwrap().state.calls.get(&call.ringid).is_some_and(|c| c.state == "active");
+                if !active && closing.is_none() {
+                    // Drain the final Results instead of discarding the last spoken sentence.
+                    if socket.send(tokio_tungstenite::tungstenite::Message::Text(json!({"type":"CloseStream"}).to_string().into())).await.is_err() { break Err(transcription_lost()); }
+                    closing = Some(tokio::time::Instant::now() + Duration::from_secs(5));
+                }
+            }
         }
     };
     app.media.lock().unwrap().transcribers.remove(&call.ringid);
     let _ = socket.close(None).await;
     result
+}
+fn transcription_lost() -> ring_providers::Error {
+    ring_providers::Error::new(
+        "TRANSCRIPTION_CONNECTION_LOST",
+        "Deepgram streaming connection was interrupted.",
+        true,
+    )
+}
+fn transcription_result(app: &App, call: &Call, event: &Value, offset: u64, revision: &mut u64) {
+    let text = event["channel"]["alternatives"][0]["transcript"]
+        .as_str()
+        .unwrap_or("");
+    if text.is_empty() {
+        return;
+    }
+    let start = (event["start"].as_f64().unwrap_or(0.0) * 1000.0) as u64 + offset;
+    let end = start + (event["duration"].as_f64().unwrap_or(0.0) * 1000.0) as u64;
+    let mut speakers = app.media.lock().unwrap().speakers(&call.ringid, start, end);
+    if speakers.is_empty() {
+        let e = app.engine.lock().unwrap();
+        if let Some(current) = e.state.calls.get(&call.ringid) {
+            let carbons = current
+                .participants
+                .iter()
+                .filter(|p| !silicon(&p.actor))
+                .map(|p| p.actor.clone())
+                .collect::<BTreeSet<_>>();
+            if carbons.len() == 1 {
+                speakers = carbons.into_iter().collect();
+            }
+        }
+    }
+    *revision += 1;
+    add_transcript(
+        app,
+        &call.ringid,
+        if speakers.len() == 1 {
+            Some(speakers[0].clone())
+        } else {
+            None
+        },
+        speakers,
+        &json!({"delta":text,"start_ms":start,"end_ms":end,"segment_id":format!("stt_{start}"),"revision":revision,"final":event["is_final"]}),
+        "deepgram",
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::Engine;
+
+    #[test]
+    fn pending_representative_messages_survive_startup_and_exact_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = Engine::open(dir.path()).unwrap();
+        let mut login = |actor: &str| {
+            let value = e
+                .login(
+                    Identity {
+                        actor: actor.into(),
+                        org_id: "org".into(),
+                        realm: "test".into(),
+                        display_name: actor.into(),
+                        admin: false,
+                    },
+                    None,
+                )
+                .unwrap();
+            e.session(value["session_token"].as_str().unwrap()).unwrap()
+        };
+        let a = login("si:alice");
+        let b = login("si:bob");
+        let c = e
+            .dispatch(&a, "calls.init", &json!({"target":"si:bob"}))
+            .unwrap();
+        let ring = c["ringid"].as_str().unwrap();
+        e.dispatch(&b, "calls.accept", &json!({"ringid":ring}))
+            .unwrap();
+        let params =
+            json!({"ringid":ring,"kind":"thinking","text":"I am checking.","delegation_id":null});
+        let sent = e.request(&a, "same-request", "representative.send", params.clone());
+        assert_eq!(sent["ok"], true);
+        assert_eq!(
+            e.request(&a, "same-request", "representative.send", params),
+            sent
+        );
+        assert_eq!(
+            pending_messages(&e.state, &e.state.calls[ring], "si:alice").len(),
+            1
+        );
+        assert!(pending_messages(&e.state, &e.state.calls[ring], "si:bob").is_empty());
+        let message_id = sent["result"]["message_id"].as_str().unwrap();
+        e.state
+            .sent_messages
+            .insert(message_id.into(), "accepted".into());
+        e.persist().unwrap();
+        drop(e);
+        let reopened = Engine::open(dir.path()).unwrap();
+        assert!(
+            pending_messages(&reopened.state, &reopened.state.calls[ring], "si:alice").is_empty()
+        );
+    }
 }

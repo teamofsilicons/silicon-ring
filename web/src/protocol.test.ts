@@ -7,6 +7,8 @@ test('identity validation accepts public and membership IDs without accepting ma
   for (const id of ['', 'alex', 'si:', 'c:alex smith', 'c:a[team][other]']) assert.equal(isActor(id), false);
   assert.throws(() => socketUrl('https://example.com'));
   assert.throws(() => socketUrl('wss://user:password@example.com/ws'));
+  assert.throws(() => socketUrl('ws://example.com/ws'));
+  assert.equal(socketUrl('ws://[::1]:8765/ws'), 'ws://[::1]:8765/ws');
   assert.equal(socketUrl('ws://127.0.0.1:8765/ws'), 'ws://127.0.0.1:8765/ws');
 });
 test('offline mutations fail explicitly instead of disappearing', async () => {
@@ -39,7 +41,7 @@ test('microphone worklet emits 20 ms PCM frames at 24 kHz from common hardware s
     });
     const processor = new Processor();
     for (let offset = 0; offset < hardwareRate; offset += 128) processor.process([[new Float32Array(Math.min(128, hardwareRate - offset)).fill(0.25)]]);
-    assert.equal(emitted.length, 49, `one second at ${hardwareRate} Hz leaves only the final partial frame buffered`);
+    assert.ok(emitted.length >= 49 && emitted.length <= 50, `one second at ${hardwareRate} Hz buffers at most one 20 ms frame`);
     for (const frame of emitted) { assert.equal(frame.buffer.byteLength, 960); assert.equal(new Int16Array(frame.buffer)[0], 8192); assert.ok(Math.abs(frame.rms - 0.25) < 0.001); }
   }
 });

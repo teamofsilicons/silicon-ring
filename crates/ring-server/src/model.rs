@@ -129,6 +129,8 @@ pub struct Device {
     pub push_token: Option<String>,
     #[serde(default)]
     pub push_platform: Option<String>,
+    #[serde(default)]
+    pub push_environment: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Profile {
@@ -316,6 +318,8 @@ pub struct Publication {
     pub data: Value,
     pub status: String,
     pub attempts: u32,
+    #[serde(default)]
+    pub retry_at: Option<String>,
     pub error: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -325,6 +329,8 @@ pub struct Cached {
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct State {
+    #[serde(default)]
+    pub event_seq: u64,
     #[serde(default)]
     pub push_cursor: u64,
     #[serde(default)]
@@ -357,6 +363,10 @@ pub struct State {
     pub transcript_cursors: BTreeMap<String, u64>,
 }
 impl State {
+    pub fn latest_event_seq(&self) -> u64 {
+        self.event_seq.max(self.events.last().map_or(0, |e| e.seq))
+    }
+
     pub fn profile(&self, i: &Identity) -> Profile {
         self.profiles
             .get(&key(&i.realm, &i.org_id, &i.actor))
@@ -375,9 +385,10 @@ impl State {
             .unwrap_or_default()
     }
     pub fn event(&mut self, i: &Identity, recipients: Vec<String>, kind: &str, data: Value) {
+        self.event_seq = self.latest_event_seq() + 1;
         let e = Event {
             event_id: id("evt"),
-            seq: self.events.last().map_or(1, |e| e.seq + 1),
+            seq: self.event_seq,
             kind: kind.into(),
             occurred_at: now(),
             data: data.clone(),
@@ -385,7 +396,10 @@ impl State {
             realm: i.realm.clone(),
             recipients: recipients.clone(),
         };
-        for actor in recipients.iter().filter(|a| silicon(a)) {
+        for actor in recipients
+            .iter()
+            .filter(|a| silicon(a) && kind != "transcript.delta")
+        {
             let n = Publication {
                 notification_id: format!("{}_{}", e.event_id, actor),
                 actor: actor.clone(),
@@ -395,6 +409,7 @@ impl State {
                 data: data.clone(),
                 status: "pending".into(),
                 attempts: 0,
+                retry_at: None,
                 error: None,
             };
             self.publications.insert(n.notification_id.clone(), n);

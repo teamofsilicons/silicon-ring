@@ -69,6 +69,35 @@ pub async fn verify(app: &App, i: &Identity) -> Result<String> {
     }
     Ok(token)
 }
+/// A retained profile is not evidence of current organization membership.
+pub async fn verify_recipient(app: &App, caller: &Identity, actor: &str) -> Result<()> {
+    let recipient = Identity {
+        actor: actor.into(),
+        org_id: caller.org_id.clone(),
+        realm: caller.realm.clone(),
+        display_name: actor.into(),
+        admin: false,
+    };
+    if !app.engine.lock().unwrap().state.profiles.contains_key(&key(
+        &recipient.realm,
+        &recipient.org_id,
+        actor,
+    )) {
+        return Err(recipient_unavailable());
+    }
+    verify(app, &recipient).await.map(|_| ()).map_err(|e| {
+        let mut error = recipient_unavailable();
+        error.retryable = e.retryable;
+        error
+    })
+}
+fn recipient_unavailable() -> Fault {
+    Fault::new(
+        "RECIPIENT_UNAVAILABLE",
+        "The recipient is not currently authorized for Ring in this organization.",
+        "Confirm the recipient has logged in to Ring with current IAM membership, then retry.",
+    )
+}
 pub async fn notifications(app: &App, i: &Identity, rid: &str, p: &Value) -> Result<Value> {
     if !silicon(&i.actor) {
         return Err(invalid("Ting authorization applies to silicon identities"));
@@ -238,17 +267,6 @@ pub async fn ting_token(app: &App, n: &Publication) -> Result<String> {
 
 pub fn revoke_identity(app: &App, i: &Identity, reason: &str) -> Result<()> {
     let mut e = app.engine.lock().unwrap();
-    let sessions: Vec<_> = e
-        .state
-        .sessions
-        .values()
-        .filter(|s| {
-            s.identity.realm == i.realm
-                && s.identity.org_id == i.org_id
-                && s.identity.actor == i.actor
-        })
-        .cloned()
-        .collect();
     let rings: Vec<_> = e
         .state
         .calls
@@ -256,11 +274,25 @@ pub fn revoke_identity(app: &App, i: &Identity, reason: &str) -> Result<()> {
         .filter(|c| c.realm == i.realm && c.org_id == i.org_id && c.active(&i.actor))
         .map(|c| c.ringid.clone())
         .collect();
-    if let Some(s) = sessions.first() {
-        for ring in rings {
-            let _ = e.dispatch(s, "calls.cut", &json!({"ringid":ring}));
-        }
+    let control = Session {
+        identity: i.clone(),
+        device_id: String::new(),
+        expires_at: after(1),
+    };
+    for ring in rings {
+        let _ = e.dispatch(&control, "calls.cut", &json!({"ringid":ring}));
     }
+    let owner = key(&i.realm, &i.org_id, &i.actor);
+    let mut devices = Vec::new();
+    for d in e.state.devices.values_mut().filter(|d| d.owner == owner) {
+        d.push_token = None;
+        devices.push(d.device_id.clone());
+    }
+    e.state.pushes.retain(|_, p| {
+        !p["device_id"]
+            .as_str()
+            .is_some_and(|id| devices.iter().any(|d| d == id))
+    });
     e.state.sessions.retain(|_, s| {
         !(s.identity.realm == i.realm
             && s.identity.org_id == i.org_id
@@ -282,19 +314,7 @@ pub fn start_revalidation(app: App) {
             if app.providers_disabled {
                 continue;
             }
-            let identities = {
-                let e = app.engine.lock().unwrap();
-                let mut ids = std::collections::BTreeMap::new();
-                for s in e.state.sessions.values() {
-                    if s.expires_at > now() {
-                        ids.insert(
-                            key(&s.identity.realm, &s.identity.org_id, &s.identity.actor),
-                            s.identity.clone(),
-                        );
-                    }
-                }
-                ids.into_values().collect::<Vec<_>>()
-            };
+            let identities = monitored_identities(&app);
             for i in identities {
                 if verify(&app, &i).await.is_err() {
                     let _ = revoke_identity(&app, &i, "iam_authority_lost");
@@ -302,4 +322,126 @@ pub fn start_revalidation(app: App) {
             }
         }
     });
+}
+
+/// Server-hosted representatives outlive CLI sessions and still require current IAM authority.
+pub fn monitored_identities(app: &App) -> Vec<Identity> {
+    let e = app.engine.lock().unwrap();
+    let mut ids = std::collections::BTreeMap::new();
+    for session in e.state.sessions.values().filter(|s| s.expires_at > now()) {
+        let i = &session.identity;
+        ids.insert(key(&i.realm, &i.org_id, &i.actor), i.clone());
+    }
+    for call in e
+        .state
+        .calls
+        .values()
+        .filter(|c| matches!(c.state.as_str(), "active" | "ringing"))
+    {
+        for p in call.participants.iter().filter(|p| p.left_at.is_none()) {
+            ids.entry(key(&call.realm, &call.org_id, &p.actor))
+                .or_insert(Identity {
+                    actor: p.actor.clone(),
+                    realm: call.realm.clone(),
+                    org_id: call.org_id.clone(),
+                    display_name: p.display_name.clone(),
+                    admin: false,
+                });
+        }
+    }
+    ids.into_values().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{engine::Engine, media::Media, vault::Vault};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+
+    fn app(dir: &std::path::Path) -> App {
+        App {
+            engine: Arc::new(Mutex::new(Engine::open(dir).unwrap())),
+            media: Arc::new(Mutex::new(Media::default())),
+            test_tokens: Arc::new(BTreeMap::new()),
+            test_secret: None,
+            providers_disabled: true,
+            vault: Arc::new(Vault::open(dir).unwrap()),
+            telemetry: Arc::new(None),
+            web_analytics: Arc::new(None),
+            web_events: Arc::new(None),
+            cli_telemetry: Arc::new(None),
+        }
+    }
+    fn login(app: &App, actor: &str) -> Session {
+        let mut e = app.engine.lock().unwrap();
+        let value = e
+            .login(
+                Identity {
+                    actor: actor.into(),
+                    org_id: "org".into(),
+                    realm: "production".into(),
+                    display_name: actor.into(),
+                    admin: false,
+                },
+                None,
+            )
+            .unwrap();
+        e.session(value["session_token"].as_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn revoked_representatives_are_removed_even_after_client_sessions_expire() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(dir.path());
+        let alice = login(&app, "si:alice");
+        let bob = login(&app, "si:bob");
+        let ring = {
+            let mut e = app.engine.lock().unwrap();
+            let ring = e
+                .dispatch(&alice, "calls.init", &json!({"target":"si:bob"}))
+                .unwrap()["ringid"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            e.dispatch(&bob, "calls.accept", &json!({"ringid":ring}))
+                .unwrap();
+            e.state.sessions.clear();
+            e.state
+                .devices
+                .get_mut(&alice.device_id)
+                .unwrap()
+                .push_token = Some("private-token".into());
+            e.state
+                .pushes
+                .insert("pending".into(), json!({"device_id":alice.device_id}));
+            ring
+        };
+        assert_eq!(monitored_identities(&app).len(), 2);
+        revoke_identity(&app, &alice.identity, "membership_removed").unwrap();
+        let e = app.engine.lock().unwrap();
+        assert!(!e.state.calls[&ring].active("si:alice"));
+        assert!(e.state.devices[&alice.device_id].push_token.is_none());
+        assert!(e.state.pushes.is_empty());
+        assert!(e
+            .state
+            .events
+            .iter()
+            .any(|event| event.kind == "session.revoked"));
+    }
+
+    #[tokio::test]
+    async fn stored_profiles_cannot_authorize_a_recipient_without_current_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(dir.path());
+        let alice = login(&app, "si:alice");
+        login(&app, "si:bob");
+        let error = verify_recipient(&app, &alice.identity, "si:bob")
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "RECIPIENT_UNAVAILABLE");
+        assert!(!error.retryable);
+    }
 }

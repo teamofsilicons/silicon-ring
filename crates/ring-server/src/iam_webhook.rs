@@ -34,22 +34,10 @@ pub async fn handle(State(app): State<App>, headers: HeaderMap, body: Bytes) -> 
         } else {
             "production"
         };
-        let identities = {
-            let e = app.engine.lock().unwrap();
-            let mut rows = std::collections::BTreeMap::new();
-            for s in e
-                .state
-                .sessions
-                .values()
-                .filter(|s| s.identity.realm == realm)
-            {
-                rows.insert(
-                    crate::model::key(&s.identity.realm, &s.identity.org_id, &s.identity.actor),
-                    s.identity.clone(),
-                );
-            }
-            rows.into_values().collect::<Vec<_>>()
-        };
+        let identities = crate::auth::monitored_identities(&app)
+            .into_iter()
+            .filter(|i| i.realm == realm)
+            .collect::<Vec<_>>();
         for identity in identities {
             if crate::auth::verify(&app, &identity).await.is_err()
                 && crate::auth::revoke_identity(&app, &identity, "iam_webhook_authority_changed")

@@ -84,3 +84,4 @@ with tempfile.TemporaryDirectory(prefix="ring-cli-") as temp:
             subprocess.run([str(BIN), "--test", "daemon", "stop"], env={**env, "SILICON_HOME": str(root / actor)}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         server.terminate()
         server.wait(timeout=10)
+        server_log.close()

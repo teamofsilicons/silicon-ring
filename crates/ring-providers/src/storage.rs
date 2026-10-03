@@ -123,6 +123,39 @@ impl S3 {
             .map_err(|_| Error::network("S3 upload"))?;
         Ok(())
     }
+    pub async fn put_file(&self, key: &str, content_type: &str, path: &str) -> Result<()> {
+        let body = ByteStream::from_path(path)
+            .await
+            .map_err(|_| Error::network("S3 upload source"))?;
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(self.key(key)?)
+            .content_type(content_type)
+            .server_side_encryption(aws_sdk_s3::types::ServerSideEncryption::Aes256)
+            .body(body)
+            .send()
+            .await
+            .map_err(|_| Error::network("S3 upload"))?;
+        Ok(())
+    }
+    pub async fn get_to_file(&self, key: &str, path: &str) -> Result<u64> {
+        let response = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(self.key(key)?)
+            .send()
+            .await
+            .map_err(|_| Error::network("S3 download"))?;
+        let mut reader = response.body.into_async_read();
+        let mut file = tokio::fs::File::create(path)
+            .await
+            .map_err(|_| Error::network("S3 download cache"))?;
+        tokio::io::copy(&mut reader, &mut file)
+            .await
+            .map_err(|_| Error::network("S3 download"))
+    }
     /// Authorize the caller's participation interval before retrieving any recording bytes.
     pub async fn get(&self, key: &str) -> Result<Vec<u8>> {
         self.client
