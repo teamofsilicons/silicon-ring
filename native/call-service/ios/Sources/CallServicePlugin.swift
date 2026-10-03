@@ -131,6 +131,9 @@ private final class NativeAudio {
     private var queuedOutput = 0
     private var capturingSince = ProcessInfo.processInfo.systemUptime
     private var starting = false
+    private var startingRing = ""
+    private var startingVoicemailId: String?
+    private var generation = 0
     private var callKitActive = false
     private var startWaiters: [Reply] = []
     private(set) var streamId = ""
@@ -140,23 +143,37 @@ private final class NativeAudio {
     init(_ transport: RingTransport) { self.transport = transport }
     func start(_ ring: String, voicemailId: String?, reply: @escaping Reply) {
         if ringid == ring && !streamId.isEmpty && voicemail == (voicemailId != nil) { reply(.success(["stream_id": streamId])); return }
-        if starting { startWaiters.append(reply); return }
-        starting = true; startWaiters.append(reply)
-        let finished: Reply = { result in self.starting = false; let callbacks = self.startWaiters; self.startWaiters.removeAll(); callbacks.forEach { $0(result) } }
+        if starting {
+            guard startingRing == ring && startingVoicemailId == voicemailId else { reply(.failure(failure("Another audio attachment is still starting."))); return }
+            startWaiters.append(reply); return
+        }
+        generation += 1; let attempt = generation
+        starting = true; startingRing = ring; startingVoicemailId = voicemailId; startWaiters.append(reply)
+        let finished: Reply = { result in
+            guard self.generation == attempt else { return }
+            self.starting = false; self.startingRing = ""; self.startingVoicemailId = nil
+            let callbacks = self.startWaiters; self.startWaiters.removeAll(); callbacks.forEach { $0(result) }
+        }
         AVAudioSession.sharedInstance().requestRecordPermission { allowed in DispatchQueue.main.async {
+            guard self.generation == attempt else { return }
             guard allowed else { finished(.failure(failure("Allow microphone access in iOS Settings to join audio."))); return }
-            self.stop { _ in
+            self.stop({ _ in
+                guard self.generation == attempt else { return }
                 var params: [String: Any] = ["ringid": ring, "device_id": self.transport.device, "purpose": voicemailId == nil ? "call" : "voicemail"]
                 if let id = voicemailId { params["voicemail_id"] = id }
                 self.transport.request("media.attach", params) { result in
+                    guard self.generation == attempt else {
+                        if case .success(let response) = result, let id = response["stream_id"] as? String { self.transport.request("media.detach", ["stream_id": id]) { _ in } }
+                        return
+                    }
                     do {
                         let response = try result.get()
                         guard let id = response["stream_id"] as? String else { throw failure("Media attachment did not return a stream.") }
                         self.streamId = id; self.ringid = ring; self.voicemail = voicemailId != nil; self.sequence = 0; self.offset = 0; self.muted = false; self.lastOutput = -1; self.capturingSince = ProcessInfo.processInfo.systemUptime
                         try self.openAudio(); finished(.success(response))
-                    } catch { self.stop { _ in }; finished(.failure(error)) }
+                    } catch { self.stop({ _ in }, cancelStart: false); finished(.failure(error)) }
                 }
-            }
+            }, cancelStart: false)
         } }
     }
     private func openAudio() throws {
@@ -226,9 +243,13 @@ private final class NativeAudio {
         callKitActive = false
         engine?.inputNode.removeTap(onBus: 0); player?.stop(); engine?.stop(); engine = nil; player = nil; buffered.removeAll(); queuedOutput = 0
     }
-    func stop(_ reply: @escaping Reply) {
+    func stop(_ reply: @escaping Reply, cancelStart: Bool = true) {
+        if cancelStart {
+            generation += 1; starting = false; startingRing = ""; startingVoicemailId = nil
+            let callbacks = startWaiters; startWaiters.removeAll(); callbacks.forEach { $0(.failure(failure("Audio attachment was cancelled."))) }
+        }
         let id = streamId; let last = sequence - 1; let privateAudio = voicemail
-        streamId = ""; ringid = ""; engine?.inputNode.removeTap(onBus: 0); player?.stop(); engine?.stop(); engine = nil; player = nil; buffered.removeAll(); queuedOutput = 0
+        streamId = ""; ringid = ""; voicemail = false; engine?.inputNode.removeTap(onBus: 0); player?.stop(); engine?.stop(); engine = nil; player = nil; buffered.removeAll(); queuedOutput = 0
         if id.isEmpty || !transport.ready { reply(.success(["complete": id.isEmpty || !privateAudio])); return }
         var params: [String: Any] = ["stream_id": id]
         if privateAudio { params["last_seq"] = max(0, last) }

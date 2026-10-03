@@ -19,6 +19,15 @@ python3 scripts/test-packaging.py
 
 The smoke tests launch a real local server with isolated test identities and provider calls disabled. They check call lifecycle, media protocol, ownership/privacy, persistence, explicit context approval and exact retries. Packaging tests use inert fixtures; they do not claim that all six native binaries have been built. The GitHub native matrix builds and tests those targets separately.
 
+Provider checks are opt-in and use paid OpenAI/Deepgram credentials from `.env`:
+
+```sh
+node --env-file=.env scripts/test-live.mjs --paid-provider-smoke
+node --env-file=.env scripts/load-live.mjs --paid-provider-smoke --calls 15 --seconds 30
+```
+
+The first checks actual speech, captions and private delegation. The second measures concurrent representative sessions and recording coverage. `scripts/load-test.mjs` separately verifies byte-exact two-way PCM relay at 15 concurrent calls. Saved capacity reports include failures as well as passing runs under [benchmarks](docs/benchmarks).
+
 ## Run locally
 
 Build the web client first, then start a development server. This example uses disposable identities and makes no paid provider requests:

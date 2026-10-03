@@ -176,7 +176,7 @@ internal class RingRuntime private constructor(val context: Context) {
         val callbacks = pending.values.toList(); pending.clear(); callbacks.forEach { it(null, "Signed out") }
         val connections = waiting.toList(); waiting.clear(); connections.forEach { it("Signed out") }
     }
-    fun logout() { disconnect(); SessionVault.save(context, null); calls.clear(); RingConnectionService.connections.keys.toList().forEach { RingConnectionService.end(it) }; context.stopService(Intent(context, RingCallService::class.java)) }
+    fun logout() { disconnect(); credentials = JSONObject(); SessionVault.save(context, null); calls.clear(); RingConnectionService.connections.keys.toList().forEach { RingConnectionService.end(it) }; context.stopService(Intent(context, RingCallService::class.java)) }
 }
 
 internal class RingAudio(private val runtime: RingRuntime) {
@@ -189,26 +189,42 @@ internal class RingAudio(private val runtime: RingRuntime) {
     private var track: AudioTrack? = null
     private var seq = 0
     private var starting = false
+    private var generation = 0L
+    private var pendingRing = ""
+    private var pendingVoicemail: String? = null
     private val startWaiters = mutableListOf<RingReply>()
     private var lastOutput = -1
     private var startedAt = android.os.SystemClock.elapsedRealtime()
     private var lastOffset = -20
     fun start(ring: String, voicemailId: String?, reply: RingReply) {
         if (ring == ringid && streamId.isNotEmpty() && voicemail == (voicemailId != null)) { reply(JSONObject().put("stream_id", streamId), null); return }
-        if (starting) { startWaiters.add(reply); return }
-        starting = true; startWaiters.add(reply)
-        stop { _, _ ->
+        if (starting) {
+            if (pendingRing != ring || pendingVoicemail != voicemailId) reply(null, "Another audio connection is in progress. Stop it before switching audio.")
+            else startWaiters.add(reply)
+            return
+        }
+        val attempt = ++generation
+        starting = true; pendingRing = ring; pendingVoicemail = voicemailId; startWaiters.add(reply)
+        detachCurrent(afterDetach@{ _, _ ->
+            if (attempt != generation) return@afterDetach
             val params = JSONObject().put("ringid", ring).put("device_id", runtime.device).put("purpose", if (voicemailId == null) "call" else "voicemail")
             if (voicemailId != null) params.put("voicemail_id", voicemailId)
             runtime.request("media.attach", params) { value, error ->
+                if (attempt != generation) {
+                    value?.optString("stream_id")?.takeIf { it.isNotEmpty() }?.let {
+                        runtime.request("media.detach", JSONObject().put("stream_id", it)) { _, _ -> }
+                    }
+                    return@request
+                }
                 var failure = error
                 if (failure == null) try {
                     streamId = value!!.getString("stream_id"); ringid = ring; voicemail = voicemailId != null; seq = 0; lastOutput = -1; muted = false; startedAt = android.os.SystemClock.elapsedRealtime(); lastOffset = -20
                     open(); RingCallService.show(runtime.context, ring, if (voicemail) "Recording voicemail" else "Call in progress", false)
-                } catch (e: Exception) { failure = e.message ?: "Could not start native microphone"; close() }
-                starting = false; val callbacks = startWaiters.toList(); startWaiters.clear(); callbacks.forEach { it(value, failure) }
+                } catch (e: Exception) { failure = e.message ?: "Could not start native microphone"; closeMedia() }
+                starting = false; pendingRing = ""; pendingVoicemail = null
+                val callbacks = startWaiters.toList(); startWaiters.clear(); callbacks.forEach { it(value, failure) }
             }
-        }
+        }, false)
     }
     @Suppress("MissingPermission")
     private fun open() {
@@ -248,6 +264,12 @@ internal class RingAudio(private val runtime: RingRuntime) {
         lastOutput = data.optInt("seq"); track?.write(bytes, 0, bytes.size, AudioTrack.WRITE_NON_BLOCKING)
     }
     fun close() {
+        generation++; starting = false; pendingRing = ""; pendingVoicemail = null
+        val callbacks = startWaiters.toList(); startWaiters.clear()
+        closeMedia()
+        callbacks.forEach { it(null, "Audio request cancelled.") }
+    }
+    private fun closeMedia() {
         recording = false; streamId = ""; ringid = ""
         try { recorder?.stop() } catch (_: Exception) {}
         recorder?.release(); recorder = null
@@ -255,9 +277,10 @@ internal class RingAudio(private val runtime: RingRuntime) {
         track?.release(); track = null
         runtime.context.getSystemService(AudioManager::class.java).mode = AudioManager.MODE_NORMAL
     }
-    fun stop(reply: RingReply) {
+    fun stop(reply: RingReply) = detachCurrent(reply, true)
+    private fun detachCurrent(reply: RingReply, cancelStart: Boolean) {
         val id = streamId; val last = seq - 1; val privateAudio = voicemail
-        close()
+        if (cancelStart) close() else closeMedia()
         if (id.isEmpty() || !runtime.ready) { reply(JSONObject().put("complete", id.isEmpty() || !privateAudio), null); return }
         val params = JSONObject().put("stream_id", id)
         if (privateAudio) params.put("last_seq", maxOf(0, last))

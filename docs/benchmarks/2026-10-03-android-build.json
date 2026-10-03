@@ -22,5 +22,6 @@
     "Physical Android microphone and speaker routing",
     "Background Android push delivery and lock-screen answering"
   ],
-  "runtime_note": "UI automation and keyboard input timed out in the emulator during concurrent native builds; emulator stopped and its disposable AVD removed to free resources for physical iOS validation. Installed SDK, NDK and system image preserved."
+  "runtime_note": "UI automation and keyboard input timed out in the emulator during concurrent native builds; emulator stopped and its disposable AVD removed to free resources for physical iOS validation. Installed SDK, NDK and system image preserved.",
+  "source_followup": "A later pending audio-attach cancellation fix passed standalone Kotlin compilation after this APK was produced. Rebuild from the final source before distributing; this APK hash and launch check apply to the earlier build only."
 }

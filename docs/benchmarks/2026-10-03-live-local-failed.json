@@ -1,0 +1,35 @@
+{
+  "passed": false,
+  "timestamp": "2026-10-03T16:02:03.661Z",
+  "scope": "Concurrent actual OpenAI Live and Deepgram sessions, continuous silent carbon microphones, generated representative speech and full recordings; IAM fixtures and Ting suppressed",
+  "calls": 2,
+  "requested_seconds": 10,
+  "elapsed_seconds": 10,
+  "server_resources": {
+    "samples": 12,
+    "max_rss_mib": 32.69,
+    "cpu_percent_of_one_core": 12.88
+  },
+  "results": [
+    {
+      "audible_frames": 132,
+      "output_frames": 725,
+      "input_frames": 626,
+      "first_audio_ms": 4256,
+      "recording_status": "ready",
+      "recording_coverage": "partial"
+    },
+    {
+      "audible_frames": 145,
+      "output_frames": 727,
+      "input_frames": 627,
+      "first_audio_ms": 3542,
+      "recording_status": "ready",
+      "recording_coverage": "partial"
+    }
+  ],
+  "errors": [
+    "Recording ready/partial",
+    "Recording ready/partial"
+  ]
+}

@@ -60,8 +60,10 @@ with tempfile.TemporaryDirectory(prefix='ring-verify-') as temp:
 print('Verified and installed Ring '+release['version'])
 PY
 fi
+ring_binary="$install_dir/bin/ring"
+if [ -f "$install_dir/bin/ring.exe" ]; then ring_binary="$install_dir/bin/ring.exe"; fi
 if [ "$remote" = 1 ]; then
-  python3 - "$install_dir/bin/ring" <<'PYCONFIG'
+  python3 - "$ring_binary" <<'PYCONFIG'
 import json,os,pathlib,subprocess,sys
 path=pathlib.Path(os.environ['SILICON_HOME'])/'.ring/config.json'
 config=json.loads(path.read_text()) if path.exists() else {}
@@ -69,6 +71,6 @@ if 'server_url' not in config:
     subprocess.run([sys.argv[1],'config','set','--scope','local',json.dumps({'server_url':os.environ.get('RING_SERVER_URL','wss://backend.ring.teamofsilicons.com/ws')})],check=True,stdout=subprocess.DEVNULL)
 PYCONFIG
 fi
-"$install_dir/bin/ring" daemon start
-printf '\nInstalled Ring at %s/bin/ring\nAdd %s/bin to PATH. Authenticate separately: ring login --token-stdin\n' "$install_dir" "$install_dir"
+"$ring_binary" daemon start
+printf '\nInstalled Ring at %s\nAdd %s/bin to PATH. Authenticate separately: ring login --token-stdin\n' "$ring_binary" "$install_dir"
 printf 'Signed compatible updates are checked hourly. The daemon uses the deployment key from SILICON_RING_RELEASE_PUBLIC_KEY.\n'

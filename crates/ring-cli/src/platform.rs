@@ -24,11 +24,13 @@ pub fn private_dir(path: &Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
+        // Use .NET ACL APIs so an inherited PowerShell 7 module path cannot break Windows PowerShell.
         // Change only the DACL; replacing the owner can require privileges that normal users lack.
-        let script = r#"$ErrorActionPreference='Stop';$p=$env:RING_LOCAL_PATH;$sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$acl=Get-Acl -LiteralPath $p;$acl.SetSecurityDescriptorSddlForm(('D:P(A;OICI;FA;;;'+$sid+')'),[System.Security.AccessControl.AccessControlSections]::Access);Set-Acl -LiteralPath $p -AclObject $acl"#;
+        let script = r#"$ErrorActionPreference='Stop';$p=$env:RING_LOCAL_PATH;$sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$acl=[System.IO.Directory]::GetAccessControl($p);$acl.SetSecurityDescriptorSddlForm(('D:P(A;OICI;FA;;;'+$sid+')'),[System.Security.AccessControl.AccessControlSections]::Access);[System.IO.Directory]::SetAccessControl($p,$acl)"#;
         let result = std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("RING_LOCAL_PATH", path)
+            .env_remove("PSModulePath")
             .output()
             .map_err(|e| io_error(e, "protect directory"))?;
         if !result.status.success() {
@@ -82,10 +84,11 @@ pub fn protected_secret(path: &Path) -> Result<bool> {
     }
     #[cfg(windows)]
     {
-        let script="$ErrorActionPreference='Stop';$acl=Get-Acl -LiteralPath $env:RING_LOCAL_PATH;$allowed=@([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544');foreach($rule in $acl.Access){if($rule.AccessControlType -eq 'Allow' -and $allowed -notcontains $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value){exit 2}}";
+        let script="$ErrorActionPreference='Stop';$p=$env:RING_LOCAL_PATH;$acl=if([System.IO.Directory]::Exists($p)){[System.IO.Directory]::GetAccessControl($p)}else{[System.IO.File]::GetAccessControl($p)};$allowed=@([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544');foreach($rule in $acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])){if($rule.AccessControlType -eq 'Allow' -and $allowed -notcontains $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value){exit 2}}";
         let status = std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("RING_LOCAL_PATH", path)
+            .env_remove("PSModulePath")
             .status()
             .map_err(|e| io_error(e, "test authentication"))?;
         Ok(status.success())

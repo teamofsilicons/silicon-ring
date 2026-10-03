@@ -26,7 +26,7 @@ use futures_util::{SinkExt, StreamExt};
 use model::*;
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     io::{Seek, SeekFrom, Write},
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -47,6 +47,7 @@ pub struct App {
     pub web_events: Arc<Option<ring_providers::Telemetry>>,
     pub cli_telemetry: Arc<Option<ring_providers::Telemetry>>,
 }
+#[derive(Clone)]
 struct Peer {
     hello: bool,
     realm: String,
@@ -54,6 +55,7 @@ struct Peer {
     token: Option<String>,
     subscriptions: BTreeMap<String, Subscription>,
 }
+#[derive(Clone)]
 struct Subscription {
     ring: Option<String>,
     topics: Vec<String>,
@@ -209,21 +211,126 @@ async fn connection(app: App, socket: WebSocket) {
         token: None,
         subscriptions: BTreeMap::new(),
     };
+    let mut pending = VecDeque::new();
+    let mut control: Option<tokio::task::JoinHandle<(Peer, Value)>> = None;
     let mut poll = tokio::time::interval(Duration::from_millis(100));
     let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
     let mut last_seen = Instant::now();
     let mut window = Instant::now();
     let mut controls = 0u32;
-    loop {
-        tokio::select! {
-        incoming=source.next()=>{let Some(Ok(message))=incoming else{break};last_seen=Instant::now();match message{Message::Text(raw)=>{let value=match serde_json::from_str::<Value>(&raw){Ok(v)=>v,Err(_)=>{let _=sink.send(Message::Text(json!({"ok":false,"error":invalid("Malformed JSON frame")}).to_string().into())).await;continue}};if value.get("method").is_some(){if window.elapsed()>Duration::from_secs(1){window=Instant::now();controls=0}controls+=1;if controls>60{let _=sink.send(Message::Text(json!({"id":value["id"],"ok":false,"error":Fault::new("RATE_LIMITED","Too many control requests.","Wait a second before retrying.")}).to_string().into())).await;continue}let response=request(&app,&mut peer,value,tx.clone()).await;if sink.send(Message::Text(response.to_string().into())).await.is_err(){break}}else{let result=frame(&app,&peer,&value);if let Some(response)=result{if sink.send(Message::Text(response.to_string().into())).await.is_err(){break}}}},Message::Ping(data)=>{if sink.send(Message::Pong(data)).await.is_err(){break}},Message::Pong(_)=>{},Message::Close(_)=>break,_=>{}}},
-        outgoing=rx.recv()=>{if let Some(v)=outgoing{let valid=peer.token.as_ref().is_some_and(|t|app.engine.lock().unwrap().session(t).is_ok());if valid&&sink.send(Message::Text(v.to_string().into())).await.is_err(){break}}},
-        _=poll.tick()=>{let events={let e=app.engine.lock().unwrap();let session=peer.token.as_ref().and_then(|t|e.session(t).ok());let mut out=Vec::new();if let Some(s)=session{for(id,sub)in &mut peer.subscriptions{for event in e.state.events.iter().filter(|v|v.seq>sub.after_seq){if event.org_id==s.identity.org_id&&event.realm==s.identity.realm&&event.recipients.contains(&s.identity.actor)&&sub.ring.as_ref().is_none_or(|r|event.data["ringid"]==*r)&&(sub.topics.is_empty()||sub.topics.iter().any(|t|event.kind.starts_with(t))){let mut v=json!(event);v["subscription_id"]=json!(id);v.as_object_mut().unwrap().remove("recipients");v.as_object_mut().unwrap().remove("org_id");v.as_object_mut().unwrap().remove("realm");out.push(v);}}sub.after_seq=e.state.latest_event_seq().max(sub.after_seq);}}out};for event in events{if sink.send(Message::Text(event.to_string().into())).await.is_err(){return}}},
-        _=heartbeat.tick()=>{if last_seen.elapsed()>Duration::from_secs(90){break}if sink.send(Message::Ping(vec![].into())).await.is_err(){break}},
+    'connection: loop {
+        if control.is_none() {
+            if let Some(value) = pending.pop_front() {
+                let app = app.clone();
+                let mut snapshot = peer.clone();
+                let out = tx.clone();
+                control = Some(tokio::spawn(async move {
+                    let response = request(&app, &mut snapshot, value, out).await;
+                    (snapshot, response)
+                }));
+            }
         }
+        tokio::select! {
+            incoming = source.next() => {
+                let Some(Ok(message)) = incoming else { break };
+                last_seen = Instant::now();
+                match message {
+                    Message::Text(raw) => {
+                        let value = match serde_json::from_str::<Value>(&raw) {
+                            Ok(value) => value,
+                            Err(_) => {
+                                if sink.send(Message::Text(json!({"ok":false,"error":invalid("Malformed JSON frame")}).to_string().into())).await.is_err() { break }
+                                continue;
+                            }
+                        };
+                        if value.get("method").is_some() {
+                            if window.elapsed() > Duration::from_secs(1) {
+                                window = Instant::now();
+                                controls = 0;
+                            }
+                            controls += 1;
+                            if controls > 60 || pending.len() + usize::from(control.is_some()) >= 60 {
+                                let response = json!({"id":value["id"],"ok":false,"error":Fault::new("RATE_LIMITED","Too many control requests are pending.","Wait for pending requests before retrying.")});
+                                if sink.send(Message::Text(response.to_string().into())).await.is_err() { break }
+                            } else {
+                                pending.push_back(value);
+                            }
+                        } else if let Some(response) = frame(&app, &peer, &value) {
+                            if sink.send(Message::Text(response.to_string().into())).await.is_err() { break }
+                        }
+                    }
+                    Message::Ping(data) => {
+                        if sink.send(Message::Pong(data)).await.is_err() { break }
+                    }
+                    Message::Pong(_) => {}
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+            completed = async { control.as_mut().unwrap().await }, if control.is_some() => {
+                control = None;
+                let Ok((mut updated, response)) = completed else { break };
+                // Event polling advances live cursors while IAM/provider calls await their response.
+                // Keep those advances, while honoring subscriptions added or removed by the request.
+                for (id, subscription) in &mut updated.subscriptions {
+                    if let Some(current) = peer.subscriptions.get(id) {
+                        subscription.after_seq = subscription.after_seq.max(current.after_seq);
+                    }
+                }
+                peer = updated;
+                if sink.send(Message::Text(response.to_string().into())).await.is_err() { break }
+            }
+            outgoing = rx.recv() => {
+                if let Some(value) = outgoing {
+                    let valid = peer.token.as_ref().is_some_and(|token| app.engine.lock().unwrap().session(token).is_ok());
+                    if valid && sink.send(Message::Text(value.to_string().into())).await.is_err() { break }
+                }
+            }
+            _ = poll.tick() => {
+                let events = {
+                    let engine = app.engine.lock().unwrap();
+                    let session = peer.token.as_ref().and_then(|token| engine.session(token).ok());
+                    let mut outgoing = Vec::new();
+                    if let Some(session) = session {
+                        for (id, subscription) in &mut peer.subscriptions {
+                            for event in engine.state.events.iter().filter(|event| event.seq > subscription.after_seq) {
+                                if event.org_id == session.identity.org_id
+                                    && event.realm == session.identity.realm
+                                    && event.recipients.contains(&session.identity.actor)
+                                    && subscription.ring.as_ref().is_none_or(|ring| event.data["ringid"] == *ring)
+                                    && (subscription.topics.is_empty() || subscription.topics.iter().any(|topic| event.kind.starts_with(topic)))
+                                {
+                                    let mut value = json!(event);
+                                    value["subscription_id"] = json!(id);
+                                    let value_object = value.as_object_mut().unwrap();
+                                    value_object.remove("recipients");
+                                    value_object.remove("org_id");
+                                    value_object.remove("realm");
+                                    outgoing.push(value);
+                                }
+                            }
+                            subscription.after_seq = engine.state.latest_event_seq().max(subscription.after_seq);
+                        }
+                    }
+                    outgoing
+                };
+                for event in events {
+                    if sink.send(Message::Text(event.to_string().into())).await.is_err() { break 'connection }
+                }
+            }
+            _ = heartbeat.tick() => {
+                if last_seen.elapsed() > Duration::from_secs(90) { break }
+                if sink.send(Message::Ping(vec![].into())).await.is_err() { break }
+            }
+        }
+    }
+    if let Some(control) = control {
+        control.abort();
+        let _ = control.await;
     }
     app.media.lock().unwrap().disconnect(&tx);
 }
+
 async fn request(app: &App, peer: &mut Peer, v: Value, out: mpsc::Sender<Value>) -> Value {
     let rid = v["id"].as_str().filter(|s| !s.is_empty() && s.len() <= 160);
     let Some(rid) = rid else {
@@ -644,3 +751,6 @@ fn frame(app: &App, peer: &Peer, value: &Value) -> Option<Value> {
         ),
     }
 }
+
+#[cfg(test)]
+mod connection_tests;
