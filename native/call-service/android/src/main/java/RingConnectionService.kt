@@ -40,7 +40,10 @@ class RingConnectionService : ConnectionService() {
         return connection
     }
     override fun onCreateIncomingConnectionFailed(manager: PhoneAccountHandle?, request: ConnectionRequest) {
-        request.extras?.getString("ringid")?.let { ring -> RingRuntime.get(this).end(ring, true) }
+        request.extras?.getString("ringid")?.let { ring ->
+            val name = incoming[ring]?.second ?: request.extras?.getString("display_name") ?: "Incoming Ring call"
+            RingCallService.show(this, ring, name, true)
+        }
     }
 }
 

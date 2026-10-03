@@ -8,6 +8,11 @@ import WebKit
 
 private typealias Reply = (Result<[String: Any], Error>) -> Void
 private func failure(_ message: String) -> Error { NSError(domain: "SiliconRing", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+private func audioLog(_ message: String) {
+    #if DEBUG
+    NSLog("RingAudio %@", message)
+    #endif
+}
 private func saveSession(_ data: Data?) {
     let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.teamofsilicons.ring.session", kSecAttrAccount as String: "ring"]
     SecItemDelete(query as CFDictionary)
@@ -128,6 +133,9 @@ private final class NativeAudio {
     private var sequence = 0
     private var offset = 0
     private var lastOutput = -1
+    private var loggedCapture = false
+    private var loggedOutput = false
+    private var loggedNonzeroOutput = false
     private var queuedOutput = 0
     private var capturingSince = ProcessInfo.processInfo.systemUptime
     private var starting = false
@@ -141,6 +149,15 @@ private final class NativeAudio {
     private(set) var voicemail = false
     private(set) var muted = false
     init(_ transport: RingTransport) { self.transport = transport }
+    func prepareCall() throws {
+        let session = AVAudioSession.sharedInstance()
+        // Configure before fulfilling the CallKit action; CallKit activates it.
+        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
+        try session.setPreferredSampleRate(24000); try session.setPreferredIOBufferDuration(0.02)
+    }
+    func requestPermission() {
+        AVAudioSession.sharedInstance().requestRecordPermission { allowed in audioLog("microphone permission granted=\(allowed)") }
+    }
     func start(_ ring: String, voicemailId: String?, reply: @escaping Reply) {
         if ringid == ring && !streamId.isEmpty && voicemail == (voicemailId != nil) { reply(.success(["stream_id": streamId])); return }
         if starting {
@@ -155,6 +172,7 @@ private final class NativeAudio {
             let callbacks = self.startWaiters; self.startWaiters.removeAll(); callbacks.forEach { $0(result) }
         }
         AVAudioSession.sharedInstance().requestRecordPermission { allowed in DispatchQueue.main.async {
+            audioLog("start microphone permission granted=\(allowed)")
             guard self.generation == attempt else { return }
             guard allowed else { finished(.failure(failure("Allow microphone access in iOS Settings to join audio."))); return }
             self.stop({ _ in
@@ -169,9 +187,10 @@ private final class NativeAudio {
                     do {
                         let response = try result.get()
                         guard let id = response["stream_id"] as? String else { throw failure("Media attachment did not return a stream.") }
-                        self.streamId = id; self.ringid = ring; self.voicemail = voicemailId != nil; self.sequence = 0; self.offset = 0; self.muted = false; self.lastOutput = -1; self.capturingSince = ProcessInfo.processInfo.systemUptime
+                        self.streamId = id; self.ringid = ring; self.voicemail = voicemailId != nil; self.sequence = 0; self.offset = 0; self.muted = false; self.lastOutput = -1; self.loggedCapture = false; self.loggedOutput = false; self.loggedNonzeroOutput = false; self.capturingSince = ProcessInfo.processInfo.systemUptime
+                        audioLog("media attached; CallKit active=\(self.callKitActive)")
                         try self.openAudio(); finished(.success(response))
-                    } catch { self.stop({ _ in }, cancelStart: false); finished(.failure(error)) }
+                    } catch { audioLog("audio start failed: \(error.localizedDescription)"); self.stop({ _ in }, cancelStart: false); finished(.failure(error)) }
                 }
             }, cancelStart: false)
         } }
@@ -181,8 +200,7 @@ private final class NativeAudio {
         // Private voicemail recordings activate their own audio session.
         if !voicemail && !callKitActive { return }
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
-        try session.setPreferredSampleRate(24000); try session.setPreferredIOBufferDuration(0.02)
+        try prepareCall()
         if voicemail { try session.setActive(true) }
         let engine = AVAudioEngine(), player = AVAudioPlayerNode()
         self.engine = engine; self.player = player
@@ -203,10 +221,11 @@ private final class NativeAudio {
             let bytes = Data(bytes: samples, count: Int(converted.frameLength) * 2)
             DispatchQueue.main.async { if self.streamId == expectedStream { self.capture(bytes) } }
         }
-        try engine.start(); player.play()
+        try engine.start(); player.play(); audioLog("engine started; input sample rate=\(source.sampleRate), channels=\(source.channelCount)")
     }
     private func capture(_ bytes: Data) {
         guard !streamId.isEmpty, !muted, transport.ready else { return }
+        if !loggedCapture && !bytes.isEmpty { loggedCapture = true; audioLog("microphone PCM received") }
         buffered.append(bytes)
         while buffered.count >= 960 {
             let frame = buffered.prefix(960); buffered.removeFirst(960)
@@ -223,10 +242,17 @@ private final class NativeAudio {
         guard data["stream_id"] as? String == streamId, let encoded = data["audio_base64"] as? String, let bytes = Data(base64Encoded: encoded), bytes.count == 960,
               let seq = data["seq"] as? Int, seq > lastOutput, let player = player else { return }
         lastOutput = seq
+        if !loggedOutput { loggedOutput = true; audioLog("remote PCM received") }
         let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1)!
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 480), let samples = buffer.floatChannelData?[0] else { return }
         buffer.frameLength = 480
-        for index in 0..<480 { let value = Int16(bitPattern: UInt16(bytes[index * 2]) | UInt16(bytes[index * 2 + 1]) << 8); samples[index] = Float(value) / 32768 }
+        var peak = 0
+        for index in 0..<480 { let value = Int16(bitPattern: UInt16(bytes[index * 2]) | UInt16(bytes[index * 2 + 1]) << 8); samples[index] = Float(value) / 32768; peak = max(peak, abs(Int(value))) }
+        if peak > 50 && !loggedNonzeroOutput {
+            loggedNonzeroOutput = true
+            let session = AVAudioSession.sharedInstance()
+            audioLog("nonzero remote PCM peak=\(peak); playing=\(player.isPlaying); engine=\(engine?.isRunning ?? false); playerVolume=\(player.volume); mixerVolume=\(engine?.mainMixerNode.outputVolume ?? 0); systemVolume=\(session.outputVolume); outputPorts=\(session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ","))")
+        }
         if queuedOutput >= 15 { player.stop(); queuedOutput = 0; player.play() }
         queuedOutput += 1
         player.scheduleBuffer(buffer) { DispatchQueue.main.async { self.queuedOutput = max(0, self.queuedOutput - 1) } }
@@ -238,8 +264,9 @@ private final class NativeAudio {
             reply(result)
         }
     }
-    func activate() { callKitActive = true; if !streamId.isEmpty && engine == nil { do { try openAudio() } catch { transport.event?("error", ["message": error.localizedDescription]) } } }
+    func activate() { callKitActive = true; audioLog("CallKit audio activated"); if !streamId.isEmpty && engine == nil { do { try openAudio() } catch { audioLog("activation failed: \(error.localizedDescription)"); transport.event?("error", ["message": error.localizedDescription]) } } }
     func deactivate() {
+        audioLog("CallKit audio deactivated")
         callKitActive = false
         engine?.inputNode.removeTap(onBus: 0); player?.stop(); engine?.stop(); engine = nil; player = nil; buffered.removeAll(); queuedOutput = 0
     }
@@ -285,6 +312,8 @@ final class CallServicePlugin: Plugin, PKPushRegistryDelegate, CXProviderDelegat
         let payload = try JSONSerialization.jsonObject(with: Data(invoke.getRawArgs().utf8)) as? [String: Any] ?? [:]
         try transport.configure(payload)
         registerPush()
+        // The first grant must happen in the foreground, before a locked-phone answer.
+        DispatchQueue.main.async { self.audio.requestPermission() }
         invoke.resolve(["mobile": true, "native_audio": true, "platform": "ios", "push_configured": !pushToken.isEmpty])
     }
     @objc func control(_ invoke: Invoke) throws {
@@ -301,6 +330,7 @@ final class CallServicePlugin: Plugin, PKPushRegistryDelegate, CXProviderDelegat
     }
     private func received(_ type: String, _ data: [String: Any]) {
         if type == "media.audio" { audio.output(data); return }
+        if type == "stream.error" { let error = data["error"] as? [String: Any] ?? data; audioLog("media frame rejected: \(error["code"] as? String ?? "unknown")"); return }
         if type == "connection.lost" { audio.stop { _ in }; return }
         if type == "connection.restored" { registerPush(); transport.request("calls.list", ["state": "active"]) { if case .success(let value) = $0 { for call in value["items"] as? [[String: Any]] ?? [] { self.reconcile(call) } } }; return }
         guard let ring = data["ringid"] as? String else { return }
@@ -366,10 +396,17 @@ final class CallServicePlugin: Plugin, PKPushRegistryDelegate, CXProviderDelegat
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         guard let ring = calls.first(where: { $0.value == action.callUUID })?.key else { action.fail(); return }
         transport.request("calls.accept", ["ringid": ring, "device_id": transport.device]) { result in
-            switch result { case .success: self.pendingCalls.remove(ring); action.fulfill(); self.audio.start(ring, voicemailId: nil) { _ in }; case .failure: action.fail() }
+            switch result {
+            case .success:
+                do { try self.audio.prepareCall() } catch { audioLog("CallKit session setup failed: \(error.localizedDescription)"); action.fail(); return }
+                self.pendingCalls.remove(ring); action.fulfill(); self.audio.start(ring, voicemailId: nil) { _ in }
+            case .failure: action.fail()
+            }
         }
     }
-    func provider(_ provider: CXProvider, perform action: CXStartCallAction) { action.fulfill() }
+    func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+        do { try audio.prepareCall(); action.fulfill() } catch { audioLog("CallKit session setup failed: \(error.localizedDescription)"); action.fail() }
+    }
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         guard let ring = calls.first(where: { $0.value == action.callUUID })?.key else { action.fulfill(); return }
         let method = pendingCalls.contains(ring) ? "calls.decline" : "calls.cut"

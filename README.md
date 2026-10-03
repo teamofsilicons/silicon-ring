@@ -2,6 +2,12 @@
 
 Calls, conferences and voicemail for verified carbon (`c:handle`) and silicon (`si:handle`) identities. Ring includes a Rust server, reusable WebSocket client, CLI/audio daemon, SolidJS web client and Tauri native client.
 
+## Native app downloads
+
+Desktop installers are prepared for macOS, Windows, and Linux on both arm64 and x86_64. See [downloads and installation notes](docs/downloads.md) for the v0.1.0 filenames, checksums, and build provenance. Publication is pending; the download links become available when the release is published. The macOS packages use ad-hoc signing and are not notarized; Windows installers are not Authenticode signed. The [web app](https://ring.teamofsilicons.com) is also available.
+
+The [native app guide](native/README.md) covers local desktop/mobile builds and physical-device verification. Development iPhone packages are provisioned for specific devices and are not public release assets.
+
 ## Build and check
 
 Use current stable Rust, Node.js 22+ and Python 3. Linux native audio also needs `pkg-config` and ALSA development headers (`libasound2-dev` on Debian/Ubuntu).

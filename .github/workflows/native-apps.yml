@@ -103,8 +103,60 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: silicon-ring-android-aarch64-debug
-          path: native/gen/android/app/build/outputs/apk/**/*.apk
+          path: native/gen/android/app/build/outputs/apk/**/debug/*.apk
           if-no-files-found: error
+      - name: Prepare stable Android release signing
+        id: android-signing
+        env:
+          RING_ANDROID_KEYSTORE_BASE64: ${{ secrets.RING_ANDROID_KEYSTORE_BASE64 }}
+          RING_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.RING_ANDROID_KEYSTORE_PASSWORD }}
+          RING_ANDROID_KEY_PASSWORD: ${{ secrets.RING_ANDROID_KEY_PASSWORD }}
+        run: |
+          python3 - <<'PYSIGN'
+          import base64, os, pathlib
+          encoded = os.environ.get('RING_ANDROID_KEYSTORE_BASE64', '')
+          if encoded:
+              assert os.environ.get('RING_ANDROID_KEYSTORE_PASSWORD') and os.environ.get('RING_ANDROID_KEY_PASSWORD'), 'Android signing passwords are missing'
+              assert pathlib.Path('native/gen/android/app/google-services.json').exists(), 'Public Android releases require Firebase configuration'
+              path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'ring-android-release.p12'
+              with path.open('xb') as output:
+                  path.chmod(0o600)
+                  output.write(base64.b64decode(encoded, validate=True))
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  output.write(f'enabled=true\nkeystore={path}\n')
+          else:
+              print('Stable release signing unavailable; development APK only')
+          PYSIGN
+      - name: Build stable signed production APK
+        if: steps.android-signing.outputs.enabled == 'true'
+        working-directory: native
+        env:
+          RING_ANDROID_KEYSTORE_PATH: ${{ steps.android-signing.outputs.keystore }}
+          RING_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.RING_ANDROID_KEYSTORE_PASSWORD }}
+          RING_ANDROID_KEY_PASSWORD: ${{ secrets.RING_ANDROID_KEY_PASSWORD }}
+        run: node ../web/node_modules/@tauri-apps/cli/tauri.js android build --target aarch64 --apk --ci
+      - name: Verify production APK
+        if: steps.android-signing.outputs.enabled == 'true'
+        run: |
+          python3 - <<'PYVERIFY'
+          import glob, os, pathlib, subprocess
+          files = glob.glob('native/gen/android/app/build/outputs/apk/**/release/*.apk', recursive=True)
+          assert len(files) == 1, 'Expected exactly one production APK'
+          tools = pathlib.Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
+          subprocess.run([str(tools / 'apksigner'), 'verify', '--verbose', '--print-certs', files[0]], check=True)
+          metadata = subprocess.check_output([str(tools / 'aapt'), 'dump', 'badging', files[0]], text=True)
+          assert 'application-debuggable' not in metadata, 'Production APK must not be debuggable'
+          print('Stable signature and production manifest verified')
+          PYVERIFY
+      - uses: actions/upload-artifact@v4
+        if: steps.android-signing.outputs.enabled == 'true'
+        with:
+          name: silicon-ring-android-aarch64-release
+          path: native/gen/android/app/build/outputs/apk/**/release/*.apk
+          if-no-files-found: error
+      - name: Remove temporary Android signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/ring-android-release.p12"
   ios:
     name: iOS arm64 simulator app
     runs-on: macos-15

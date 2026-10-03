@@ -100,6 +100,13 @@ pid=$(systemctl show "$name.service" --property MainPID --value)
 result=0
 "$node" "$directory/check.mjs" --url ws://127.0.0.1:18766/ws --secrets-file "$directory/fixture.private.json" --pid "$pid" --calls @@CALLS@@ --seconds @@SECONDS@@ --report "$directory/report.json" @@PAID@@ > "$directory/output.log" 2>&1 || result=$?
 if test ! -s "$directory/report.json"; then tail -n 40 "$directory/output.log"; exit 1; fi
+python3 - "$directory/report.json" "$binary" <<'PYRELEASE'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+v=json.loads(p.read_text())
+v['deployment']={'release_sha256':pathlib.Path(sys.argv[2]).parent.name}
+p.write_text(json.dumps(v,indent=2)+'\n')
+PYRELEASE
 aws s3 cp "$directory/report.json" @@REPORT@@ --region @@REGION@@ --sse AES256 --only-show-errors
 python3 - "$directory/report.json" <<'PYSUMMARY'
 import json,sys

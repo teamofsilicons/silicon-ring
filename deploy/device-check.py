@@ -13,22 +13,26 @@ import uuid
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--instance-id", required=True)
 parser.add_argument("--bucket", required=True)
-parser.add_argument("--secret-arn", required=True)
+parser.add_argument("--secret-arn")
+parser.add_argument("--remove", action="store_true", help="Remove the temporary endpoint, service, credentials, and test data after checks")
 parser.add_argument("--fixtures", type=Path, default=Path("deploy/devices-test.private.json"))
 parser.add_argument("--region", default="us-west-1")
 args = parser.parse_args()
 assert re.fullmatch(r"i-[0-9a-f]+", args.instance_id)
 assert re.fullmatch(r"[a-z0-9.-]+", args.bucket)
-assert args.fixtures.stat().st_mode & 0o077 == 0
-fixture = json.loads(args.fixtures.read_text())
-assert fixture["identities"] and fixture["test_app_secret"]
+if not args.remove:
+    assert args.secret_arn, "Starting the check needs --secret-arn"
+    assert args.fixtures.stat().st_mode & 0o077 == 0
+    fixture = json.loads(args.fixtures.read_text())
+    assert fixture["identities"] and fixture["test_app_secret"]
 
 def aws(*command):
     result = subprocess.run(["aws", *command, "--region", args.region, "--output", "json"], capture_output=True, text=True, check=True)
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 key = "device-check/" + uuid.uuid4().hex + ".private.json"
-aws("s3api", "put-object", "--bucket", args.bucket, "--key", key, "--body", str(args.fixtures), "--server-side-encryption", "AES256")
+if not args.remove:
+    aws("s3api", "put-object", "--bucket", args.bucket, "--key", key, "--body", str(args.fixtures), "--server-side-encryption", "AES256")
 q = shlex.quote
 script = r'''#!/bin/bash
 set -euo pipefail
@@ -101,7 +105,30 @@ PY
 /usr/local/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 systemctl reload caddy.service
 echo 'Isolated device-check service is ready.'
-'''.replace("@@FIXTURE@@", q("s3://" + args.bucket + "/" + key)).replace("@@REGION@@", q(args.region)).replace("@@SECRET@@", q(args.secret_arn))
+'''.replace("@@FIXTURE@@", q("s3://" + args.bucket + "/" + key)).replace("@@REGION@@", q(args.region)).replace("@@SECRET@@", q(args.secret_arn or "unused"))
+if args.remove:
+    script = r'''#!/bin/bash
+set -euo pipefail
+systemctl stop ring-devicecheck.service
+python3 - <<'PY'
+from pathlib import Path
+import shutil
+p=Path('/etc/caddy/Caddyfile')
+s=p.read_text()
+block='    # Temporary isolated physical-device endpoint\n    handle_path /device-check/* {\n        reverse_proxy 127.0.0.1:18767\n    }\n    handle {\n        reverse_proxy 127.0.0.1:8765\n    }'
+assert block in s, 'Temporary route did not match; inspect before cleanup'
+p.write_text(s.replace(block,'    reverse_proxy 127.0.0.1:8765',1))
+for name in ['/etc/ring-devicecheck','/var/lib/ring-devicecheck']:
+    directory=Path(name)
+    assert directory.resolve()==directory and not directory.is_symlink()
+    if directory.exists(): shutil.rmtree(directory)
+Path('/etc/systemd/system/ring-devicecheck.service').unlink(missing_ok=True)
+PY
+/usr/local/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+systemctl reload caddy.service
+systemctl daemon-reload
+echo 'Temporary device-check endpoint, credentials, and data removed.'
+'''
 try:
     with tempfile.NamedTemporaryFile("w", prefix="ring-device-", suffix=".json") as request:
         json.dump({"commands": [script], "executionTimeout": ["180"]}, request)
@@ -124,4 +151,5 @@ try:
         raise SystemExit(0 if result["Status"] == "Success" else 1)
     raise TimeoutError("Inspect SSM command " + command)
 finally:
-    aws("s3api", "delete-object", "--bucket", args.bucket, "--key", key)
+    if not args.remove:
+        aws("s3api", "delete-object", "--bucket", args.bucket, "--key", key)

@@ -23,7 +23,7 @@ else
 import base64, hashlib, json, os, pathlib, platform, re, subprocess, sys, tempfile, urllib.request
 install = pathlib.Path(sys.argv[1]).expanduser().resolve() / 'bin'
 system = {'Darwin':'macos','Linux':'linux','Windows':'windows'}.get(platform.system())
-arch = {'arm64':'aarch64','aarch64':'aarch64','x86_64':'x86_64','AMD64':'x86_64'}.get(platform.machine())
+arch = {'arm64':'aarch64','aarch64':'aarch64','x86_64':'x86_64','amd64':'x86_64'}.get(platform.machine().lower())
 if not system or not arch: raise SystemExit('Unsupported platform or architecture')
 key = os.environ['SILICON_RING_RELEASE_PUBLIC_KEY']
 if not re.fullmatch(r'[0-9a-fA-F]{64}', key): raise SystemExit('The pinned Ed25519 public key must be 64 hex characters')

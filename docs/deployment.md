@@ -68,7 +68,7 @@ Four ordinary Space Station tables were provisioned in `tos`: `ringbackend`, `ri
 
 ## Native AWS deployment
 
-The deployed service runs the Rust binary directly under systemd, with Caddy providing HTTPS and WebSocket proxying. No container runtime is needed. On 2026-10-03 both public domains returned successful HTTPS responses and the native service passed its readiness check. The private S3 SDK smoke wrote, read, byte-checked, and deleted its unique test object successfully. IAM verification and the notification approvals above remain separate gates.
+The deployed service runs the Rust binary directly under systemd, with Caddy providing HTTPS and WebSocket proxying. No container runtime is needed. On 2026-10-03 both public domains returned successful HTTPS responses and the native service passed its readiness check. The private S3 SDK smoke wrote, read, byte-checked, and deleted its unique test object successfully. The native CloudFormation update completed successfully, and the same EC2 instance passed HTTPS and native-service checks after its restart; both Docker units remain disabled. IAM verification and the notification approvals above remain separate gates.
 
 Build an exact committed revision on an isolated temporary Amazon Linux 2023 CodeBuild worker:
 
@@ -122,6 +122,10 @@ This starts an isolated server and thirty test identities, sends 20 ms PCM frame
 
 The optimized development-machine baseline at `docs/benchmarks/2026-10-03-local-release.json` passed: 45,000/45,000 frames, fifteen complete recordings without missing intervals, relay p50 30.68 ms / p95 47.87 ms, CPU 13.53% of one core, and peak RSS 19.27 MiB. The earlier failed debug baseline is retained separately; neither is an AWS capacity claim.
 
+On the deployed `t3.small`, the 15-call relay check passed with all 45,000 frames and all recordings complete: p50 25.79 ms, p95 43.64 ms, maximum 111.50 ms, CPU 19.15% of one core, and peak RSS 18.29 MiB. The separate 15-call actual OpenAI Live/Deepgram check also passed: all representatives produced audible PCM within 3.782 seconds, all remained active for the measured thirty seconds, and every recording was complete with no missing intervals. That workload used 24.23% of one core and peaked at 29.00 MiB RSS. See `docs/benchmarks/2026-10-03-aws-t3-small-relay.json` and `docs/benchmarks/2026-10-03-aws-t3-small-live.json`; both identify the deployed archive checksum.
+
+Keep `t3.small` for this workload. T3 baseline capacity totals 10% of one core for nano, 20% for micro, and 40% for small. The measured live workload exceeds micro's baseline even before allowing for operating-system and HTTPS work. The deployed instance currently uses Unlimited credit mode; sustained use above the baseline can incur surplus-credit charges. These thirty-second tests establish bounded concurrency and recording integrity, not a long-running soak or a guarantee for arbitrary speech patterns, failure rates, or network conditions. Monitor CPUCreditBalance, CPUSurplusCreditBalance and CPUSurplusCreditsCharged in operation. See [AWS CPU credit baselines](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-credits-baseline-concepts.html) and [Unlimited mode](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-performance-instances-unlimited-mode-concepts.html).
+
 Run isolated native workloads on the actual deployed host:
 
 ```sh
@@ -142,4 +146,4 @@ RING_S3_BUCKET=PRIVATE_ASSETS_BUCKET AWS_REGION=us-west-1 \
   cargo run -p ring-providers --features s3 --example smoke -- s3
 ```
 
-Temporary physical-device checks can use `deploy/device-check.py` with a protected fixture file. It creates an isolated native service and `/device-check/` proxy route, and copies only voice/native-push configuration into that service. Remove the temporary service, route and data when the physical checks finish. Production IAM remains enforced on the main endpoint.
+Temporary physical-device checks can use `deploy/device-check.py` with a protected fixture file. It creates an isolated native service and `/device-check/` proxy route, and copies only voice/native-push configuration into that service. After the physical checks finish, run `python3 deploy/device-check.py --instance-id i-... --bucket PRIVATE_ASSETS_BUCKET --remove` to remove the temporary service, route, credentials and data. Production IAM remains enforced on the main endpoint.

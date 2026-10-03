@@ -1,0 +1,58 @@
+{
+  "date": "2026-10-03",
+  "device": "iPhone 13 mini",
+  "os": "iOS 27.0",
+  "build": "development-signed arm64 debug",
+  "bundle_id": "com.teamofsilicons.ring",
+  "environment": "isolated devicecheck realm on AWS native systemd deployment",
+  "build_verification": {
+    "xcodebuild": "passed",
+    "physical_install_and_launch": "passed",
+    "authenticated_session_restored_after_update": true
+  },
+  "push_and_callkit": {
+    "push_platform": "apns_voip",
+    "push_environment": "sandbox",
+    "registered_enabled_nonrevoked": true,
+    "foreground_incoming_answer_end": "passed",
+    "process_terminated_before_cold_push": true,
+    "cold_push_provider_status": "delivered",
+    "cold_push_provider_attempts": 1,
+    "cold_push_provider_error": null,
+    "cold_push_lock_screen_incoming_and_answer": "passed"
+  },
+  "audio": {
+    "fix": "Request microphone permission in foreground and configure AVAudioSession before fulfilling CallKit actions; start AVAudioEngine after CallKit activation.",
+    "microphone_permission_granted": true,
+    "native_input_sample_rate": 48000,
+    "transport_sample_rate": 24000,
+    "transport_channels": 1,
+    "transport_encoding": "pcm_s16le",
+    "transport_frame_ms": 20,
+    "final_spoken_test": {
+      "human_confirmed_hearing_phrase": true,
+      "first_nonzero_received_pcm_peak": 2918,
+      "player_running": true,
+      "engine_running": true,
+      "player_volume": 1,
+      "mixer_volume": 1,
+      "system_volume": 1,
+      "output_route": "Speaker",
+      "remote_peer_received_microphone_frames": 1909,
+      "remote_peer_non_silent_microphone_frames": 1846,
+      "remote_peer_microphone_peak": 2412
+    },
+    "test_harness_note": "The test caller stopped sending frames after playback; its input-idle timeout ended the call about 30 seconds later. The temporary harness was updated to send silence after playback."
+  },
+  "not_established_by_this_check": [
+    "App Store production push provisioning",
+    "Denied microphone permission behavior",
+    "Mute and unmute",
+    "Bluetooth and earpiece routing",
+    "Cellular-call interruption",
+    "Network loss and recovery during a call",
+    "Cross-device handoff",
+    "Private voicemail capture"
+  ],
+  "privacy": "No credentials, push tokens, device serials, private provisioning profiles, or recorded audio are included in this report."
+}

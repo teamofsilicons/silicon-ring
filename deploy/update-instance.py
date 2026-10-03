@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Install a checksummed native release through SSM, with readiness rollback."""
 import argparse
+import datetime
 import json
 from pathlib import Path
 import re
@@ -102,5 +103,9 @@ while time.monotonic() < deadline:
     print(json.dumps({"status": result["Status"]}))
     if result["Status"] != "Success":
         print(result["StandardErrorContent"][-2000:])
+    else:
+        receipt = Path("deploy/aws-deployment.private.json")
+        receipt.write_text(json.dumps({"instance_id": args.instance_id, "region": args.region, "release_bucket": args.release_bucket, "release_key": args.release_key, "release_sha256": args.release_sha256, "ssm_command_id": command, "deployed_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}, indent=2) + "\n")
+        receipt.chmod(0o600)
     raise SystemExit(0 if result["Status"] == "Success" else 1)
 raise TimeoutError("Inspect SSM command " + command)

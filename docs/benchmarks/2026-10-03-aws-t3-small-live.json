@@ -1,0 +1,162 @@
+{
+  "passed": true,
+  "timestamp": "2026-10-03T16:41:04.511Z",
+  "scope": "Concurrent actual OpenAI Live and Deepgram sessions, continuous silent carbon microphones, generated representative speech and full recordings; IAM fixtures and Ting suppressed",
+  "calls": 15,
+  "requested_seconds": 30,
+  "elapsed_seconds": 30,
+  "server_resources": {
+    "samples": 31,
+    "max_rss_mib": 29,
+    "cpu_percent_of_one_core": 24.23
+  },
+  "results": [
+    {
+      "audible_frames": 185,
+      "output_frames": 1697,
+      "input_frames": 1681,
+      "first_audio_ms": 3310,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 145,
+      "output_frames": 1699,
+      "input_frames": 1683,
+      "first_audio_ms": 3468,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 130,
+      "output_frames": 1700,
+      "input_frames": 1683,
+      "first_audio_ms": 3483,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 123,
+      "output_frames": 1705,
+      "input_frames": 1687,
+      "first_audio_ms": 3202,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 164,
+      "output_frames": 1709,
+      "input_frames": 1691,
+      "first_audio_ms": 3442,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 132,
+      "output_frames": 1708,
+      "input_frames": 1693,
+      "first_audio_ms": 3257,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 118,
+      "output_frames": 1720,
+      "input_frames": 1699,
+      "first_audio_ms": 3534,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 135,
+      "output_frames": 1726,
+      "input_frames": 1704,
+      "first_audio_ms": 3208,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 138,
+      "output_frames": 1729,
+      "input_frames": 1707,
+      "first_audio_ms": 3165,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 155,
+      "output_frames": 1732,
+      "input_frames": 1710,
+      "first_audio_ms": 3301,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 153,
+      "output_frames": 1731,
+      "input_frames": 1715,
+      "first_audio_ms": 3782,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 147,
+      "output_frames": 1740,
+      "input_frames": 1725,
+      "first_audio_ms": 3495,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 123,
+      "output_frames": 1741,
+      "input_frames": 1726,
+      "first_audio_ms": 3422,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 143,
+      "output_frames": 1746,
+      "input_frames": 1730,
+      "first_audio_ms": 3227,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    },
+    {
+      "audible_frames": 149,
+      "output_frames": 1752,
+      "input_frames": 1736,
+      "first_audio_ms": 3501,
+      "recording_status": "ready",
+      "recording_coverage": "full",
+      "missing_intervals": []
+    }
+  ],
+  "errors": [],
+  "deployment": {
+    "release_sha256": "198e33afb68c20138c2e09558536b5fbc566f9feb342bbe07c77cd305c7de3e0"
+  },
+  "aws": {
+    "instance_id": "i-0a28e20cee8ea6b27",
+    "instance_type": "t3.small",
+    "region": "us-west-1",
+    "ssm_command_id": "fe128575-b92c-4ae7-9783-6b2412fd19e7",
+    "runtime": "native systemd",
+    "mode": "live"
+  }
+}

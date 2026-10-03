@@ -18,6 +18,7 @@ val tauriProperties = Properties().apply {
         propFile.inputStream().use { load(it) }
     }
 }
+val releaseKeystore = System.getenv("RING_ANDROID_KEYSTORE_PATH")
 
 android {
     compileSdk = 36
@@ -29,6 +30,14 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (releaseKeystore != null) create("release") {
+            storeFile = file(releaseKeystore)
+            storePassword = requireNotNull(System.getenv("RING_ANDROID_KEYSTORE_PASSWORD")) { "Android release keystore password is missing" }
+            keyAlias = "ring"
+            keyPassword = requireNotNull(System.getenv("RING_ANDROID_KEY_PASSWORD")) { "Android release key password is missing" }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -44,6 +53,9 @@ android {
             }
         }
         getByName("release") {
+            isDebuggable = false
+            isJniDebuggable = false
+            if (releaseKeystore != null) signingConfig = signingConfigs.getByName("release")
             optimization {
                enable = true
             }
