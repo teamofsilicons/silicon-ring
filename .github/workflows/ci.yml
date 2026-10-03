@@ -43,7 +43,7 @@ jobs:
         run: python crates/ring-cli/tests/smoke.py
       - name: Honeycomb clean-PATH setup and configuration
         timeout-minutes: 3
-        run: python scripts/test-packaging.py --ring-binary target/debug/ring${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: python -u scripts/test-packaging.py --ring-binary target/debug/ring${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Package installable native artifact
         shell: bash
         run: |

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check signatures/layout; --ring-binary also runs the host setup with a clean PATH."""
-import argparse, base64, hashlib, importlib.util, json, os, pathlib, shutil, subprocess, tarfile, tempfile, time
+import argparse, base64, faulthandler, hashlib, importlib.util, json, os, pathlib, shutil, subprocess, tarfile, tempfile, time
+faulthandler.dump_traceback_later(45, repeat=True)
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--ring-binary',type=pathlib.Path,help='Native CLI binary for setup, config-preservation and daemon checks')
 test_args=parser.parse_args()
@@ -21,6 +22,7 @@ with tempfile.TemporaryDirectory(prefix='ring-package-test-') as temp:
     # This deterministic key is used only for a disposable packaging test.
     os.environ['RING_RELEASE_SIGNING_KEY']='00'*32
     args=argparse.Namespace(binary=binaries/'ring-linux-x86_64',platform='linux',arch='x86_64',version='0.0.0-test',base_url='https://example.invalid/releases',output=root/'dist',unsigned=False)
+    print('Packaging check: sign release metadata',flush=True)
     metadata=module.package(args)
     message='{version}\n{protocol_major}\n{platform}\n{arch}\n{sha256}\n{url}'.format(**metadata).encode()
     (root/'public.der').write_bytes(bytes.fromhex('302a300506032b6570032100'+metadata['signing_public_key']))
@@ -29,6 +31,7 @@ with tempfile.TemporaryDirectory(prefix='ring-package-test-') as temp:
     subprocess.run(command,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     (root/'message').write_bytes(message+b'tampered')
     assert subprocess.run(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode != 0
+    print('Packaging check: signature and tamper checks passed; build Honeycomb archive',flush=True)
     args.binary=binaries
     archive=module.honeycomb_package(args)
     with tarfile.open(archive) as packaged:
@@ -60,11 +63,13 @@ with tempfile.TemporaryDirectory(prefix='ring-package-test-') as temp:
             command=[str(payload/setup)]
         assert shutil.which('ring',path=path) is None
         assert shutil.which('ring.exe',path=path) is None
+        print('Packaging check: six-target layout passed',flush=True)
         for configured in (False,True):
             home=root/('configured-home' if configured else 'fresh-home');home.mkdir()
             env={k:v for k,v in os.environ.items() if not k.startswith('SILICON_RING_') and k not in ('SILICON_ORG','ISI','PSModulePath')}
             env.update(SILICON_HOME=str(home),PATH=path)
             def cli(*args):
+                print('Packaging CLI:',home.name,*args[:3],flush=True)
                 result=subprocess.run([str(payload/executable),'--json',*args],env=env,capture_output=True,text=True,timeout=30)
                 assert result.returncode==0,(args,result.stdout,result.stderr)
                 return json.loads(result.stdout)
@@ -73,8 +78,19 @@ with tempfile.TemporaryDirectory(prefix='ring-package-test-') as temp:
                 cli('config','set','--scope','local','{"server_url":"ws://127.0.0.1:8765/ws","telemetry.enabled":false}')
             before=config.read_bytes() if config.exists() else None
             try:
-                result=subprocess.run(command,cwd=root,env=env,capture_output=True,text=True,timeout=30)
-                assert result.returncode==0,(result.stdout,result.stderr)
+                print('Packaging check:',home.name,'run install script',flush=True)
+                # Honeycomb waits for the script process with inherited output, not pipe EOF.
+                # Files keep the 30-second process deadline effective even if a descendant
+                # retains an output handle; a PowerShell process that does not exit still fails.
+                with (home/'setup.stdout.log').open('w+') as output, (home/'setup.stderr.log').open('w+') as errors:
+                    try:
+                        result=subprocess.run(command,cwd=root,env=env,stdout=output,stderr=errors,timeout=30)
+                    finally:
+                        output.seek(0);errors.seek(0)
+                        stdout=output.read();stderr=errors.read()
+                        print('Install script stdout:',stdout,'stderr:',stderr,flush=True)
+                assert result.returncode==0,(result.returncode,stdout,stderr)
+                print('Packaging check:',home.name,'install script exited successfully',flush=True)
                 assert cli('daemon','status')['running'] is True
                 values=cli('config','show','--scope','local')
                 assert values['defaults']['server_url']=='wss://backend.ring.teamofsilicons.com/ws'
@@ -88,5 +104,6 @@ with tempfile.TemporaryDirectory(prefix='ring-package-test-') as temp:
                     time.sleep(.05)
                 assert not list((home/'.ring').glob('*-daemon.json')),'Temporary daemon did not stop'
                 assert cli('daemon','status')['running'] is False
-        print('Clean-PATH Honeycomb setup, production default, preserved local settings and daemon cleanup passed')
-    print('Release signature, tamper rejection and six-target Honeycomb layout checks passed')
+        print('Clean-PATH Honeycomb setup, production default, preserved local settings and daemon cleanup passed',flush=True)
+    print('Release signature, tamper rejection and six-target Honeycomb layout checks passed',flush=True)
+faulthandler.cancel_dump_traceback_later()
