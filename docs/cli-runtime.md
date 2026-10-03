@@ -33,7 +33,7 @@ Carbon init/accept checks native audio before the mutation, then the daemon atta
 
 For handoff, run `ring call handoff RINGID --to-device ID` on the destination device using its own ID from `ring login status`. It prepares a standby stream before switching authority; failed preparation leaves the original stream active. An already prepared remote device can also be selected from another client. Muting affects your microphone, not incoming audio.
 
-Carbon voicemail accepts `--record` or signed 16-bit mono 24 kHz PCM WAV via `--audio-file`. Recording lasts at most 180 seconds; Enter finishes and Ctrl-C aborts. It plays the returned greeting before the beep, temporarily mutes any conference microphone, verifies complete private media on detach, and restores the prior mute setting. Native playback uses `afplay` on macOS, `aplay` on Linux and `System.Media.SoundPlayer` for WAV on Windows. Use `--audio-out PATH` for unsupported local playback formats. Existing output files require `--overwrite`.
+Carbon voicemail accepts `--record` or signed 16-bit mono 24 kHz PCM WAV via `--audio-file`. Recording lasts at most 180 seconds; Enter finishes and Ctrl-C aborts. It attaches private media before playing the greeting or opening the microphone. The server suppresses the same actor’s conference microphone across devices and organizations, verifies complete private media on detach, and restores conference audio without changing the prior mute setting. Cancellation and failed playback release the private recording. Native playback uses `afplay` on macOS, `aplay` on Linux and `System.Media.SoundPlayer` for WAV on Windows. Use `--audio-out PATH` for unsupported local playback formats. Existing output files require `--overwrite`.
 
 ## Sessions and retries
 
@@ -45,7 +45,7 @@ Exit codes: success/accepted `0`, operation failure `1`, invalid input `2`, auth
 
 ## Updates and telemetry
 
-The daemon checks `release.info` every hour while it has a valid session. It verifies protocol major, platform, architecture, Ed25519 signature and SHA-256 before replacement. Active native media defers installation. Idle automatic installation restarts the daemon; manual application reports when a restart is needed. `self-replace` supplies the platform-specific running-executable replacement behavior.
+The production daemon checks the public signed release index every hour, including while logged out. `RING_RELEASE_MANIFEST_URL` selects a different HTTPS index for a separately managed deployment. Test daemons use their isolated server’s `release.info` and never fall back to public production releases. Updates verify protocol major, platform, architecture, Ed25519 signature and SHA-256 before replacement; older signed versions cannot downgrade the running CLI. Active calls and private recordings defer installation. Idle automatic installation restarts the daemon; manual application replies before restarting the idle daemon. `self-replace` supplies the platform-specific running-executable replacement behavior.
 
 The repository's pinned public key is [release-public-key.txt](../deploy/release-public-key.txt). A separately managed deployment can override it with `SILICON_RING_RELEASE_PUBLIC_KEY`. The signature covers exactly these six lines, without a trailing newline:
 

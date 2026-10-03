@@ -74,6 +74,8 @@ References: [OpenAI Live WebSockets](https://developers.openai.com/api/docs/guid
 
 Enable the Rust `ring-providers/s3` feature for S3. The official AWS SDK uses the normal credential chain, including an EC2 role. Uploads request server-side AES-256 encryption. An organization's BYO configuration can create an isolated client with its own region, bucket, prefix and credentials. API access control and participation slicing must run before reading or serving a recording; the bucket remains private.
 
+From 0.1.2, each uploaded asset pins its bucket, region, full object key and managed-versus-organization credential source before the first upload. Later reads, retries and retention deletes use that location and the current credentials; changing the destination does not redirect existing audio. No credential snapshot is stored with the asset. Legacy records containing only a relative key use the current configuration until a successful read or size check verifies their location. If the old destination has already changed, restore access to it before migrating or deleting those legacy recordings.
+
 Four ordinary Space Station tables were provisioned in `tos`: `ringbackend`, `ringcli`, `ringwebanalytics`, and `ringwebevents`. Their keys were saved privately. The backend key uses `RING_TELEMETRY_BACKEND_KEY`; the other source keys are `RING_TELEMETRY_CLI_KEY`, `RING_TELEMETRY_WEB_ANALYTICS_KEY`, and `RING_TELEMETRY_WEB_EVENTS_KEY`. Use separate source recorders. The provider accepts only source, step, progress, trace ID and duration; conversation bodies and credentials are excluded. Respect effective local, actor and organization opt-outs.
 
 ## Native AWS deployment

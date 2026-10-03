@@ -57,7 +57,7 @@ private final class RingTransport: NSObject {
         guard enabled, let raw = credentials["url"] as? String, let url = URL(string: raw) else { finishConnect(failure("Sign in to Ring first.")); return }
         connecting = true
         let task = URLSession.shared.webSocketTask(with: url); socket = task; task.resume(); receive(task)
-        var hello: [String: Any] = ["versions": [1], "client": ["name": "ring-ios", "version": "0.1.1"], "realm": credentials["realm"] ?? "production", "org_id": credentials["org_id"] ?? ""]
+        var hello: [String: Any] = ["versions": [1], "client": ["name": "ring-ios", "version": "0.1.2"], "realm": credentials["realm"] ?? "production", "org_id": credentials["org_id"] ?? ""]
         if let secret = credentials["test_app_secret"] as? String, !secret.isEmpty { hello["test_app_secret"] = secret }
         rawRequest("protocol.hello", hello) { result in
             switch result {

@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import { RingTone } from './audio';
 import { PhoneAudio, configureNative, logoutNative, restoreNative, isNativeMobile } from './native';
-import { RingSocket, type Call, type Session, displayActor, downloadAsset, uploadAsset, coalesceTranscript, errorMessage, isActor, normalizeActor, defaultSocketUrl } from './protocol';
+import { RingSocket, type Call, type Session, displayActor, downloadAsset, uploadAsset, readTranscriptSince, coalesceTranscript, errorMessage, isActor, normalizeActor, defaultSocketUrl } from './protocol';
 
 type IconName = 'phone' | 'history' | 'voicemail' | 'devices' | 'settings' | 'arrow' | 'plus' | 'search' | 'close' | 'chevron' | 'mic' | 'muted' | 'end' | 'download' | 'check' | 'logout' | 'user' | 'bell' | 'spark' | 'refresh' | 'play' | 'back';
 const paths: Record<IconName, string> = {
@@ -70,6 +70,7 @@ export default function App() {
   let ownPhotoId = ''; const loadingPeople = new Set<string>();
   let settingsDirty = false; let voicemailRequest: { ringid: string; id: string } | undefined;
   let audioCall = '', ringtoneCall = '', refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let transcriptView: { ringid: string; owner: Session; after: number; again?: boolean; pending?: Promise<void> } | undefined;
   let alive = true;
   const me = () => session()?.actor || session()?.actor_id || '';
   const activeCall = createMemo(() => calls().find(call => ['active', 'connecting'].includes(call.state) && call.participants?.some(p => p.actor === me() && !p.left_at)));
@@ -89,7 +90,7 @@ export default function App() {
   }
 
   api.onStatus = setStatus;
-  api.onExpired = () => { setSession(null); setConfigReady(false); sessionStorage.removeItem('ring.session'); setError('Your session expired. Sign in with a new IAM token.'); };
+  api.onExpired = () => { setSession(null); clearTranscript(); setConfigReady(false); sessionStorage.removeItem('ring.session'); setError('Your session expired. Sign in with a new IAM token.'); };
   audio.onLevel = setAudioLevel; audio.onMute = setMuted;
   const run = async (task: () => Promise<void>, step?: 'call_action' | 'change_settings') => {
     setError(''); setBusy(true); const started = performance.now(), trace = crypto.randomUUID();
@@ -116,9 +117,29 @@ export default function App() {
     loadingPeople.add(actor);
     try { const person = await api.request('profile.get', { actor }); setPeople(current => ({ ...current, [actor]: person })); if (person.photo_asset_id) { const blob = await downloadAsset(api, person.photo_asset_id); setPhotos(current => ({ ...current, [actor]: URL.createObjectURL(blob) })); } } catch {} finally { loadingPeople.delete(actor); }
   }
+  function clearTranscript() { transcriptView = undefined; setTranscript([]); }
   async function loadTranscript(ringid: string) {
-    try { const result = await api.request('transcript.list', { ringid, limit: 200 }); if (selected() === ringid) setTranscript(coalesceTranscript(result.items || [])); } catch { if (selected() === ringid) setTranscript([]); }
+    const owner = session();
+    if (!owner || selected() !== ringid) return;
+    if (transcriptView?.ringid !== ringid || transcriptView.owner !== owner) {
+      clearTranscript(); transcriptView = { ringid, owner, after: 0 };
+    }
+    const view = transcriptView;
+    if (view.pending) { view.again = true; return view.pending; }
+    view.pending = (async () => {
+      do {
+        view.again = false;
+        const result = await readTranscriptSince(api, ringid, view.after);
+        if (!alive || transcriptView !== view || session() !== owner || selected() !== ringid) return;
+        setTranscript(previous => coalesceTranscript([...previous, ...result.items]));
+        view.after = result.latest_seq;
+      } while (view.again);
+    })().catch(e => {
+      if (transcriptView === view && session() === owner && selected() === ringid) setError(`Transcript: ${errorMessage(e)}`);
+    }).finally(() => { view.pending = undefined; });
+    return view.pending;
   }
+  createEffect(() => { const ringid = selected(); if (ringid && session()) void loadTranscript(ringid); else clearTranscript(); });
   async function connect() {
     const connection = { url: server(), realm: realm(), org_id: org(), test_app_secret: testSecret() };
     storage.write('ring.connection', connection);
@@ -136,10 +157,10 @@ export default function App() {
     await run(async () => {
       await audio.stop(api).catch(() => {});
       try { if (api.ready) await api.request('auth.logout', {}); }
-      finally { try { await logoutNative(); } finally { tone.stop(); api.disconnect(); sessionStorage.removeItem('ring.session'); setSession(null); setConfigReady(false); setCalls([]); setVoicemails([]); setSelected(''); setAudioReady(false); audioCall = ''; setProfile({}); setName(''); setConfig({}); setPeople({}); if (profilePhoto()) URL.revokeObjectURL(profilePhoto()); setProfilePhoto(''); ownPhotoId = ''; Object.values(photos()).forEach(url => URL.revokeObjectURL(url)); setPhotos({}); } }
+      finally { try { await logoutNative(); } finally { tone.stop(); api.disconnect(); sessionStorage.removeItem('ring.session'); setSession(null); clearTranscript(); setConfigReady(false); setCalls([]); setVoicemails([]); setSelected(''); setAudioReady(false); audioCall = ''; setProfile({}); setName(''); setConfig({}); setPeople({}); if (profilePhoto()) URL.revokeObjectURL(profilePhoto()); setProfilePhoto(''); ownPhotoId = ''; Object.values(photos()).forEach(url => URL.revokeObjectURL(url)); setPhotos({}); } }
     });
   }
-  function selectCall(call: Call) { setSelected(call.ringid); setTranscript([]); setDeclineOpen(false); void loadTranscript(call.ringid); }
+  function selectCall(call: Call) { setSelected(call.ringid); setDeclineOpen(false); }
   function openDial(invite = false) { setInviteMode(invite); setTarget(''); setDialOpen(true); }
   async function dial() {
     if (!isActor(target())) { setError('Use a Carbon ID (c:name) or Silicon ID (si:name).'); return; }

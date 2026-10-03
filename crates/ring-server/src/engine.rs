@@ -1347,6 +1347,7 @@ impl Engine {
             return paginate(rows, p);
         }
         if m == "voicemail.begin" {
+            self.expire_voicemails(&now());
             let ring = required(p, "ringid")?;
             let c = self.state.call(i, ring)?;
             let offers: Vec<_> = c
@@ -1378,7 +1379,7 @@ impl Engine {
             if self.state.voicemails.values().any(|v| {
                 v.invitation_id == offer.invitation_id
                     && v.sender == i.actor
-                    && !matches!(v.state.as_str(), "aborted" | "deleted")
+                    && !matches!(v.state.as_str(), "aborted" | "deleted" | "purged")
             }) {
                 return Err(Fault::new(
                     "VOICEMAIL_EXISTS",
@@ -1440,7 +1441,13 @@ impl Engine {
             if v.recipient != i.actor || v.state != "delivered" {
                 return Err(forbidden());
             }
-        } else if v.sender != i.actor || v.state != "draft" || v.expires_at <= now() {
+        } else if v.sender != i.actor
+            || if m == "voicemail.abort" {
+                !matches!(v.state.as_str(), "draft" | "aborted")
+            } else {
+                v.state != "draft" || v.expires_at <= now()
+            }
+        {
             return Err(Fault::new(
                 "VOICEMAIL_NOT_DRAFT",
                 "This draft is expired or already finalized.",
@@ -1547,9 +1554,22 @@ impl Engine {
         }
         Err(forbidden())
     }
+    fn expire_voicemails(&mut self, time: &str) -> bool {
+        let mut changed = false;
+        for v in self
+            .state
+            .voicemails
+            .values_mut()
+            .filter(|v| v.state == "draft" && v.expires_at.as_str() <= time)
+        {
+            v.state = "aborted".into();
+            changed = true;
+        }
+        changed
+    }
     pub fn tick(&mut self, flush_transcripts: bool) -> bool {
         let time = now();
-        let mut changed = false;
+        let mut changed = self.expire_voicemails(&time);
         let ids: Vec<_> = self.state.calls.keys().cloned().collect();
         for id in ids {
             let mut c = self.state.calls[&id].clone();

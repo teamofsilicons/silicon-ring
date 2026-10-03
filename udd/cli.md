@@ -1,6 +1,6 @@
 # Silicon Ring CLI
 
-Planned commands based on [understanding.md](understanding.md) and [iam.md](iam.md). The API details are in [api.md](api.md). These docs do not claim the service is already running.
+Command contract based on [understanding.md](understanding.md) and [iam.md](iam.md). The API details are in [api.md](api.md); current deployment and verification status are in [deployment.md](../docs/deployment.md).
 
 ## Start here
 
@@ -22,8 +22,8 @@ If init/accept returns `CONTEXT_APPROVAL_REQUIRED`, inspect the displayed defaul
 
 ## Shared conventions
 
-- Actor IDs: `si:handle` or `c:handle`; leading `@` is optional. Membership IDs such as `si:handle[org]` must match the selected org. `ringid` identifies a conference; `invitation_id` identifies one offer to join it.
-- Global flags: `--help`, `--json`, `--org ORG`, `--test`, `--request-id ID`. Organization selection is `--org`, otherwise `SILICON_ORG`. Calls stay within that verified IAM organization.
+- Actor IDs are global `si:handle` or `c:handle`; leading `@` is optional. Legacy suffixes such as `si:handle[org]` normalize to the global ID and confer no membership authority. `ringid` identifies a conference; `invitation_id` identifies one offer to join it.
+- Global flags: `--help`, `--json`, `--org ORG`, `--test`, `--request-id ID`. Organization selection is `--org`, otherwise `SILICON_ORG`, and controls your own verified IAM context. Any registered Ring user can call or invite another registered global ID across organizations without shared membership.
 - `SILICON_HOME/.ring` holds local configuration, session references, state, and logs. `SILICON_HOME` is required for runtime/storage operations; help/version work without it. Optional `ISI` supplies origin metadata, never identity.
 - `--context TEXT` and `--start TEXT` accept inline text only, with no file or stdin option. Limits: context **400 characters**, start **100 characters**, each thinking/commentary send **160 characters**. Count Unicode characters (code points), including spaces/newlines; reject excess without truncating. Send limits also apply when using `--text-file`.
 - Other text/file alternatives are mutually exclusive. `--text-file` and `--description-file` accept UTF-8 paths or `-` for stdin. Only one input may read stdin.
@@ -151,8 +151,8 @@ Rust backend and reusable Rust client serve the CLI/daemon; platform apps have n
 
 Space Station telemetry defaults on; `telemetry.enabled:false` opts out at actor/org/local scope as applicable. Secrets and conversation bodies are excluded from ordinary diagnostics. `--test` uses isolated identities/data/notifications and the same paths; protected `SILICON_RING_TEST_APP_SECRET_FILE` or `SILICON_RING_TEST_APP_SECRET` supplies harness credentials, while IAM test tokens identify actors. Protocol major 1 is negotiated; breaking changes require a new major, published compatibility/deprecation information and consumer contract checks.
 
-The installer sets up the CLI/daemon and updates, not authentication. Replace the unassigned installer URL before publishing:
+The installer sets up the CLI/daemon and updates. Authentication remains an explicit IAM login. Python 3 and OpenSSL 3 with Ed25519 support must be on PATH:
 
 ```sh
-curl -fsSL '<PUBLISHED_RING_INSTALL_SCRIPT_URL>' | sh
+curl -fsSL https://ring.teamofsilicons.com/install.sh | sh
 ```

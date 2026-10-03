@@ -134,44 +134,162 @@ pub fn deepgram(
         ring_providers::Deepgram::from_env()
     }
 }
+// Location is immutable; credentials are resolved from the original provider context
+// on every operation so key rotation does not strand existing recordings.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StorageLocation {
+    pub bucket: String,
+    pub region: String,
+    pub object_key: String,
+    pub credentials: StorageCredentials,
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageCredentials {
+    Managed,
+    Organization,
+}
+fn storage_location(
+    config: &Value,
+    bucket: Option<String>,
+    region: Option<String>,
+    object_key: &str,
+    pinned: Option<&StorageLocation>,
+) -> std::result::Result<Option<StorageLocation>, ring_providers::Error> {
+    if let Some(location) = pinned {
+        return Ok(Some(location.clone()));
+    }
+    let bucket = config["bucket"].as_str().map(String::from).or(bucket);
+    let Some(bucket) = bucket else {
+        return Ok(None);
+    };
+    let credentials = match (
+        config["access_key_id"].as_str(),
+        config["secret_access_key"].as_str(),
+    ) {
+        (Some(_), Some(_)) => StorageCredentials::Organization,
+        (None, None) => StorageCredentials::Managed,
+        _ => {
+            return Err(ring_providers::Error::new(
+                "INVALID_STORAGE",
+                "Supply both S3 access key ID and secret access key.",
+                false,
+            ))
+        }
+    };
+    Ok(Some(StorageLocation {
+        bucket,
+        region: config["region"]
+            .as_str()
+            .map(String::from)
+            .or(region)
+            .unwrap_or_else(|| "us-west-1".into()),
+        object_key: format!(
+            "{}{}",
+            config["prefix"].as_str().unwrap_or("ring/"),
+            object_key
+        ),
+        credentials,
+    }))
+}
 pub async fn s3(
     app: &App,
     realm: &str,
     org: &str,
-) -> std::result::Result<Option<ring_providers::storage::S3>, ring_providers::Error> {
-    let config = provider(app, realm, org, "providers.storage")
-        .map_err(|e| ring_providers::Error::new(&e.code, &e.message, false))?;
-    let bucket = config["bucket"]
-        .as_str()
-        .map(String::from)
-        .or_else(|| std::env::var("RING_S3_BUCKET").ok());
-    let Some(bucket) = bucket else {
+    object_key: &str,
+    pinned: Option<&StorageLocation>,
+) -> std::result::Result<
+    Option<(ring_providers::storage::S3, StorageLocation)>,
+    ring_providers::Error,
+> {
+    let config = if pinned.is_some_and(|p| p.credentials == StorageCredentials::Managed) {
+        json!({})
+    } else {
+        provider(app, realm, org, "providers.storage")
+            .map_err(|e| ring_providers::Error::new(&e.code, &e.message, false))?
+    };
+    let Some(location) = storage_location(
+        &config,
+        std::env::var("RING_S3_BUCKET").ok(),
+        std::env::var("AWS_REGION").ok(),
+        object_key,
+        pinned,
+    )?
+    else {
         return Ok(None);
     };
-    let region = config["region"]
-        .as_str()
-        .map(String::from)
-        .or_else(|| std::env::var("AWS_REGION").ok())
-        .unwrap_or_else(|| "us-west-1".into());
-    let prefix = config["prefix"]
-        .as_str()
-        .map(String::from)
-        .unwrap_or_else(|| "ring/".into());
-    let store = if let (Some(access), Some(secret)) = (
-        config["access_key_id"].as_str(),
-        config["secret_access_key"].as_str(),
-    ) {
-        ring_providers::storage::S3::new_with_credentials(
-            bucket,
-            region,
-            prefix,
-            access.into(),
-            secret.into(),
-            config["session_token"].as_str().map(String::from),
-        )
-        .await?
-    } else {
-        ring_providers::storage::S3::new(bucket, Some(region), None, prefix).await?
+    let store = match location.credentials {
+        StorageCredentials::Organization => {
+            let (Some(access), Some(secret)) = (
+                config["access_key_id"].as_str(),
+                config["secret_access_key"].as_str(),
+            ) else {
+                return Err(ring_providers::Error::new("STORAGE_CREDENTIALS_MISSING",
+                    "Restore this organization's S3 credentials with access to the original recording bucket.", false));
+            };
+            ring_providers::storage::S3::new_with_credentials(
+                location.bucket.clone(),
+                location.region.clone(),
+                String::new(),
+                access.into(),
+                secret.into(),
+                config["session_token"].as_str().map(String::from),
+            )
+            .await?
+        }
+        StorageCredentials::Managed => {
+            ring_providers::storage::S3::new(
+                location.bucket.clone(),
+                Some(location.region.clone()),
+                None,
+                String::new(),
+            )
+            .await?
+        }
     };
-    Ok(Some(store))
+    Ok(Some((store, location)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_locations_pin_full_keys_and_credential_provenance_without_secrets() {
+        let original = json!({"bucket":"original", "region":"us-east-1", "prefix":"old/",
+            "access_key_id":"access", "secret_access_key":"secret"});
+        let location = storage_location(&original, None, None, "production/asset", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(location.bucket, "original");
+        assert_eq!(location.region, "us-east-1");
+        assert_eq!(location.object_key, "old/production/asset");
+        assert_eq!(location.credentials, StorageCredentials::Organization);
+        let persisted = serde_json::to_value(&location).unwrap();
+        assert_eq!(persisted.as_object().unwrap().len(), 4);
+        assert!(!persisted.to_string().contains("secret"));
+        // A storage destination change must not rewrite old GET/DELETE/retry targets.
+        let replacement = json!({"bucket":"new", "region":"eu-west-1", "prefix":"new/",
+            "access_key_id":"rotated-access", "secret_access_key":"rotated-secret"});
+        let pinned = storage_location(&replacement, None, None, "ignored", Some(&location))
+            .unwrap()
+            .unwrap();
+        assert_eq!(pinned, location);
+        assert_eq!(pinned.credentials, StorageCredentials::Organization);
+        let restored: StorageLocation = serde_json::from_value(persisted).unwrap();
+        assert_eq!(restored, location);
+        let managed = storage_location(&json!({}), Some("managed".into()), None, "asset", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(managed.credentials, StorageCredentials::Managed);
+        assert_eq!(managed.object_key, "ring/asset");
+        assert!(storage_location(
+            &json!({"bucket":"b", "access_key_id":"partial"}),
+            None,
+            None,
+            "a",
+            None
+        )
+        .is_err());
+    }
 }

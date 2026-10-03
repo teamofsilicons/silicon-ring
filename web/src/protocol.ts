@@ -66,7 +66,7 @@ export class RingSocket {
       ws.onerror = () => { clearTimeout(timeout); reject(new Error('Could not reach Ring. Make sure the server is running and its address is correct.')); };
     });
     try {
-      await this.request('protocol.hello', { versions: [1], client: { name: 'ring-web', version: '0.1.1' }, realm: this.settings.realm, org_id: this.settings.org_id || undefined, capabilities: ['audio.pcm16', 'events', 'handoff'], ...(this.settings.test_app_secret ? { test_app_secret: this.settings.test_app_secret } : {}) });
+      await this.request('protocol.hello', { versions: [1], client: { name: 'ring-web', version: '0.1.2' }, realm: this.settings.realm, org_id: this.settings.org_id || undefined, capabilities: ['audio.pcm16', 'events', 'handoff'], ...(this.settings.test_app_secret ? { test_app_secret: this.settings.test_app_secret } : {}) });
       if (this.session) {
         const result = await this.request('auth.resume', { session_token: this.session.session_token, device_id: this.session.device_id });
         this.session = { ...this.session, ...result };
@@ -140,6 +140,20 @@ export async function uploadAsset(api: RingSocket, file: File, purpose: string):
   }
   await api.request('assets.complete', { asset_id: result.asset_id });
   return result.asset_id;
+}
+
+export async function readTranscriptSince(api: Pick<RingSocket, 'request'>, ringid: string, afterSeq = 0): Promise<{ items: any[]; latest_seq: number }> {
+  const items: any[] = [], cursors = new Set<string>();
+  let cursor: string | undefined, latest = afterSeq;
+  do {
+    const page = await api.request('transcript.list', { ringid, after_seq: afterSeq, limit: 200, ...(cursor ? { cursor } : {}) });
+    items.push(...(page.items || []));
+    latest = Math.max(latest, page.latest_seq || 0, ...(page.items || []).map((entry: any) => entry.seq || 0));
+    cursor = page.next_cursor || undefined;
+    if (cursor && cursors.has(cursor)) throw new Error('The server repeated a transcript cursor. Reconnect and try again.');
+    if (cursor) cursors.add(cursor);
+  } while (cursor);
+  return { items, latest_seq: latest };
 }
 
 export function coalesceTranscript(entries: any[]): any[] {

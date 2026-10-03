@@ -41,6 +41,13 @@ jobs:
       - name: Headless CLI/server contract
         timeout-minutes: 6
         run: python crates/ring-cli/tests/smoke.py
+      - uses: actions/setup-node@v4
+        if: runner.os != 'Windows'
+        with: {node-version: '22'}
+      - name: Private voicemail before capture and cleanup
+        if: runner.os != 'Windows'
+        timeout-minutes: 2
+        run: node crates/ring-cli/tests/voicemail.mjs
       - name: Honeycomb clean-PATH setup and configuration
         timeout-minutes: 3
         run: python -u scripts/test-packaging.py --ring-binary target/debug/ring${{ runner.os == 'Windows' && '.exe' || '' }}

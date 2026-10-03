@@ -38,8 +38,20 @@ with tempfile.TemporaryDirectory(prefix="ring-cli-") as temp:
                 assert server.poll() is None, "server exited"
                 time.sleep(.05)
         # Alice uses her persisted URL; Bob's environment overrides a stale local URL.
+        defaults = run("alice", "config", "show", "--scope", "local")
+        assert defaults["effective"]["server_url"] == "wss://backend.ring.teamofsilicons.com/ws"
+        assert defaults["origins"]["server_url"] == "default"
         run("alice", "config", "set", "--scope", "local", json.dumps({"server_url": env["SILICON_RING_SERVER_URL"]}))
         run("bob", "config", "set", "--scope", "local", '{"server_url":"ws://127.0.0.1:1/ws"}')
+        local = run("alice", "config", "show", "--scope", "local")
+        overridden = run("bob", "config", "show", "--scope", "local")
+        assert local["effective"]["server_url"] == env["SILICON_RING_SERVER_URL"]
+        assert local["origins"]["server_url"] == "local"
+        assert overridden["values"]["server_url"] == "ws://127.0.0.1:1/ws"
+        assert overridden["effective"]["server_url"] == env["SILICON_RING_SERVER_URL"]
+        assert overridden["origins"]["server_url"] == "SILICON_RING_SERVER_URL"
+        assert overridden["effective"]["audio.input"] is None
+        assert overridden["origins"]["audio.input"] == "default"
         assert run("alice", "login", "status")["authenticated"] is False
         for actor in actors:
             result = run(actor, "login", "--token-stdin", stdin=f"{actor}-test-token\n")

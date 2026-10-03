@@ -171,6 +171,24 @@ impl S3 {
             .map(|v| v.into_bytes().to_vec())
             .map_err(|_| Error::network("S3 download"))
     }
+    pub async fn size(&self, key: &str) -> Result<u64> {
+        self.client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(self.key(key)?)
+            .send()
+            .await
+            .map_err(|_| Error::network("S3 object verification"))?
+            .content_length()
+            .and_then(|n| u64::try_from(n).ok())
+            .ok_or_else(|| {
+                Error::new(
+                    "INVALID_STORAGE_OBJECT",
+                    "S3 object length is missing.",
+                    false,
+                )
+            })
+    }
     pub async fn delete(&self, key: &str) -> Result<()> {
         self.client
             .delete_object()

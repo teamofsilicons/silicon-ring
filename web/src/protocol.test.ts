@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeActor, isActor, socketUrl, defaultSocketUrl, RingSocket, coalesceTranscript } from './protocol.ts';
+import { normalizeActor, isActor, socketUrl, defaultSocketUrl, RingSocket, coalesceTranscript, readTranscriptSince } from './protocol.ts';
 test('packaged native clients use production while local web and development clients stay local', () => {
   assert.equal(defaultSocketUrl('localhost', true, false), 'wss://backend.ring.teamofsilicons.com/ws');
   assert.equal(defaultSocketUrl('localhost', true, true), 'ws://127.0.0.1:8765/ws');
@@ -34,6 +34,40 @@ test('live transcript revisions replace interim text without repeating a segment
   assert.equal(rows.length, 3);
   assert.equal(rows[1].data.text, 'Good morning');
   assert.equal(rows[2].data.text, 'Hello');
+});
+
+test('transcripts load every page and keep earlier history when later revisions arrive', async () => {
+  const entries = Array.from({ length: 451 }, (_, i) => ({ seq: i + 1, kind: 'speech', actor: 'c:a', data: { segment_id: `s${i}`, revision: 1, text: `Words ${i}` } }));
+  const requests: any[] = [];
+  let head = 460; // Some private entries at the tail are invisible to this viewer.
+  const api = { request: async (method: string, params: any): Promise<any> => {
+    assert.equal(method, 'transcript.list'); requests.push(params);
+    const rows = entries.filter(row => row.seq > params.after_seq), offset = Number((params.cursor || 'offset:0').split(':')[1]);
+    return { items: rows.slice(offset, offset + params.limit), latest_seq: head, next_cursor: offset + params.limit < rows.length ? `offset:${offset + params.limit}` : null };
+  } };
+  const first = await readTranscriptSince(api, 'call-1');
+  assert.equal(first.items.length, 451);
+  assert.equal(first.latest_seq, 460);
+  assert.deepEqual(requests.map(p => [p.after_seq, p.cursor]), [[0, undefined], [0, 'offset:200'], [0, 'offset:400']]);
+  entries.push({ seq: 461, kind: 'speech', actor: 'c:a', data: { segment_id: 's0', revision: 2, text: 'Final words' } });
+  entries.push({ seq: 462, kind: 'speech', actor: 'c:a', data: { segment_id: 's451', revision: 1, text: 'A new sentence' } });
+  head = 462;
+  const next = await readTranscriptSince(api, 'call-1', first.latest_seq);
+  const shown = coalesceTranscript([...first.items, ...next.items]);
+  assert.equal(requests.at(-1).after_seq, 460);
+  assert.equal(shown.length, 452);
+  assert.equal(shown[0].data.text, 'Final words');
+  assert.equal(shown.at(-1).data.text, 'A new sentence');
+});
+
+test('transcript pagination fails explicitly without committing a partial checkpoint', async () => {
+  let count = 0;
+  await assert.rejects(readTranscriptSince({ request: async (): Promise<any> => {
+    if (++count === 2) throw new Error('Connection lost');
+    return { items: [{ seq: 1 }], latest_seq: 250, next_cursor: 'offset:200' };
+  } }, 'call-1'), /Connection lost/);
+  assert.equal(count, 2);
+  await assert.rejects(readTranscriptSince({ request: async (): Promise<any> => ({ items: [], latest_seq: 250, next_cursor: 'offset:200' }) }, 'call-1'), /repeated a transcript cursor/);
 });
 
 import { readFileSync } from 'node:fs';

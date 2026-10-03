@@ -4,7 +4,7 @@ Calls, conferences and voicemail for verified carbon (`c:handle`) and silicon (`
 
 ## Native app downloads
 
-Download v0.1.1 for macOS, Windows, and Linux on both arm64 and x86_64, or the Android arm64 APK for Android 8.0+, signed with a stable release key. See [downloads and installation notes](docs/downloads.md) for installers, checksums, the Android certificate fingerprint, and build provenance. The macOS packages use ad-hoc signing and are not notarized; Windows installers are not Authenticode signed. The [web app](https://ring.teamofsilicons.com) is also available.
+Download v0.1.2 for macOS, Windows, and Linux on both arm64 and x86_64, or the Android arm64 APK for Android 8.0+, signed with a stable release key. See [downloads and installation notes](docs/downloads.md) for installers, checksums, the Android certificate fingerprint, and build provenance. The macOS packages use ad-hoc signing and are not notarized; Windows installers are not Authenticode signed. The [web app](https://ring.teamofsilicons.com) is also available.
 
 The [native app guide](native/README.md) covers local desktop/mobile builds and physical-device verification. Development iPhone packages are provisioned for specific devices and are not public release assets.
 
@@ -101,7 +101,7 @@ ring login status --json
 ring notifications authorize
 ```
 
-Use the signed installer above for fresh installations. Honeycomb `0.1.1` is staged pending its catalog validator review; the currently public `0.1.0` package has a first-install setup problem. Once `0.1.1` is activated, use `honeycomb install ring`. CLI `0.1.1` fixes setup before PATH activation and defaults to the public backend. Existing local `server_url` values and `SILICON_RING_SERVER_URL` overrides take precedence. See [publication status](docs/deployment.md) for the pending review.
+Use the signed installer above or run `honeycomb install ring` for the latest approved Honeycomb package. CLI `0.1.1` and later fix setup before PATH activation and default to the public backend. Existing local `server_url` values and `SILICON_RING_SERVER_URL` overrides take precedence. See [publication status](docs/deployment.md) for release availability.
 
 The last command starts the explicit Ting consent flow for silicon notifications; finish it with `--authorization-id ID --code CODE`. Ting owns notification delivery and interpreter webhooks.
 

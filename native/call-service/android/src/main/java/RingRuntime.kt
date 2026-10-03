@@ -67,7 +67,7 @@ internal class RingRuntime private constructor(val context: Context) {
         socket = client.newWebSocket(Request.Builder().url(credentials.getString("url")).build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) { main.post {
                 if (socket !== webSocket) return@post
-                val hello = JSONObject().put("versions", org.json.JSONArray().put(1)).put("client", JSONObject().put("name", "ring-android").put("version", "0.1.1")).put("realm", credentials.optString("realm", "production")).put("org_id", credentials.optString("org_id"))
+                val hello = JSONObject().put("versions", org.json.JSONArray().put(1)).put("client", JSONObject().put("name", "ring-android").put("version", "0.1.2")).put("realm", credentials.optString("realm", "production")).put("org_id", credentials.optString("org_id"))
                 credentials.optString("test_app_secret").takeIf { it.isNotEmpty() }?.let { hello.put("test_app_secret", it) }
                 rawRequest("protocol.hello", hello) { _, error ->
                     if (error != null) connected(error) else rawRequest("auth.resume", JSONObject().put("session_token", credentials.optString("session_token")).put("device_id", device)) { _, authError ->

@@ -255,9 +255,48 @@ impl Media {
             }
         }
         let result = json!({"stream_id":sid,"detached":true,"complete":if st.voicemail_id.is_some(){complete}else{true},"next_seq":st.next_seq});
-        self.streams.remove(sid);
+        self.release_private_stream(sid);
         e.persist()?;
         Ok(result)
+    }
+    fn release_private_stream(&mut self, sid: &str) {
+        if let Some(private) = self
+            .streams
+            .remove(sid)
+            .filter(|s| s.voicemail_id.is_some())
+        {
+            let realm = private.owner.split('|').next().unwrap_or("");
+            // Queued conference microphone samples may have arrived during the
+            // private capture. Drop them before releasing the actor's reservation.
+            for stream in self
+                .streams
+                .values_mut()
+                .filter(|s| owns_actor(&s.owner, realm, &private.actor))
+            {
+                stream.queue.clear();
+            }
+        }
+    }
+    pub fn prune_voicemail_streams(&mut self, e: &Engine) {
+        let time = now();
+        let expired: Vec<_> = self
+            .streams
+            .iter()
+            .filter_map(|(sid, s)| {
+                s.voicemail_id
+                    .as_ref()
+                    .filter(|vid| {
+                        !e.state
+                            .voicemails
+                            .get(*vid)
+                            .is_some_and(|v| v.state == "draft" && v.expires_at > time)
+                    })
+                    .map(|_| sid.clone())
+            })
+            .collect();
+        for sid in expired {
+            self.release_private_stream(&sid);
+        }
     }
     fn owned(&mut self, s: &Session, sid: &str) -> Result<&mut Stream> {
         self.streams
@@ -424,6 +463,7 @@ impl Media {
     }
     pub fn tick(&mut self, e: &mut Engine) -> bool {
         self.ticks += 1;
+        self.prune_voicemail_streams(e);
         let timestamp = now();
         for s in self.streams.values_mut().filter(|s| !s.rep && s.connected) {
             let valid = e
@@ -602,11 +642,7 @@ impl Media {
             let private_actors: Vec<_> = self
                 .streams
                 .values()
-                .filter(|s| {
-                    s.voicemail_id.is_some()
-                        && s.connected
-                        && owns_actor(&s.owner, &c.realm, &s.actor)
-                })
+                .filter(|s| s.voicemail_id.is_some() && owns_actor(&s.owner, &c.realm, &s.actor))
                 .map(|s| s.actor.clone())
                 .collect();
             let ids: Vec<_> = self
@@ -821,6 +857,112 @@ impl Download {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disconnected_private_capture_stays_private_until_abort_and_drops_buffered_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = Engine::open(dir.path()).unwrap();
+        let mut login = |actor: &str, org: &str| {
+            let value = e
+                .login(
+                    Identity {
+                        actor: actor.into(),
+                        org_id: org.into(),
+                        realm: "test".into(),
+                        display_name: actor.into(),
+                        admin: false,
+                    },
+                    None,
+                )
+                .unwrap();
+            let token = value["session_token"].as_str().unwrap().to_owned();
+            (e.session(&token).unwrap(), token)
+        };
+        let (alice, token) = login("c:alice", "conference-org");
+        let (bob, _) = login("c:bob", "conference-org");
+        let (carol, _) = login("c:carol", "private-org");
+        let (private_alice, private_token) = login("c:alice", "private-org");
+        let ring = e
+            .dispatch(&alice, "calls.init", &json!({"target":"c:bob"}))
+            .unwrap()["ringid"]
+            .clone();
+        e.dispatch(&bob, "calls.accept", &json!({"ringid":ring}))
+            .unwrap();
+        let private_ring = e
+            .dispatch(&private_alice, "calls.init", &json!({"target":"c:carol"}))
+            .unwrap()["ringid"]
+            .clone();
+        e.dispatch(
+            &carol,
+            "calls.decline",
+            &json!({"ringid":private_ring,"give_no_reason":true}),
+        )
+        .unwrap();
+        let vm = e
+            .dispatch(
+                &private_alice,
+                "voicemail.begin",
+                &json!({"ringid":private_ring,"format":"audio"}),
+            )
+            .unwrap()["voicemail_id"]
+            .clone();
+        let mut media = Media::default();
+        let (conference_tx, _rx) = mpsc::channel(8);
+        let conference = media
+            .attach(
+                &mut e,
+                &alice,
+                &token,
+                &json!({"ringid":ring,"device_id":alice.device_id}),
+                conference_tx,
+            )
+            .unwrap()["stream_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (private_tx, _rx) = mpsc::channel(8);
+        let private = media.attach(&mut e,&private_alice,&private_token,
+            &json!({"ringid":private_ring,"device_id":private_alice.device_id,"purpose":"voicemail","voicemail_id":vm}),private_tx.clone()).unwrap()["stream_id"].as_str().unwrap().to_owned();
+        media.disconnect(&private_tx);
+        media
+            .streams
+            .get_mut(&conference)
+            .unwrap()
+            .queue
+            .extend([900; SAMPLES]);
+        media.tick(&mut e);
+        assert!(media.streams.contains_key(&private));
+        let recording = &e.state.assets[&media.recordings[ring.as_str().unwrap()].asset_id];
+        let path = recording.path.clone();
+        assert!(std::fs::read(&path).unwrap()[44..].iter().all(|b| *b == 0));
+        media
+            .streams
+            .get_mut(&conference)
+            .unwrap()
+            .queue
+            .extend([800; SAMPLES]);
+        e.dispatch(
+            &private_alice,
+            "voicemail.abort",
+            &json!({"voicemail_id":vm}),
+        )
+        .unwrap();
+        media.prune_voicemail_streams(&e);
+        assert!(!media.streams.contains_key(&private));
+        assert!(media.streams[&conference].queue.is_empty());
+        assert!(!media.streams[&conference].muted);
+        media
+            .streams
+            .get_mut(&conference)
+            .unwrap()
+            .queue
+            .extend([700; SAMPLES]);
+        media.tick(&mut e);
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes[44 + SAMPLES * 2..]
+            .chunks_exact(2)
+            .all(|b| i16::from_le_bytes([b[0], b[1]]) == 700));
+    }
 
     #[test]
     fn rejoining_representative_never_mixes_or_hears_the_previous_session() {

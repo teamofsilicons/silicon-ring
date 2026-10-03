@@ -2786,7 +2786,7 @@ dependencies = [
 
 [[package]]
 name = "ring-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2799,6 +2799,7 @@ dependencies = [
  "reqwest 0.12.28",
  "ring-client",
  "self-replace",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2809,7 +2810,7 @@ dependencies = [
 
 [[package]]
 name = "ring-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -2823,7 +2824,7 @@ dependencies = [
 
 [[package]]
 name = "ring-providers"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -2845,7 +2846,7 @@ dependencies = [
 
 [[package]]
 name = "ring-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aes-gcm",
  "axum",

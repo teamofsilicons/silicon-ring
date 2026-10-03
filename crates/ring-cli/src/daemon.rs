@@ -9,7 +9,9 @@ use serde_json::{json, Value};
 #[cfg(unix)]
 use std::process::Stdio;
 use std::{
+    collections::HashMap,
     fs,
+    path::{Path, PathBuf},
     process::Command,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -36,8 +38,11 @@ struct Media {
 }
 struct Runtime {
     store: Store,
+    executable: PathBuf,
     client: Mutex<Option<Client>>,
     media: Mutex<Option<Media>>,
+    private_media: Mutex<HashMap<String, String>>,
+    update_gate: Mutex<()>,
     events: broadcast::Sender<Value>,
     shutdown: tokio::sync::Notify,
     generation: AtomicU64,
@@ -79,13 +84,19 @@ pub async fn ipc(store: &Store, id: &str, method: &str, params: Value) -> Result
     }
 }
 pub async fn ensure(store: &Store) -> Result<()> {
+    ensure_executable(store, None).await
+}
+async fn ensure_executable(store: &Store, executable: Option<&Path>) -> Result<()> {
     if ipc(store, "daemon-probe", "local.status", json!({}))
         .await
         .is_ok()
     {
         return Ok(());
     }
-    let exe = std::env::current_exe().map_err(|e| io_error(e, "daemon start"))?;
+    let exe = match executable {
+        Some(path) => path.to_owned(),
+        None => std::env::current_exe().map_err(|e| io_error(e, "daemon start"))?,
+    };
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -206,8 +217,13 @@ pub async fn run(store: Store) -> Result<()> {
     let telemetry_enabled = store.local()?["telemetry.enabled"] != false;
     let runtime = Arc::new(Runtime {
         store: store.clone(),
+        // Keep the launch path before replacement; on Linux current_exe() can
+        // point to the unlinked old image after an in-place update.
+        executable: std::env::current_exe().map_err(|e| io_error(e, "daemon executable"))?,
         client: Mutex::new(None),
         media: Mutex::new(None),
+        private_media: Mutex::new(HashMap::new()),
+        update_gate: Mutex::new(()),
         events,
         shutdown: tokio::sync::Notify::new(),
         generation: AtomicU64::new(0),
@@ -220,6 +236,10 @@ pub async fn run(store: Store) -> Result<()> {
     let rt = runtime.clone();
     tokio::spawn(async move {
         background(rt).await;
+    });
+    let rt = runtime.clone();
+    tokio::spawn(async move {
+        updates(rt).await;
     });
     loop {
         tokio::select! {
@@ -236,13 +256,20 @@ pub async fn run(store: Store) -> Result<()> {
                 .await;
         }
     }
+    if let Some(client) = runtime.client.lock().await.clone() {
+        for stream in runtime.private_media.lock().await.keys() {
+            let _ = client
+                .request("media.detach", json!({"stream_id":stream}))
+                .await;
+        }
+    }
     let _ = fs::remove_file(store.socket());
     let _ = fs::remove_file(store.path("daemon.json"));
     log(&store, "daemon.stopped", None);
     drop(listener);
     drop(lock);
     if runtime.restart.load(Ordering::SeqCst) {
-        ensure(&store).await?;
+        ensure_executable(&store, Some(&runtime.executable)).await?;
     }
     Ok(())
 }
@@ -462,13 +489,16 @@ async fn serve(rt: Arc<Runtime>, stream: IpcStream) -> Result<()> {
         Ok(v) => json!({"ok":true,"result":v}),
         Err(e) => json!({"ok":false,"error":e}),
     };
-    write
+    let replied = write
         .write_all(format!("{value}\n").as_bytes())
         .await
-        .map_err(|e| io_error(e, "daemon reply"))?;
-    if method == "local.stop" {
+        .map_err(|e| io_error(e, "daemon reply"));
+    if method == "local.stop"
+        || (method == "local.update.apply" && rt.restart.load(Ordering::SeqCst))
+    {
         rt.shutdown.notify_one();
     }
+    replied?;
     Ok(())
 }
 async fn dispatch(
@@ -482,11 +512,19 @@ async fn dispatch(
         "local.status" => {
             let media = rt.media.lock().await;
             return Ok(
-                json!({"running":true,"pid":std::process::id(),"connected":rt.client.lock().await.is_some(),"active_media":media.as_ref().map(|m|json!({"ringid":m.ringid,"stream_id":m.stream_id,"muted":m.muted}))}),
+                json!({"running":true,"pid":std::process::id(),"connected":rt.client.lock().await.is_some(),"active_media":media.as_ref().map(|m|json!({"ringid":m.ringid,"stream_id":m.stream_id,"muted":m.muted})),"private_recordings":rt.private_media.lock().await.len()}),
             );
         }
         "local.stop" => return Ok(json!({"stopping":true})),
+        "local.update.apply" => return apply_update(rt, &params["release"], false).await,
         "local.audio.prepare" => {
+            let _update = rt
+                .update_gate
+                .try_lock()
+                .map_err(|_| update_in_progress())?;
+            if rt.restart.load(Ordering::SeqCst) {
+                return Err(update_in_progress());
+            }
             if rt.media.lock().await.is_some() {
                 return Err(RingError::new(
                     "AUDIO_BUSY",
@@ -619,12 +657,49 @@ async fn dispatch(
         }
         _ => {}
     }
+    // Pick the client only after serializing session replacement and private
+    // attachment; neither may continue with a client from the previous actor.
+    let _session = if matches!(
+        method,
+        "auth.login" | "auth.logout" | "local.voicemail.attach"
+    ) {
+        Some(
+            rt.update_gate
+                .try_lock()
+                .map_err(|_| update_in_progress())?,
+        )
+    } else {
+        None
+    };
+    if method == "auth.login" && !rt.private_media.lock().await.is_empty() {
+        return Err(RingError::new(
+            "AUDIO_BUSY",
+            "Private recording still owns this daemon's session",
+            "auth.login",
+            "Finish or abort the recording, or stop the daemon before changing accounts.",
+        ));
+    }
     let c = client(rt, method != "auth.login").await?;
-    if method == "local.voicemail.audio" {
+    if method == "local.voicemail.attach" {
+        if rt.restart.load(Ordering::SeqCst) {
+            return Err(update_in_progress());
+        }
         let session = rt.store.read("session.json")?;
-        let stream=c.request_with_id(&format!("{id}:attach"),"media.attach",json!({"ringid":params["ringid"],"device_id":session["device_id"],"purpose":"voicemail","voicemail_id":params["voicemail_id"]}),isi).await?;
-        let stream = stream["stream_id"].as_str().ok_or_else(|| {
-            crate::store::invalid("No private stream ID returned", "voicemail media")
+        let attached = c.request_with_id(id,"media.attach",json!({"ringid":params["ringid"],"device_id":session["device_id"],"purpose":"voicemail","voicemail_id":params["voicemail_id"]}),isi).await?;
+        if let (Some(stream), Some(voicemail)) = (
+            attached["stream_id"].as_str(),
+            params["voicemail_id"].as_str(),
+        ) {
+            rt.private_media
+                .lock()
+                .await
+                .insert(stream.into(), voicemail.into());
+        }
+        return Ok(attached);
+    }
+    if method == "local.voicemail.audio" {
+        let stream = params["stream_id"].as_str().ok_or_else(|| {
+            crate::store::invalid("Attach private media before recording", "voicemail media")
         })?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(params["data_base64"].as_str().unwrap_or(""))
@@ -649,6 +724,7 @@ async fn dispatch(
                 isi,
             )
             .await?;
+        rt.private_media.lock().await.remove(stream);
         if detached["complete"] == false || detached["persisted"] == false {
             return Err(RingError::new(
                 "RECORDING_INCOMPLETE",
@@ -680,7 +756,18 @@ async fn dispatch(
             .await?;
         return Ok(json!({"data_base64":base64::engine::general_purpose::STANDARD.encode(bytes)}));
     }
-    let result = c.request_with_id(id, method, params, isi).await?;
+    let result = c.request_with_id(id, method, params.clone(), isi).await?;
+    if method == "media.detach" {
+        if let Some(stream) = params["stream_id"].as_str() {
+            rt.private_media.lock().await.remove(stream);
+        }
+    }
+    if method == "voicemail.abort" {
+        rt.private_media
+            .lock()
+            .await
+            .retain(|_, voicemail| params["voicemail_id"] != voicemail.as_str());
+    }
     if matches!(method, "config.set" | "config.reset" | "config.get") {
         rt.telemetry_enabled.store(
             result["effective"]["telemetry.enabled"] != false,
@@ -710,13 +797,14 @@ async fn dispatch(
         let _ = fs::remove_file(rt.store.path("session.json"));
         *rt.client.lock().await = None;
         rt.media.lock().await.take();
+        rt.private_media.lock().await.clear();
     }
     Ok(result)
 }
 async fn background(rt: Arc<Runtime>) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
-    let mut update_at = std::time::Instant::now();
     let mut retry_at = std::time::Instant::now();
+    let mut private_check_at = std::time::Instant::now();
     loop {
         interval.tick().await;
         if rt
@@ -738,6 +826,10 @@ async fn background(rt: Arc<Runtime>) {
                 continue;
             }
         };
+        if std::time::Instant::now() >= private_check_at {
+            private_check_at = std::time::Instant::now() + Duration::from_secs(5);
+            reconcile_private_media(&rt, &c).await;
+        }
         let ringid = rt
             .media
             .lock()
@@ -798,12 +890,86 @@ async fn background(rt: Arc<Runtime>) {
                 ),
             }
         }
-        if std::time::Instant::now() >= update_at {
-            update_at = std::time::Instant::now() + Duration::from_secs(3600);
-            match c.request("release.info",json!({"current_version":env!("CARGO_PKG_VERSION"),"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,"channel":rt.store.local().ok().and_then(|c|c["updates.channel"].as_str().map(str::to_owned)).unwrap_or("stable".into())})).await {
-                Ok(release)=>{let active=rt.media.lock().await.is_some();match crate::update::apply(&release,active).await{Ok(result)=>{if result["updated"]==true{rt.restart.store(true,Ordering::SeqCst);rt.shutdown.notify_one();}log(&rt.store,"update.checked",Some(result));},Err(e)=>log(&rt.store,"update.failed",Some(json!({"code":e.code}))) }},
-                Err(e)=>log(&rt.store,"update.check.failed",Some(json!({"code":e.code}))),
+    }
+}
+
+fn update_in_progress() -> RingError {
+    RingError::new(
+        "UPDATE_PENDING",
+        "The daemon is updating or changing its session",
+        "media prepare",
+        "Retry when the verified update finishes; no call or recording was started.",
+    )
+}
+
+async fn reconcile_private_media(rt: &Arc<Runtime>, client: &Client) {
+    let private = rt.private_media.lock().await.clone();
+    for (stream, voicemail) in private {
+        let finalized = match client
+            .request("voicemail.get", json!({"voicemail_id":voicemail}))
+            .await
+        {
+            Ok(value) => value["state"] != "draft",
+            Err(error) => error.code == "NOT_FOUND",
+        };
+        if finalized {
+            rt.private_media.lock().await.remove(&stream);
+        }
+    }
+}
+
+async fn apply_update(rt: &Arc<Runtime>, release: &Value, automatic: bool) -> Result<Value> {
+    // Serialize replacement with media preparation so a call cannot begin between
+    // the idle check and installing a downloaded executable.
+    let _update = rt.update_gate.lock().await;
+    if rt.restart.load(Ordering::SeqCst) {
+        return Err(update_in_progress());
+    }
+    let active = rt.media.lock().await.is_some() || !rt.private_media.lock().await.is_empty();
+    let mut result = crate::update::apply(release, active, &rt.executable).await?;
+    if result["updated"] == true {
+        // Mark retirement under the same gate as the final idle check. New media
+        // cannot slip in between replacement and the restart notification.
+        rt.restart.store(true, Ordering::SeqCst);
+        if automatic {
+            rt.shutdown.notify_one();
+        }
+        result["daemon_restart_required"] = json!(false);
+        result["daemon_restarting"] = json!(true);
+        result["next_action"] =
+            json!("The verified update is installed and the idle daemon is restarting.");
+    }
+    Ok(result)
+}
+
+async fn updates(rt: Arc<Runtime>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(3600));
+    loop {
+        interval.tick().await;
+        let result = async {
+            let config = rt.store.local()?;
+            let channel = config["updates.channel"].as_str().unwrap_or("stable");
+            let release = if rt.store.test {
+                // Test release discovery stays inside its isolated server/realm.
+                if rt.store.read("session.json")?["session_token"].as_str().is_none() { return Ok(json!({"updated":false,"reason":"Test release discovery requires a test session"})); }
+                client(&rt, true).await?.request("release.info",json!({"current_version":env!("CARGO_PKG_VERSION"),"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,"channel":channel})).await?
+            } else {
+                crate::update::check(channel).await?
+            };
+            // A foreground process can be killed without its cleanup. Expired or
+            // aborted drafts no longer carry private audio and must not block updates.
+            if !rt.private_media.lock().await.is_empty() {
+                if let Ok(c) = client(&rt, true).await {
+                    reconcile_private_media(&rt, &c).await;
+                }
             }
+            apply_update(&rt, &release, true).await
+        }.await;
+        match result {
+            Ok(value) => {
+                log(&rt.store, "update.checked", Some(value));
+            }
+            Err(error) => log(&rt.store, "update.failed", Some(json!({"code":error.code}))),
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::{auth::storage_error, model::*, App};
+use crate::{auth::storage_error, model::*, settings::StorageLocation, App};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -7,12 +7,11 @@ pub fn start(app: App) {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
         loop {
             interval.tick().await;
-            if app.providers_disabled {
-                continue;
+            if !app.providers_disabled {
+                sync(&app).await;
+                evict_cache(&app).await;
             }
-            sync(&app).await;
             retention(&app).await;
-            evict_cache(&app).await;
         }
     });
 }
@@ -24,6 +23,12 @@ async fn sync(app: &App) {
             .values()
             .filter(|a| {
                 a.complete
+                    && a.voicemail_id.as_ref().is_none_or(|vid| {
+                        e.state.voicemails.get(vid).is_some_and(|v| {
+                            matches!(v.state.as_str(), "draft" | "delivered")
+                                && (v.state != "draft" || v.expires_at > now())
+                        })
+                    })
                     && e.state.storage.get(&a.asset_id).is_none_or(|s| {
                         s["status"] != "ready"
                             && s["retry_at"].as_str().is_none_or(|t| t <= now().as_str())
@@ -49,8 +54,9 @@ async fn sync(app: &App) {
         if realm == "test" && !app.test_tokens.is_empty() {
             continue;
         }
-        let bucket = crate::settings::s3(app, realm, org).await;
-        let Some(store) = (match bucket {
+        let object = format!("{realm}/{}/{}/{}", digest(org), a.purpose, a.asset_id);
+        let bucket = asset_store(app, realm, org, &a.asset_id, &object).await;
+        let Some((store, location)) = (match bucket {
             Ok(v) => v,
             Err(error) => {
                 failed(app, &a, &error.message);
@@ -59,8 +65,13 @@ async fn sync(app: &App) {
         }) else {
             continue;
         };
-        let object = format!("{realm}/{}/{}/{}", digest(org), a.purpose, a.asset_id);
-        let result = store.put_file(&object, &a.mime_type, &a.path).await;
+        let pinned = pin_location(&mut app.engine.lock().unwrap(), &a.asset_id, &location);
+        if let Err(error) = pinned {
+            failed(app, &a, &error.message);
+            continue;
+        }
+        let object = &location.object_key;
+        let result = store.put_file(object, &a.mime_type, &a.path).await;
         match result {
             Ok(()) => {
                 let transcript = if let Some(ring) = &a.ringid {
@@ -82,15 +93,87 @@ async fn sync(app: &App) {
                     }
                 }
                 let mut e = app.engine.lock().unwrap();
-                e.state.storage.insert(
-                    a.asset_id.clone(),
-                    json!({"status":"ready","object_key":object,"stored_at":now()}),
-                );
+                let record = e
+                    .state
+                    .storage
+                    .entry(a.asset_id.clone())
+                    .or_insert(json!({}));
+                record["status"] = json!("ready");
+                record["stored_at"] = json!(now());
+                record.as_object_mut().unwrap().remove("error");
+                record.as_object_mut().unwrap().remove("retry_at");
                 let _ = e.persist();
             }
             Err(error) => failed(app, &a, &error.message),
         }
     }
+}
+// Older records stored only a relative key. They can use the current settings,
+// but readers must verify the object before pinning this inferred location.
+async fn asset_store(
+    app: &App,
+    realm: &str,
+    org: &str,
+    asset_id: &str,
+    default_object: &str,
+) -> Result<Option<(ring_providers::storage::S3, StorageLocation)>> {
+    let stored = app
+        .engine
+        .lock()
+        .unwrap()
+        .state
+        .storage
+        .get(asset_id)
+        .cloned();
+    let pinned = stored
+        .as_ref()
+        .and_then(|s| s.get("location"))
+        .map(|v| serde_json::from_value::<StorageLocation>(v.clone()))
+        .transpose()
+        .map_err(|_| invalid("Invalid stored recording location"))?;
+    let object = stored
+        .as_ref()
+        .and_then(|s| s["object_key"].as_str())
+        .unwrap_or(default_object);
+    let Some((store, location)) = crate::settings::s3(app, realm, org, object, pinned.as_ref())
+        .await
+        .map_err(crate::provider_error)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((store, location)))
+}
+fn pin_location(
+    e: &mut crate::engine::Engine,
+    asset_id: &str,
+    location: &StorageLocation,
+) -> Result<()> {
+    let previous = e.state.storage.get(asset_id).cloned();
+    let location = json!(location);
+    if let Some(pinned) = previous.as_ref().and_then(|s| s.get("location")) {
+        if pinned != &location {
+            return Err(invalid(
+                "Storage location changed concurrently; retry the operation",
+            ));
+        }
+        return Ok(());
+    }
+    let record = e.state.storage.entry(asset_id.into()).or_insert(json!({}));
+    record["object_key"] = location["object_key"].clone();
+    record["location"] = location;
+    // Pin before the first PUT, including a partial audio/transcript upload.
+    if let Err(error) = e.persist() {
+        match previous {
+            Some(previous) => {
+                e.state.storage.insert(asset_id.into(), previous);
+            }
+            None => {
+                e.state.storage.remove(asset_id);
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 fn failed(app: &App, a: &Asset, message: &str) {
     let mut e = app.engine.lock().unwrap();
@@ -102,10 +185,15 @@ fn failed(app: &App, a: &Asset, message: &str) {
         .unwrap_or(0)
         + 1;
     let wait = 2i64.pow(attempts.min(10) as u32);
-    e.state.storage.insert(
-        a.asset_id.clone(),
-        json!({"status":"failed","error":message,"attempts":attempts,"retry_at":after(wait)}),
-    );
+    let record = e
+        .state
+        .storage
+        .entry(a.asset_id.clone())
+        .or_insert(json!({}));
+    record["status"] = json!("failed");
+    record["error"] = json!(message);
+    record["attempts"] = json!(attempts);
+    record["retry_at"] = json!(after(wait));
     if let Some(ring) = &a.ringid {
         if let Some(c) = e.state.calls.get(ring).cloned() {
             e.state.call_event(
@@ -136,25 +224,32 @@ pub async fn ensure_local(app: &App, i: &Identity, asset_id: &str) -> Result<()>
     let org = owner
         .next()
         .ok_or_else(|| invalid("Asset storage context is missing"))?;
-    let store = crate::settings::s3(app, realm, org)
-        .await
-        .map_err(crate::provider_error)?
-        .ok_or_else(|| {
-            Fault::new(
-                "STORAGE_NOT_CONFIGURED",
-                "S3 storage is not configured.",
-                "Configure the recording's organization storage.",
-            )
-        })?;
+    let (store, location) =
+        asset_store(app, realm, org, asset_id, required(&stored, "object_key")?)
+            .await?
+            .ok_or_else(|| {
+                Fault::new(
+                    "STORAGE_NOT_CONFIGURED",
+                    "S3 storage is not configured.",
+                    "Configure the recording's organization storage.",
+                )
+            })?;
     let temporary = format!("{}.{}", a.path, id("download"));
     let result = store
-        .get_to_file(required(&stored, "object_key")?, &temporary)
+        .get_to_file(&location.object_key, &temporary)
         .await
         .map_err(crate::provider_error);
     match result {
-        Ok(length) if length == a.size_bytes as u64 => tokio::fs::rename(&temporary, &a.path)
-            .await
-            .map_err(storage_error)?,
+        Ok(length) if length == a.size_bytes as u64 => {
+            let pinned = pin_location(&mut app.engine.lock().unwrap(), asset_id, &location);
+            if let Err(error) = pinned {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return Err(error);
+            }
+            tokio::fs::rename(&temporary, &a.path)
+                .await
+                .map_err(storage_error)?;
+        }
         Ok(_) => {
             let _ = tokio::fs::remove_file(&temporary).await;
             return Err(invalid(
@@ -198,12 +293,10 @@ async fn retention(app: &App) {
                 ));
             }
         }
-        for v in e
-            .state
-            .voicemails
-            .values()
-            .filter(|v| v.state == "delivered" || v.state == "deleted" || v.state == "aborted")
-        {
+        for v in e.state.voicemails.values().filter(|v| {
+            matches!(v.state.as_str(), "delivered" | "deleted" | "aborted")
+                || v.state == "draft" && v.expires_at <= now()
+        }) {
             let days = e
                 .state
                 .configs
@@ -227,11 +320,33 @@ async fn retention(app: &App) {
         if let Some(aid) = &aid {
             let stored = app.engine.lock().unwrap().state.storage.get(aid).cloned();
             if let Some(stored) = stored {
-                let store = match crate::settings::s3(app, &realm, &org).await {
-                    Ok(Some(s)) => s,
-                    _ => continue,
-                };
+                if app.providers_disabled {
+                    continue;
+                }
                 if let Some(key) = stored["object_key"].as_str() {
+                    let (store, location) = match asset_store(app, &realm, &org, aid, key).await {
+                        Ok(Some(s)) => s,
+                        _ => continue,
+                    };
+                    let key = &location.object_key;
+                    if stored.get("location").is_none() {
+                        // DELETE also succeeds when the guessed key does not exist.
+                        // Verify legacy data before adopting a location or purging it.
+                        let size = app
+                            .engine
+                            .lock()
+                            .unwrap()
+                            .state
+                            .assets
+                            .get(aid)
+                            .map(|a| a.size_bytes as u64);
+                        if store.size(key).await.ok() != size || size.is_none() {
+                            continue;
+                        }
+                        if pin_location(&mut app.engine.lock().unwrap(), aid, &location).is_err() {
+                            continue;
+                        }
+                    }
                     if store.delete(key).await.is_err() {
                         continue;
                     }
@@ -246,6 +361,7 @@ async fn retention(app: &App) {
                 }
             }
             let e = app.engine.lock().unwrap();
+            app.media.lock().unwrap().prune_voicemail_streams(&e);
             if let Some(a) = e.state.assets.get(aid) {
                 if let Err(error) = std::fs::remove_file(&a.path) {
                     if error.kind() != std::io::ErrorKind::NotFound {
@@ -360,5 +476,383 @@ async fn evict_cache(app: &App) {
         if tokio::fs::remove_file(path).await.is_ok() {
             total = total.saturating_sub(size);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{engine::Engine, media::Media, settings::StorageCredentials, vault::Vault};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+
+    fn app(dir: &std::path::Path) -> App {
+        App {
+            engine: Arc::new(Mutex::new(Engine::open(dir).unwrap())),
+            media: Arc::new(Mutex::new(Media::default())),
+            test_tokens: Arc::new(BTreeMap::new()),
+            test_secret: None,
+            providers_disabled: true,
+            vault: Arc::new(Vault::open(dir).unwrap()),
+            telemetry: Arc::new(None),
+            web_analytics: Arc::new(None),
+            web_events: Arc::new(None),
+            cli_telemetry: Arc::new(None),
+        }
+    }
+    fn login(e: &mut Engine, actor: &str) -> (Session, String) {
+        let response = e
+            .login(
+                Identity {
+                    actor: actor.into(),
+                    org_id: "org".into(),
+                    realm: "test".into(),
+                    display_name: actor.into(),
+                    admin: true,
+                },
+                None,
+            )
+            .unwrap();
+        let token = response["session_token"].as_str().unwrap().to_owned();
+        (e.session(&token).unwrap(), token)
+    }
+
+    #[test]
+    fn partial_upload_location_survives_failure_restart_and_configuration_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(dir.path());
+        let a = Asset {
+            asset_id: "asset".into(),
+            owner: "test|org|c:alice".into(),
+            purpose: "voicemail".into(),
+            mime_type: "audio/wav".into(),
+            size_bytes: 44,
+            received_bytes: 44,
+            next_seq: 0,
+            complete: true,
+            path: "unused".into(),
+            ringid: None,
+            voicemail_id: None,
+        };
+        let location = StorageLocation {
+            bucket: "original".into(),
+            region: "us-east-1".into(),
+            object_key: "old/full/key".into(),
+            credentials: StorageCredentials::Organization,
+        };
+        pin_location(&mut app.engine.lock().unwrap(), &a.asset_id, &location).unwrap();
+        failed(
+            &app,
+            &a,
+            "Transcript PUT timed out after audio PUT succeeded",
+        );
+        let mut reopened = Engine::open(dir.path()).unwrap();
+        assert_eq!(reopened.state.storage["asset"]["status"], "failed");
+        assert_eq!(reopened.state.storage["asset"]["location"], json!(location));
+        assert_eq!(
+            reopened.state.storage["asset"]["object_key"],
+            "old/full/key"
+        );
+        let replacement = StorageLocation {
+            bucket: "replacement".into(),
+            object_key: "new/full/key".into(),
+            ..location.clone()
+        };
+        assert!(pin_location(&mut reopened, "asset", &replacement).is_err());
+        assert_eq!(reopened.state.storage["asset"]["location"], json!(location));
+    }
+
+    #[tokio::test]
+    async fn s3_requests_keep_locations_rotate_credentials_and_verify_legacy_objects() {
+        const CHILD: &str = "RING_S3_REQUEST_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "storage::tests::s3_requests_keep_locations_rotate_credentials_and_verify_legacy_objects", "--nocapture"])
+                .env(CHILD, "1")
+                .env("RING_ENV", "development")
+                .env_remove("RING_ENCRYPTION_KEY")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use axum::{
+            body::{to_bytes, Body},
+            extract::{Request, State},
+            http::Response,
+            Router,
+        };
+        #[derive(Default)]
+        struct MockS3 {
+            calls: Vec<(String, String, String)>,
+            objects: BTreeMap<String, Vec<u8>>,
+        }
+        async fn request(
+            State(mock): State<Arc<Mutex<MockS3>>>,
+            request: Request,
+        ) -> Response<Body> {
+            let method = request.method().to_string();
+            let path = request.uri().path().to_owned();
+            let authorization = request.headers()["authorization"]
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let body = to_bytes(request.into_body(), 4096).await.unwrap();
+            let mut mock = mock.lock().unwrap();
+            mock.calls
+                .push((method.clone(), path.clone(), authorization));
+            match method.as_str() {
+                "PUT" => {
+                    assert!(!body.is_empty());
+                    mock.objects
+                        .insert(path, crate::media::wav_header(0).to_vec());
+                    Response::builder()
+                        .status(200)
+                        .header("etag", "\"mock\"")
+                        .body(Body::empty())
+                        .unwrap()
+                }
+                "GET" | "HEAD" => match mock.objects.get(&path) {
+                    Some(bytes) => Response::builder()
+                        .status(200)
+                        .header("content-length", bytes.len())
+                        .body(if method == "HEAD" {
+                            Body::empty()
+                        } else {
+                            Body::from(bytes.clone())
+                        })
+                        .unwrap(),
+                    None => Response::builder()
+                        .status(404)
+                        .header("content-type", "application/xml")
+                        .body(Body::from("<Error><Code>NoSuchKey</Code></Error>"))
+                        .unwrap(),
+                },
+                "DELETE" => {
+                    mock.objects.remove(&path);
+                    Response::builder().status(204).body(Body::empty()).unwrap()
+                }
+                _ => panic!("unexpected S3 method {method}"),
+            }
+        }
+        fn configure(app: &App, alice: &Session, bucket: &str, prefix: &str, access: &str) {
+            let mut params = json!({"scope":"org","values":{"providers.storage":{
+                "bucket":bucket,"region":"us-east-1","prefix":prefix,
+                "access_key_id":access,"secret_access_key":"mock-secret"}}});
+            crate::settings::prepare_config(app, &alice.identity, &mut params).unwrap();
+            app.engine
+                .lock()
+                .unwrap()
+                .dispatch(alice, "config.set", &params)
+                .unwrap();
+        }
+        let mock = Arc::new(Mutex::new(MockS3::default()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let router = Router::new().fallback(request).with_state(mock.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        // Isolated process, explicit fake credentials, and only a loopback endpoint.
+        std::env::set_var("AWS_ENDPOINT_URL_S3", &endpoint);
+        std::env::set_var("AWS_ENDPOINT_URL", &endpoint);
+        std::env::set_var("AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", "false");
+        std::env::set_var("AWS_EC2_METADATA_DISABLED", "true");
+        std::env::set_var("AWS_CONFIG_FILE", dir.path().join("no-aws-config"));
+        std::env::set_var(
+            "AWS_SHARED_CREDENTIALS_FILE",
+            dir.path().join("no-aws-credentials"),
+        );
+        let mut app = app(dir.path());
+        app.providers_disabled = false;
+        let alice = login(&mut app.engine.lock().unwrap(), "c:alice").0;
+        configure(&app, &alice, "original", "old/", "INITIALACCESS");
+        let path = dir.path().join("assets").join("audio");
+        std::fs::write(&path, crate::media::wav_header(0)).unwrap();
+        {
+            let mut e = app.engine.lock().unwrap();
+            e.state.assets.insert(
+                "audio".into(),
+                Asset {
+                    asset_id: "audio".into(),
+                    owner: "test|org|c:alice".into(),
+                    purpose: "voicemail".into(),
+                    mime_type: "audio/wav".into(),
+                    size_bytes: 44,
+                    received_bytes: 44,
+                    next_seq: 0,
+                    complete: true,
+                    path: path.to_string_lossy().into(),
+                    ringid: None,
+                    voicemail_id: Some("vm".into()),
+                },
+            );
+            e.state.voicemails.insert("vm".into(), serde_json::from_value(json!({
+                "voicemail_id":"vm","ringid":"ring","invitation_id":"invite","org_id":"org",
+                "realm":"test","sender":"c:alice","recipient":"c:bob","format":"audio",
+                "state":"delivered","created_at":now(),"expires_at":after(600),"reason":null,
+                "text":null,"transcript":null,"audio_asset_id":"audio","read":false,
+                "complete_audio":true,"transcription_status":"pending","synthesis_status":"pending","error":null
+            })).unwrap());
+        }
+        sync(&app).await;
+        assert_eq!(
+            app.engine.lock().unwrap().state.storage["audio"]["status"],
+            "ready"
+        );
+        configure(&app, &alice, "replacement", "new/", "ROTATEDACCESS");
+        app.engine
+            .lock()
+            .unwrap()
+            .state
+            .storage
+            .get_mut("audio")
+            .unwrap()["status"] = json!("failed");
+        sync(&app).await;
+        assert_eq!(
+            app.engine.lock().unwrap().state.storage["audio"]["status"],
+            "ready"
+        );
+        std::fs::remove_file(&path).unwrap();
+        ensure_local(&app, &alice.identity, "audio").await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), crate::media::wav_header(0));
+
+        // A failed guess for a legacy key must remain recoverable by restoring settings.
+        let relative = format!("test/{}/voicemail/audio", digest("org"));
+        let legacy = json!({"status":"ready","object_key":relative});
+        app.engine
+            .lock()
+            .unwrap()
+            .state
+            .storage
+            .insert("audio".into(), legacy.clone());
+        std::fs::remove_file(&path).unwrap();
+        assert!(ensure_local(&app, &alice.identity, "audio").await.is_err());
+        assert_eq!(app.engine.lock().unwrap().state.storage["audio"], legacy);
+        app.engine
+            .lock()
+            .unwrap()
+            .state
+            .voicemails
+            .get_mut("vm")
+            .unwrap()
+            .state = "deleted".into();
+        retention(&app).await;
+        {
+            let e = app.engine.lock().unwrap();
+            assert_eq!(e.state.storage["audio"], legacy);
+            assert!(e.state.assets.contains_key("audio"));
+            assert_eq!(e.state.voicemails["vm"].state, "deleted");
+        }
+        configure(&app, &alice, "original", "old/", "ROTATEDACCESS");
+        retention(&app).await;
+        assert_eq!(
+            app.engine.lock().unwrap().state.voicemails["vm"].state,
+            "purged"
+        );
+        let mock = mock.lock().unwrap();
+        let original = format!("/original/old/{relative}");
+        let wrong = format!("/replacement/new/{relative}");
+        let addresses: Vec<_> = mock
+            .calls
+            .iter()
+            .map(|(method, path, _)| (method.as_str(), path.as_str()))
+            .collect();
+        assert_eq!(
+            addresses,
+            vec![
+                ("PUT", original.as_str()),
+                ("PUT", &original),
+                ("GET", &original),
+                ("GET", &wrong),
+                ("HEAD", &wrong),
+                ("HEAD", &original),
+                ("DELETE", &original)
+            ]
+        );
+        assert!(mock.calls[0].2.contains("Credential=INITIALACCESS/"));
+        assert!(mock.calls[1..]
+            .iter()
+            .all(|(_, _, signature)| signature.contains("Credential=ROTATEDACCESS/")));
+        assert!(mock.objects.is_empty());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn expired_voicemail_can_be_replaced_and_private_audio_is_purged() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(dir.path());
+        let (vid, aid, path, sid, alice) = {
+            let mut e = app.engine.lock().unwrap();
+            let (alice, token) = login(&mut e, "c:alice");
+            let (bob, _) = login(&mut e, "c:bob");
+            let ring = e
+                .dispatch(&alice, "calls.init", &json!({"target":"c:bob"}))
+                .unwrap()["ringid"]
+                .clone();
+            e.dispatch(
+                &bob,
+                "calls.decline",
+                &json!({"ringid":ring,"give_no_reason":true}),
+            )
+            .unwrap();
+            let draft = e
+                .dispatch(
+                    &alice,
+                    "voicemail.begin",
+                    &json!({"ringid":ring,"format":"audio"}),
+                )
+                .unwrap();
+            let vid = draft["voicemail_id"].as_str().unwrap().to_owned();
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+            let mut media = app.media.lock().unwrap();
+            let attached = media.attach(&mut e, &alice, &token,
+                &json!({"purpose":"voicemail","voicemail_id":vid,"ringid":ring,"device_id":alice.device_id}), tx).unwrap();
+            let sid = attached["stream_id"].as_str().unwrap().to_owned();
+            let aid = e.state.voicemails[&vid].audio_asset_id.clone().unwrap();
+            let path = e.state.assets[&aid].path.clone();
+            assert!(std::path::Path::new(&path).exists());
+            e.state.voicemails.get_mut(&vid).unwrap().expires_at = after(-1);
+            assert!(e
+                .dispatch(&alice, "voicemail.commit", &json!({"voicemail_id":vid}))
+                .is_err());
+            // Begin must recover even before the periodic lifecycle tick runs.
+            let replacement = e
+                .dispatch(
+                    &alice,
+                    "voicemail.begin",
+                    &json!({"ringid":ring,"format":"audio"}),
+                )
+                .unwrap();
+            assert_ne!(replacement["voicemail_id"], vid);
+            assert_eq!(e.state.voicemails[&vid].state, "aborted");
+            e.dispatch(&alice, "voicemail.abort", &json!({"voicemail_id":vid}))
+                .unwrap();
+            media.tick(&mut e);
+            assert!(!media.streams.contains_key(&sid));
+            let replacement = replacement["voicemail_id"].as_str().unwrap();
+            e.state.voicemails.get_mut(replacement).unwrap().expires_at = after(-1);
+            assert!(e.tick(false));
+            assert_eq!(e.state.voicemails[replacement].state, "aborted");
+            (vid, aid, path, sid, alice)
+        };
+        retention(&app).await;
+        let mut e = app.engine.lock().unwrap();
+        assert_eq!(e.state.voicemails[&vid].state, "purged");
+        assert!(!e.state.assets.contains_key(&aid));
+        assert!(!std::path::Path::new(&path).exists());
+        assert!(!app.media.lock().unwrap().streams.contains_key(&sid));
+        assert!(app
+            .media
+            .lock()
+            .unwrap()
+            .audio(&mut e, &alice, &json!({"stream_id":sid}))
+            .is_err());
     }
 }

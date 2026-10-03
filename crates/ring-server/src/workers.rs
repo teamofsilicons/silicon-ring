@@ -409,6 +409,15 @@ async fn synthesize_voicemail(app: App, vm: Voicemail) {
         Err(e) => Err(e),
     };
     let mut e = app.engine.lock().unwrap();
+    // Provider work may finish after the sender aborts or the draft expires.
+    if !e
+        .state
+        .voicemails
+        .get(&vm.voicemail_id)
+        .is_some_and(|v| v.state == "draft" && v.expires_at > now())
+    {
+        return;
+    }
     match result {
         Ok(bytes) => {
             let aid = id("asset");
@@ -484,6 +493,14 @@ async fn transcribe_voicemail(app: App, vm: Voicemail) {
         )),
     };
     let mut e = app.engine.lock().unwrap();
+    if !e
+        .state
+        .voicemails
+        .get(&vm.voicemail_id)
+        .is_some_and(|v| v.state == "delivered")
+    {
+        return;
+    }
     if let Some(v) = e.state.voicemails.get_mut(&vm.voicemail_id) {
         match result {
             Ok(text) => {

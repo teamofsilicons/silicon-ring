@@ -176,8 +176,12 @@ async fn slow_iam_preserves_media_events_request_order_and_disconnect_cleanup() 
         json!({"session_token":token}),
     )
     .await;
-    reply(&mut socket, "hello").await;
+    let hello = reply(&mut socket, "hello").await;
     reply(&mut socket, "resume").await;
+    send(&mut socket, "info", "app.info", json!({})).await;
+    let info = reply(&mut socket, "info").await;
+    assert_eq!(info["capabilities"], hello["capabilities"]);
+    assert_eq!(info["capabilities"], json!(CAPABILITIES));
     send(
         &mut socket,
         "subscribe",

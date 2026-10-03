@@ -34,6 +34,16 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+const CAPABILITIES: &[&str] = &[
+    "calls",
+    "groups",
+    "voicemail",
+    "recordings",
+    "handoff",
+    "representatives",
+    "context-approval",
+];
+
 #[derive(Clone)]
 pub struct App {
     pub engine: Arc<Mutex<Engine>>,
@@ -399,7 +409,7 @@ async fn handle(
         }
         peer.hello = true;
         return Ok(
-            json!({"version":1,"protocol_major":1,"capabilities":["calls","groups","voicemail","recordings","handoff","representatives","context-approval"],"limits":{"context":400,"start":100,"message":160,"audio_chunk_bytes":960,"asset_chunk_bytes":65536,"upload_bytes":20971520},"heartbeat_seconds":20,"realm":realm}),
+            json!({"version":1,"protocol_major":1,"capabilities":CAPABILITIES,"limits":{"context":400,"start":100,"message":160,"audio_chunk_bytes":960,"asset_chunk_bytes":65536,"upload_bytes":20971520},"heartbeat_seconds":20,"realm":realm}),
         );
     }
     if !peer.hello {
@@ -411,7 +421,7 @@ async fn handle(
     }
     if m == "app.info" {
         return Ok(
-            json!({"app_id":"ring","org_id":std::env::var("RING_OWNER_ORG").unwrap_or_else(|_|"teamofsilicons".into()),"selected_org":peer.org,"version":env!("CARGO_PKG_VERSION"),"protocol_major":1,"endpoint":"wss://backend.ring.teamofsilicons.com/ws","repository":"https://github.com/teamofsilicons/silicon-ring","docs":"https://ring.teamofsilicons.com/docs","rust_package":"ring-client","install_url":"https://ring.teamofsilicons.com/install.sh","compatibility":{"supported_protocol_majors":[1],"sunset":null}}),
+            json!({"app_id":"ring","org_id":std::env::var("RING_OWNER_ORG").unwrap_or_else(|_|"teamofsilicons".into()),"selected_org":peer.org,"version":env!("CARGO_PKG_VERSION"),"protocol_major":1,"capabilities":CAPABILITIES,"endpoint":"wss://backend.ring.teamofsilicons.com/ws","repository":"https://github.com/teamofsilicons/silicon-ring","docs":"https://ring.teamofsilicons.com/docs","rust_package":"ring-client","install_url":"https://ring.teamofsilicons.com/install.sh","compatibility":{"supported_protocol_majors":[1],"sunset":null}}),
         );
     }
     if m == "auth.login" {
@@ -639,6 +649,13 @@ async fn handle(
             .unwrap_or_else(|_| invalid("Unknown server error")));
     }
     let mut result = response["result"].clone();
+    if matches!(
+        m,
+        "voicemail.abort" | "voicemail.commit" | "voicemail.delete"
+    ) {
+        let e = app.engine.lock().unwrap();
+        app.media.lock().unwrap().prune_voicemail_streams(&e);
+    }
     if m == "voicemail.begin" {
         greetings::prepare(app, i, &mut result).await?;
     }

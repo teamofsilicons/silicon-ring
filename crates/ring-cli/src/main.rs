@@ -191,8 +191,9 @@ impl App {
             });
         store::write_output(&path, &bytes, options.overwrite)?;
         if options.play {
-            play_file(&path)?;
+            let played = play_file(&path).await;
             let _ = fs::remove_file(&path);
+            played?;
         } else {
             value["saved_to"] = json!(path);
         }
@@ -663,18 +664,22 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             }
         },
         Command::Update(command) => {
-            let release=app.req("release.info",json!({"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,"current_version":env!("CARGO_PKG_VERSION"),"channel":app.store.local()?["updates.channel"].as_str().unwrap_or("stable")})).await?;
+            let config = app.store.local()?;
+            let channel = config["updates.channel"].as_str().unwrap_or("stable");
+            let release = if app.store.test {
+                app.req("release.info", json!({"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,"current_version":env!("CARGO_PKG_VERSION"),"channel":channel})).await?
+            } else {
+                update::check(channel).await?
+            };
             match command {
                 Update::Check => release,
                 Update::Apply => {
-                    let status = daemon::ipc(
-                        &app.store,
-                        &format!("{}:media", app.id),
-                        "local.status",
-                        json!({}),
+                    app.step(
+                        "update-apply",
+                        "local.update.apply",
+                        json!({"release":release}),
                     )
-                    .await?;
-                    update::apply(&release, !status["active_media"].is_null()).await?
+                    .await?
                 }
             }
         }
@@ -734,8 +739,24 @@ async fn config_command(app: &App, command: Config) -> Result<Value> {
     match command {
         Config::Show { scope } => {
             if scope == "local" {
+                let values = app.store.local()?;
+                let defaults = json!({"server_url":store::DEFAULT_SERVER_URL,"output":"text","audio.input":null,"audio.output":null,"updates.channel":"stable","telemetry.enabled":true});
+                let mut effective = defaults.clone();
+                let mut origins = json!({});
+                for (key, default) in defaults.as_object().unwrap() {
+                    effective[key] = values.get(key).unwrap_or(default).clone();
+                    origins[key] = json!(if values.get(key).is_some() {
+                        "local"
+                    } else {
+                        "default"
+                    });
+                }
+                if let Ok(url) = std::env::var("SILICON_RING_SERVER_URL") {
+                    effective["server_url"] = json!(url);
+                    origins["server_url"] = json!("SILICON_RING_SERVER_URL");
+                }
                 Ok(
-                    json!({"scope":"local","values":app.store.local()?,"defaults":{"server_url":store::DEFAULT_SERVER_URL,"output":"text","audio.input":null,"audio.output":null,"updates.channel":"stable","telemetry.enabled":true},"schema":{"server_url":"WebSocket URL; remote requires TLS","output":["text","json"],"audio.input":"OS device ID/name or null","audio.output":"OS device ID/name or null","updates.channel":["stable","beta"],"telemetry.enabled":"boolean"}}),
+                    json!({"scope":"local","values":values,"effective":effective,"defaults":defaults,"origins":origins,"schema":{"server_url":"WebSocket URL; remote requires TLS","output":["text","json"],"audio.input":"OS device ID/name or null","audio.output":"OS device ID/name or null","updates.channel":["stable","beta"],"telemetry.enabled":"boolean"}}),
                 )
             } else {
                 app.req("config.get", json!({"scope":scope})).await
@@ -969,40 +990,41 @@ async fn carbon_voicemail(
     draft: &Value,
     content: &VoicemailContent,
 ) -> Result<Value> {
-    let status = app
-        .step("media-before-private", "local.status", json!({}))
-        .await?;
-    let current = status["active_media"]["ringid"].as_str().map(str::to_owned);
-    let previous = status["active_media"]["muted"].as_bool().unwrap_or(false);
-    if let Some(current) = &current {
-        app.step(
-            "private-mute",
-            "local.audio.mute",
-            json!({"ringid":current,"muted":true}),
-        )
-        .await?;
-    }
-    let result=async {
+    let mut stream_id = None;
+    let result = tokio::select! {
+        result = async {
+        // The private attachment suppresses this actor's conference microphones on
+        // every device/org before the greeting or local microphone can be heard.
+        let attached = app.step("private-attach", "local.voicemail.attach", json!({"ringid":ringid,"voicemail_id":id})).await?;
+        let stream = attached["stream_id"].as_str().ok_or_else(|| invalid("No private stream ID returned", "voicemail media"))?.to_owned();
+        stream_id = Some(stream.clone());
         if let Some(greeting)=draft["greeting"]["asset_id"].as_str().or_else(||draft["greeting_asset_id"].as_str()){app.playback(json!({"audio_asset_id":greeting}),&Playback{play:true,audio_out:None,overwrite:false}).await?;}
         eprint!("\x07");
         let samples=if let Some(path)=&content.audio_file {read_wav(&fs::read(path).map_err(|e|io_error(e,"voicemail audio"))?)?}else{record_pcm(app,content.duration.as_deref()).await?};
         let pcm=samples.iter().flat_map(|s|s.to_le_bytes()).collect::<Vec<_>>();
-        app.step("private-recording","local.voicemail.audio",json!({"ringid":ringid,"voicemail_id":id,"data_base64":base64::engine::general_purpose::STANDARD.encode(pcm)})).await?;
-        app.step("commit","voicemail.commit",json!({"voicemail_id":id})).await
-    }.await;
-    if let Some(current) = current {
-        let restored = app
-            .step(
-                "private-restore",
-                "local.audio.mute",
-                json!({"ringid":current,"muted":previous}),
-            )
-            .await;
-        if result.is_ok() {
-            restored?;
+        app.step("private-recording","local.voicemail.audio",json!({"stream_id":stream,"data_base64":base64::engine::general_purpose::STANDARD.encode(pcm)})).await
+        } => result,
+        _ = tokio::signal::ctrl_c() => Err(RingError::new("INTERRUPTED", "Recording aborted", "record", "The draft was not committed.")),
+    };
+    if result.is_err() {
+        if let Some(stream) = stream_id {
+            let _ = app
+                .step(
+                    "private-cancel",
+                    "media.detach",
+                    json!({"stream_id":stream}),
+                )
+                .await;
         }
+        // A lost attach reply may already have reserved privacy server-side.
+        // No commit has started here, so abort on uncertain capture errors too.
+        let _ = app
+            .step("abort", "voicemail.abort", json!({"voicemail_id":id}))
+            .await;
     }
-    result
+    result?;
+    app.step("commit", "voicemail.commit", json!({"voicemail_id":id}))
+        .await
 }
 async fn record_pcm(app: &App, duration_text: Option<&str>) -> Result<Vec<i16>> {
     let seconds = duration_text.map(duration).transpose()?.unwrap_or(180);
@@ -1089,15 +1111,15 @@ fn read_wav(bytes: &[u8]) -> Result<Vec<i16>> {
     }
     output.ok_or_else(|| invalid("WAV contains no audio data", "audio file"))
 }
-fn play_file(path: &Path) -> Result<()> {
+async fn play_file(path: &Path) -> Result<()> {
     #[cfg(windows)]
-    let mut command = {
+    let command = {
         let mut cmd = std::process::Command::new("powershell.exe");
         cmd.args(["-NoProfile","-NonInteractive","-Command","$player=New-Object System.Media.SoundPlayer;$player.SoundLocation=$env:RING_LOCAL_PATH;$player.Load();$player.PlaySync()"]).env("RING_LOCAL_PATH",path);
         cmd
     };
     #[cfg(not(windows))]
-    let mut command = {
+    let command = {
         let mut cmd = std::process::Command::new(if cfg!(target_os = "macos") {
             "afplay"
         } else {
@@ -1106,14 +1128,18 @@ fn play_file(path: &Path) -> Result<()> {
         cmd.arg(path);
         cmd
     };
-    let status = command.status().map_err(|_| {
-        RingError::new(
-            "AUDIO_UNAVAILABLE",
-            "Could not launch the native audio player",
-            "playback",
-            "Install the platform audio player or use --audio-out PATH.",
-        )
-    })?;
+    let status = tokio::process::Command::from(command)
+        .kill_on_drop(true)
+        .status()
+        .await
+        .map_err(|_| {
+            RingError::new(
+                "AUDIO_UNAVAILABLE",
+                "Could not launch the native audio player",
+                "playback",
+                "Install the platform audio player or use --audio-out PATH.",
+            )
+        })?;
     if !status.success() {
         return Err(RingError::new(
             "AUDIO_UNAVAILABLE",
