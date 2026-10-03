@@ -60,5 +60,46 @@
     "synthetic_total_sent_frames": 337
   },
   "runtime_verified_sha256": "1388f6d6b035e7a796faf0fc7f69b6ea612dadf14f11a63a504191d9c5bf181b",
-  "layout_screenshot": "dist/native/android-safe-area.png"
+  "layout_screenshot": "dist/native/android-safe-area.png",
+  "release": {
+    "artifact": "dist/public-native/silicon-ring-0.1.0-android-arm64.apk",
+    "bytes": 11660041,
+    "sha256": "472665be3f7b315d721cdbb521f9fce4e1be06c3bed3cd4f74ce7bdf9c04f7e3",
+    "source_commit": "47b0a2d",
+    "native_core_ci_source_commit": "433c3f5",
+    "native_core_workflow_run_id": 37139615739,
+    "debuggable": false,
+    "signing_certificate_sha256": "ed087dc34683dbb5cccb4088027b08b2fbe1f0eed6d1819f48f0b0bfe51680ce",
+    "verified": [
+      "Stable release certificate and APK Signature Scheme v2",
+      "Installed as update over the CI release APK using the same signing identity",
+      "Login succeeded through the release WebView with isolated IAM fixture credentials",
+      "Native microphone and notification permission prompts displayed and granted",
+      "Server confirmed enabled FCM registration with production push environment",
+      "Native incoming notification Answer accepted foreground call",
+      "Active 24 kHz AudioFlinger recording/playback tracks and 592 returned PCM frames",
+      "Cold process restart restored encrypted native credentials and authenticated call history",
+      "Final system bar and gesture padding rendered correctly"
+    ],
+    "call_check": {
+      "ringid": "ring_3179cc6c9984461ea5ea52478c59c6a1",
+      "created_at": "2026-10-03T17:30:50.902Z",
+      "answered_at": "2026-10-03T17:31:09.710Z",
+      "ended_at": "2026-10-03T17:31:26.704Z",
+      "remote_received_frames": 592,
+      "remote_peak_pcm16": 10,
+      "remote_non_silent_frames_above_50": 0,
+      "android_playback_track_active": true,
+      "android_record_track_active": true,
+      "android_sample_rate_hz": 24000,
+      "synthetic_speech_sent_frames": 192,
+      "synthetic_total_sent_frames": 336
+    },
+    "session_restore_screenshot": "dist/native/android-release-restored.png",
+    "not_verified": [
+      "Physical Android microphone and audible speaker routing",
+      "Answering under a PIN-protected Android lock screen",
+      "Cold production FCM delivery; cold FCM delivery was verified using the isolated debug build"
+    ]
+  }
 }
