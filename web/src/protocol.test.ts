@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeActor, isActor, socketUrl, RingSocket, coalesceTranscript } from './protocol.ts';
+import { normalizeActor, isActor, socketUrl, defaultSocketUrl, RingSocket, coalesceTranscript } from './protocol.ts';
+test('packaged native clients use production while local web and development clients stay local', () => {
+  assert.equal(defaultSocketUrl('localhost', true, false), 'wss://backend.ring.teamofsilicons.com/ws');
+  assert.equal(defaultSocketUrl('localhost', true, true), 'ws://127.0.0.1:8765/ws');
+  assert.equal(defaultSocketUrl('127.0.0.1', false, false), 'ws://127.0.0.1:8765/ws');
+  assert.equal(defaultSocketUrl('localhost', false, true), 'ws://127.0.0.1:8765/ws');
+  assert.equal(defaultSocketUrl('ring.teamofsilicons.com', false, false), 'wss://backend.ring.teamofsilicons.com/ws');
+});
 test('identity validation accepts public and membership IDs without accepting malformed IDs', () => {
   assert.equal(normalizeActor(' @c:alex '), 'c:alex');
   for (const id of ['si:assistant', '@c:alex', 'c:alex[team]']) assert.equal(isActor(id), true);

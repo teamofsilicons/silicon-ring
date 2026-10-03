@@ -79,6 +79,24 @@ jobs:
           if [ ! -f gen/android/gradlew ]; then
             node ../web/node_modules/@tauri-apps/cli/tauri.js android init --ci --skip-targets-install
           fi
+      - name: Configure Android push when available
+        env:
+          RING_ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.RING_ANDROID_GOOGLE_SERVICES_JSON }}
+        run: |
+          python3 - <<'PYCONFIG'
+          import json, os, pathlib
+          raw = os.environ.get('RING_ANDROID_GOOGLE_SERVICES_JSON', '')
+          if raw:
+              config = json.loads(raw)
+              config['client'] = [client for client in config['client'] if client['client_info']['android_client_info']['package_name'] == 'com.teamofsilicons.ring']
+              assert len(config['client']) == 1, 'Exactly one Ring Android client is required'
+              destination = pathlib.Path('native/gen/android/app/google-services.json')
+              destination.write_text(json.dumps(config))
+              destination.chmod(0o600)
+              print('Ring Android push configuration installed')
+          else:
+              print('Android push configuration unavailable; building without FCM registration')
+          PYCONFIG
       - name: Build signed development APK
         working-directory: native
         run: node ../web/node_modules/@tauri-apps/cli/tauri.js android build --debug --target aarch64 --apk --ci

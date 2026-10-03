@@ -156,3 +156,8 @@ export function coalesceTranscript(entries: any[]): any[] {
   }
   return result;
 }
+export function defaultSocketUrl(hostname: string, native: boolean, development: boolean) {
+  return (!native || development) && ['localhost', '127.0.0.1', '[::1]'].includes(hostname)
+    ? 'ws://127.0.0.1:8765/ws'
+    : 'wss://backend.ring.teamofsilicons.com/ws';
+}

@@ -211,7 +211,15 @@ Resources:
           caddy_url=https://github.com/caddyserver/caddy/releases/download/v2.11.7
           curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' "$caddy_url/caddy_2.11.7_linux_amd64.tar.gz" -o "$temp/caddy_2.11.7_linux_amd64.tar.gz"
           curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' "$caddy_url/caddy_2.11.7_checksums.txt" -o "$temp/caddy-checksums.txt"
-          (cd "$temp"; awk '$2 == "caddy_2.11.7_linux_amd64.tar.gz" {print}' caddy-checksums.txt > caddy.sha256; test -s caddy.sha256; sha256sum -c caddy.sha256)
+          (cd "$temp"
+              awk '$2 == "caddy_2.11.7_linux_amd64.tar.gz" {print}' caddy-checksums.txt > caddy.checksum
+              test "$(wc -l < caddy.checksum)" -eq 1
+              case "$(awk '{print length($1)}' caddy.checksum)" in
+                  64) sha256sum -c caddy.checksum ;;
+                  128) sha512sum -c caddy.checksum ;;
+                  *) echo 'Unsupported Caddy checksum algorithm' >&2; exit 1 ;;
+              esac
+          )
           tar -xzf "$temp/caddy_2.11.7_linux_amd64.tar.gz" -C "$temp" caddy
           install -m 755 "$temp/caddy" /usr/local/bin/caddy
           cat > /etc/caddy/Caddyfile <<'CADDY'

@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ApplicationInfo
 import android.media.*
 import android.os.Handler
 import android.os.Looper
@@ -148,7 +149,7 @@ internal class RingRuntime private constructor(val context: Context) {
         catch (_: SecurityException) { RingCallService.show(context, ringid, name, true) }
         connect {}
     }
-    fun registerPush(token: String) { if (token.isEmpty()) return; pushToken = token; if (ready) request("devices.update", JSONObject().put("device_id", device).put("push_platform", "fcm").put("push_token", token)) { _, _ -> } }
+    fun registerPush(token: String) { if (token.isEmpty()) return; pushToken = token; if (ready) request("devices.update", JSONObject().put("device_id", device).put("push_platform", "fcm").put("push_environment", if (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) "sandbox" else "production").put("push_token", token)) { _, _ -> } }
     fun answer(ringid: String, reply: RingReply = { _, _ -> }) {
         request("calls.accept", JSONObject().put("ringid", ringid).put("device_id", device)) { value, error ->
             if (error == null) { RingConnectionService.connections[ringid]?.setActive(); startAudio(ringid, null) { _, _ -> }; RingCallService.show(context, ringid, "Call in progress", false) }

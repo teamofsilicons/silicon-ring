@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import { RingTone } from './audio';
 import { PhoneAudio, configureNative, logoutNative, restoreNative, isNativeMobile } from './native';
-import { RingSocket, type Call, type Session, displayActor, downloadAsset, uploadAsset, coalesceTranscript, errorMessage, isActor, normalizeActor } from './protocol';
+import { RingSocket, type Call, type Session, displayActor, downloadAsset, uploadAsset, coalesceTranscript, errorMessage, isActor, normalizeActor, defaultSocketUrl } from './protocol';
 
 type IconName = 'phone' | 'history' | 'voicemail' | 'devices' | 'settings' | 'arrow' | 'plus' | 'search' | 'close' | 'chevron' | 'mic' | 'muted' | 'end' | 'download' | 'check' | 'logout' | 'user' | 'bell' | 'spark' | 'refresh' | 'play' | 'back';
 const paths: Record<IconName, string> = {
@@ -19,7 +19,7 @@ const formatTime = (value: string) => new Date(value).toLocaleTimeString([], { h
 const formatDate = (value: string) => new Date(value).toLocaleDateString([], { month: 'short', day: 'numeric' });
 const duration = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 const storage = { read: <T,>(key: string, fallback: T): T => { try { return JSON.parse(sessionStorage.getItem(key) || 'null') || fallback; } catch { return fallback; } }, write: (key: string, value: unknown) => sessionStorage.setItem(key, JSON.stringify(value)) };
-const defaultServer = import.meta.env.VITE_RING_SERVER || (['localhost', '127.0.0.1'].includes(location.hostname) ? 'ws://127.0.0.1:8765/ws' : 'wss://backend.ring.teamofsilicons.com/ws');
+const defaultServer = import.meta.env.VITE_RING_SERVER || defaultSocketUrl(location.hostname, '__TAURI_INTERNALS__' in window, import.meta.env.DEV);
 
 export default function App() {
   const api = new RingSocket(), audio = new PhoneAudio(), tone = new RingTone();

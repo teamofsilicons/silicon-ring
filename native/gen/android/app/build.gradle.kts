@@ -7,6 +7,11 @@ plugins {
     id("rust")
 }
 
+// Firebase configuration is supplied privately for app builds that enable push.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 val tauriProperties = Properties().apply {
     val propFile = file("tauri.properties")
     if (propFile.exists()) {

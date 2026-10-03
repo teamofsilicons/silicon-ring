@@ -402,7 +402,7 @@ pub fn start(app: App) {
 fn allowed_environment(realm: &str, device: &Device, test_push_enabled: bool) -> bool {
     realm != "test"
         || (test_push_enabled
-            && device.push_platform.as_deref() == Some("apns_voip")
+            && matches!(device.push_platform.as_deref(), Some("apns_voip" | "fcm"))
             && device.push_environment.as_deref() == Some("sandbox"))
 }
 #[cfg(test)]
@@ -426,6 +426,9 @@ mod tests {
         assert!(!allowed_environment("test", &device, false));
         assert!(allowed_environment("test", &device, true));
         device.push_platform = Some("fcm".into());
+        assert!(!allowed_environment("test", &device, false));
+        assert!(allowed_environment("test", &device, true));
+        device.push_environment = Some("production".into());
         assert!(!allowed_environment("test", &device, true));
         assert!(allowed_environment("production", &device, false));
     }
