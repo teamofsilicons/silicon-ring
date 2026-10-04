@@ -284,6 +284,9 @@ private final class NativeAudio {
         callKitActive = false
         engine?.inputNode.removeTap(onBus: 0); player?.stop(); engine?.stop(); engine = nil; player = nil; buffered.removeAll(); queuedOutput = 0
     }
+    func stopCall(_ ring: String) {
+        if ringid == ring || startingRing == ring { stop { _ in } }
+    }
     func stop(_ reply: @escaping Reply, cancelStart: Bool = true) {
         if cancelStart {
             generation += 1; starting = false; startingRing = ""; startingVoicemailId = nil
@@ -348,6 +351,12 @@ final class CallServicePlugin: Plugin, PKPushRegistryDelegate, CXProviderDelegat
         if type == "connection.lost" { audio.stop { _ in }; return }
         if type == "connection.restored" { registerPush(); transport.request("calls.list", ["state": "active"]) { if case .success(let value) = $0 { for call in value["items"] as? [[String: Any]] ?? [] { self.reconcile(call) } } }; return }
         guard let ring = data["ringid"] as? String else { return }
+        if type == "call.ended" {
+            audio.stopCall(ring)
+            if let uuid = calls.removeValue(forKey: ring) { provider.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded) }
+            pendingCalls.remove(ring)
+            return
+        }
         if type.hasPrefix("call.") || type.hasPrefix("participant.") {
             transport.request("calls.get", ["ringid": ring]) { if case .success(let call) = $0 { self.reconcile(call) } }
         }
@@ -374,7 +383,7 @@ final class CallServicePlugin: Plugin, PKPushRegistryDelegate, CXProviderDelegat
             if let uuid = calls[ring] { provider.reportOutgoingCall(with: uuid, connectedAt: Date()) }
             if !audio.voicemail { audio.start(ring, voicemailId: nil) { _ in } }
         } else if state == "ended" || !here && state != "ringing" {
-            if audio.ringid == ring { audio.stop { _ in } }
+            audio.stopCall(ring)
             if let uuid = calls.removeValue(forKey: ring) { provider.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded) }
         }
     }
@@ -423,9 +432,10 @@ final class CallServicePlugin: Plugin, PKPushRegistryDelegate, CXProviderDelegat
     }
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         guard let ring = calls.first(where: { $0.value == action.callUUID })?.key else { action.fulfill(); return }
+        audio.stopCall(ring)
         let method = pendingCalls.contains(ring) ? "calls.decline" : "calls.cut"
         transport.request(method, ["ringid": ring, "give_no_reason": true]) { result in
-            switch result { case .success: self.audio.stop { _ in }; self.calls.removeValue(forKey: ring); self.pendingCalls.remove(ring); action.fulfill(); case .failure: action.fail() }
+            switch result { case .success: self.calls.removeValue(forKey: ring); self.pendingCalls.remove(ring); action.fulfill(); case .failure: action.fail() }
         }
     }
     func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) { audio.mute(action.isMuted) { result in switch result { case .success: action.fulfill(); case .failure: action.fail() } } }

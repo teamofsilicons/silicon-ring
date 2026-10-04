@@ -226,7 +226,15 @@ export default function App() {
     }, 'call_action');
   }
   async function callAction(method: string, extras = {}) {
-    await run(async () => { await api.request(method, { ringid: selected(), ...extras }); setDeclineOpen(false); await refresh(); }, 'call_action');
+    await run(async () => {
+      const ringid = selected();
+      if (method === 'calls.cut' && audioCall === ringid && !vmDraft()) {
+        audioCall = ''; setAudioReady(false);
+        // Stop capture before the server removes this participant's media access.
+        await audio.stop(api).catch(() => {});
+      }
+      await api.request(method, { ringid, ...extras }); setDeclineOpen(false); await refresh();
+    }, 'call_action');
   }
   async function startAudio(call: Call) {
     if (audioCall === call.ringid || vmDraft()) return;
@@ -300,8 +308,16 @@ export default function App() {
     document.addEventListener('keydown', keyboard);
     const unsubscribe = api.subscribe(event => {
       if (event.type === 'connection.lost') { audioCall = ''; setAudioReady(false); tone.stop(); return; }
-      if (event.type === 'stream.error') { setError(event.data.error?.message || 'The audio stream was interrupted.'); if (event.data.stream_id === audio.streamId) { audioCall = ''; setAudioReady(false); void audio.stop(); } return; }
+      if (event.type === 'stream.error') {
+        // Frames already in transit can be rejected after their stream is detached.
+        if (!audio.streamId || event.data.stream_id !== audio.streamId) return;
+        setError(event.data.error?.message || 'The audio stream was interrupted.'); audioCall = ''; setAudioReady(false); void audio.stop(); return;
+      }
       if (event.type.startsWith('media.') || event.type.startsWith('assets.')) return;
+      if (event.type === 'call.ended') {
+        if (audioCall === event.data.ringid && !vmDraft()) { audioCall = ''; setAudioReady(false); void audio.stop().catch(() => {}); }
+        setCalls(items => items.map(call => call.ringid === event.data.ringid ? { ...call, state: 'ended' } : call));
+      }
       if (event.type === 'call.silenced') { tone.stop(); ringtoneCall = event.data.ringid; }
       if (event.type === 'call.incoming') { setSelected(event.data.ringid); setPage('calls'); if ('Notification' in window && Notification.permission === 'granted' && document.visibilityState !== 'visible') new Notification('Incoming Ring call', { body: 'Open Ring to see who is calling.', icon: '/ring.svg' }); }
       clearTimeout(refreshTimer); refreshTimer = setTimeout(() => { void refresh().catch(e => setError(errorMessage(e))); }, 150);

@@ -22,6 +22,8 @@ Packages appear in `native/target/release/bundle/`. The desktop app uses the OS 
 
 The Xcode project is checked in under `gen/apple/`. Install Xcode, CocoaPods, the iOS platform SDK, and a simulator runtime for interactive testing. Install `aarch64-apple-ios-sim` and `aarch64-apple-ios` Rust targets as appropriate.
 
+Xcode 27 release builds also need `rustup component add llvm-tools`. The native Cargo manifest pins the reviewed [swift-rs runtime export fix](https://github.com/Brendonovich/swift-rs/pull/80) to an exact commit; the repository's `.cargo/config.toml` selects `Tauri` as the one archive exporting the shared Swift runtime bridge. This repairs the undefined `retain_object`, `release_object`, and `string_from_bytes` linker errors on clean builds. Remove the pin and environment setting when a crates.io release includes that fix.
+
 ```sh
 cd native
 ../web/node_modules/.bin/tauri ios build --debug --target aarch64-sim --no-sign --ci

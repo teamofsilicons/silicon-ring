@@ -1,0 +1,4 @@
+[env]
+# Export the SwiftRs runtime from exactly one linked archive on Xcode 27.
+# Cargo config survives the iOS Xcode build phase's clean environment.
+SWIFT_RS_RUNTIME_ARCHIVE = "Tauri"
