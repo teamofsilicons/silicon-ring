@@ -2,21 +2,33 @@ import { CallAudio } from './audio';
 import { checkSessionContext, type RingSocket, type Session, type ConnectSettings } from './protocol';
 let mobile = false;
 export const isNativeMobile = () => mobile;
-const native = () => '__TAURI_INTERNALS__' in window;
+export const isNative = () => '__TAURI_INTERNALS__' in window;
+export async function openNativeLogin(url: string) {
+  const { openUrl } = await import('@tauri-apps/plugin-opener');
+  await openUrl(url);
+}
+export async function listenNativeLogin(onUrl: (url: string) => void): Promise<() => void> {
+  if (!isNative()) return () => {};
+  const { getCurrent, onOpenUrl } = await import('@tauri-apps/plugin-deep-link');
+  const stop = await onOpenUrl(urls => urls.forEach(onUrl));
+  try { (await getCurrent())?.forEach(onUrl); }
+  catch (error) { stop(); throw error; }
+  return stop;
+}
 async function command(action: string, payload: Record<string, unknown> = {}) {
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<any>('plugin:call-service|control', { payload: { action, ...payload } });
 }
 export async function configureNative(session: Session, settings: ConnectSettings) {
-  if (!native()) return;
+  if (!isNative()) return;
   checkSessionContext(session, settings);
   const { invoke } = await import('@tauri-apps/api/core');
   const result = await invoke<any>('plugin:call-service|configure', { payload: { ...settings, ...session } });
   mobile = result.mobile === true;
 }
-export async function logoutNative() { if (native()) await command('logout'); mobile = false; }
+export async function logoutNative() { if (isNative()) await command('logout'); mobile = false; }
 export async function restoreNative(): Promise<(Session & { url: string; realm: string; test_app_secret?: string }) | null> {
-  if (!native()) return null;
+  if (!isNative()) return null;
   const stored = await command('restore');
   return stored.session_token && stored.device_id && stored.url ? stored : null;
 }

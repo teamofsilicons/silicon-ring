@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import { RingTone } from './audio';
-import { PhoneAudio, configureNative, logoutNative, restoreNative, isNativeMobile } from './native';
-import { RingSocket, type Call, type Session, type ConnectSettings, type CarbonLogin, type CarbonExchange, displayActor, downloadAsset, uploadAsset, readTranscriptSince, coalesceTranscript, errorMessage, isActor, normalizeActor, normalizeRealm, bindSession, sessionToRestore, defaultSocketUrl, persistentStorage, carbonLogin, carbonCallback, restoreCarbonExchange, isExpiredSession, socketUrl } from './protocol';
+import { PhoneAudio, configureNative, logoutNative, restoreNative, isNativeMobile, isNative, openNativeLogin, listenNativeLogin } from './native';
+import { RingSocket, type Call, type Session, type ConnectSettings, type CarbonLogin, type CarbonExchange, displayActor, downloadAsset, uploadAsset, readTranscriptSince, coalesceTranscript, errorMessage, isActor, normalizeActor, normalizeRealm, bindSession, sessionToRestore, defaultSocketUrl, persistentStorage, carbonLogin, carbonCallback, nativeCarbonReturnUrl, nativeCarbonCallback, restoreCarbonExchange, isExpiredSession, socketUrl } from './protocol';
 
 type IconName = 'phone' | 'history' | 'voicemail' | 'devices' | 'settings' | 'arrow' | 'plus' | 'search' | 'close' | 'chevron' | 'mic' | 'muted' | 'end' | 'download' | 'check' | 'logout' | 'user' | 'bell' | 'spark' | 'refresh' | 'play' | 'back';
 const paths: Record<IconName, string> = {
@@ -19,22 +19,23 @@ const formatTime = (value: string) => new Date(value).toLocaleTimeString([], { h
 const formatDate = (value: string) => new Date(value).toLocaleDateString([], { month: 'short', day: 'numeric' });
 const duration = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 const storage = persistentStorage(localStorage, sessionStorage);
+const carbonStorage = isNative() ? localStorage : sessionStorage;
 const defaultServer = import.meta.env.VITE_RING_SERVER || defaultSocketUrl(location.hostname, '__TAURI_INTERNALS__' in window, import.meta.env.DEV);
 
 export default function App() {
   const api = new RingSocket(), audio = new PhoneAudio(), tone = new RingTone();
   let pending: CarbonLogin | null = null;
-  try { pending = JSON.parse(sessionStorage.getItem('ring.carbon-login') || 'null'); } catch {}
-  const callback = carbonCallback(location.href, pending);
-  if (callback) { history.replaceState(history.state, '', callback.cleanUrl); sessionStorage.removeItem('ring.carbon-login'); }
+  try { pending = JSON.parse(carbonStorage.getItem('ring.carbon-login') || 'null'); } catch {}
+  const callback = isNative() ? null : carbonCallback(location.href, pending);
+  if (callback) { history.replaceState(history.state, '', callback.cleanUrl); carbonStorage.removeItem('ring.carbon-login'); }
   let exchange: CarbonExchange | null = null;
   if (callback?.token) {
     exchange = { token: callback.token, id: crypto.randomUUID(), expected_actor_type: 'carbon', expires_at: Date.now() + 120000, connection: callback.connection! };
-    sessionStorage.setItem('ring.carbon-exchange', JSON.stringify(exchange));
+    carbonStorage.setItem('ring.carbon-exchange', JSON.stringify(exchange));
   } else if (!callback) {
-    try { exchange = restoreCarbonExchange(JSON.parse(sessionStorage.getItem('ring.carbon-exchange') || 'null')); } catch {}
+    try { exchange = restoreCarbonExchange(JSON.parse(carbonStorage.getItem('ring.carbon-exchange') || 'null')); } catch {}
   }
-  if (!exchange) sessionStorage.removeItem('ring.carbon-exchange');
+  if (!exchange) carbonStorage.removeItem('ring.carbon-exchange');
   const saved = exchange ? null : storage.read<Session | null>('ring.session', null);
   const [session, setSession] = createSignal<Session | null>(saved);
   const [status, setStatus] = createSignal('offline');
@@ -85,7 +86,7 @@ export default function App() {
   let settingsDirty = false; let voicemailRequest: { ringid: string; id: string } | undefined;
   let loginAttempt: { token: string; id: string } | undefined = exchange || undefined;
   let carbonIdentity = !!exchange;
-  function clearCarbonExchange() { sessionStorage.removeItem('ring.carbon-exchange'); exchange = null; carbonIdentity = false; loginAttempt = undefined; }
+  function clearCarbonExchange() { carbonStorage.removeItem('ring.carbon-login'); carbonStorage.removeItem('ring.carbon-exchange'); exchange = null; carbonIdentity = false; loginAttempt = undefined; }
   let audioCall = '', ringtoneCall = '', refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let transcriptView: { ringid: string; owner: Session; after: number; again?: boolean; pending?: Promise<void> } | undefined;
   let alive = true;
@@ -175,7 +176,7 @@ export default function App() {
     const attempt = loginAttempt, expectedCarbon = carbonIdentity;
     setConfigReady(false); api.disconnect(); const connection = await connect();
     if (expectedCarbon && !restoreCarbonExchange(exchange)) { api.disconnect(); throw new Error('Carbon sign-in expired. Continue as Carbon again.'); }
-    if (exchange) { exchange.connection = connection; sessionStorage.setItem('ring.carbon-exchange', JSON.stringify(exchange)); }
+    if (exchange) { exchange.connection = connection; carbonStorage.setItem('ring.carbon-exchange', JSON.stringify(exchange)); }
     let result: Session;
     try {
       result = bindSession(await api.request<Session>('auth.login', { token: credential, ...(expectedCarbon ? { expected_actor_type: 'carbon' } : {}) }, attempt.id), connection);
@@ -189,7 +190,7 @@ export default function App() {
       else if (carbonIdentity && (isExpiredSession(error) || (error as any).code === 'FORBIDDEN')) { clearCarbonExchange(); setToken(''); }
       throw error;
     }
-    api.session = result; setSession(result); storage.write('ring.session', result); setToken(''); clearCarbonExchange(); setOrganizations([]);
+    api.session = result; setSession(result); storage.write('ring.session', result); setToken(''); clearCarbonExchange(); setOrganizations([]); setNotice('');
     setOrg(result.org_id); storage.write('ring.connection', { ...connection, org_id: result.org_id });
     await configureNative(result, { ...connection, org_id: result.org_id });
     await api.request('events.subscribe', {}); await refresh(); window.scrollTo(0, 0);
@@ -200,10 +201,11 @@ export default function App() {
       api.disconnect(); const connection = await connect();
       const info = await api.request('app.info');
       if (!info.iam_login_url) throw new Error('This Ring server needs an update to support Carbon sign-in. You can still paste an IAM token below.');
-      const login = carbonLogin(info.iam_login_url, info.app_id, location.href, { ...connection, org_id: '' });
+      const login = carbonLogin(info.iam_login_url, info.app_id, isNative() ? nativeCarbonReturnUrl : location.href, { ...connection, org_id: '' });
       clearCarbonExchange(); setToken('');
-      sessionStorage.setItem('ring.carbon-login', JSON.stringify(login.pending));
-      location.assign(login.url);
+      carbonStorage.setItem('ring.carbon-login', JSON.stringify(login.pending));
+      if (isNative()) { await openNativeLogin(login.url); setNotice('Finish signing in in your browser. Ring will reopen when you continue.'); }
+      else location.assign(login.url);
     });
   }
   async function logout() {
@@ -304,7 +306,26 @@ export default function App() {
       if (event.type === 'call.incoming') { setSelected(event.data.ringid); setPage('calls'); if ('Notification' in window && Notification.permission === 'granted' && document.visibilityState !== 'visible') new Notification('Incoming Ring call', { body: 'Open Ring to see who is calling.', icon: '/ring.svg' }); }
       clearTimeout(refreshTimer); refreshTimer = setTimeout(() => { void refresh().catch(e => setError(errorMessage(e))); }, 150);
     });
+    let stopNativeLogin = () => {}; let nativeRedirect = false;
     void run(async () => {
+      const stop = await listenNativeLogin(url => {
+        if (!alive || nativeRedirect) return;
+        let savedPending: CarbonLogin | null = null;
+        try { savedPending = JSON.parse(carbonStorage.getItem('ring.carbon-login') || 'null'); } catch {}
+        if (!savedPending) return;
+        const result = nativeCarbonCallback(url, savedPending);
+        if (!result) return;
+        if (result.error) { setError(result.error); return; }
+        const next = restoreCarbonExchange({ token: result.token!, id: crypto.randomUUID(), expected_actor_type: 'carbon', expires_at: Date.now() + 120000, connection: result.connection! });
+        if (!next) { setError('The saved sign-in connection is invalid. Continue as Carbon again.'); return; }
+        // Consume state before the webview reload; persisted exchange preserves its exact retry ID.
+        carbonStorage.removeItem('ring.carbon-login');
+        carbonStorage.setItem('ring.carbon-exchange', JSON.stringify(next));
+        nativeRedirect = true; api.disconnect(); location.reload();
+      });
+      if (!alive) { stop(); return; }
+      stopNativeLogin = stop;
+      if (nativeRedirect) return;
       if (callback?.error) setError(callback.error);
       if (exchange) {
         setToken(exchange.token);
@@ -319,7 +340,7 @@ export default function App() {
       if (api.session) { storage.write('ring.session', api.session); await configureNative(api.session, { url: server(), realm: realm(), org_id: org(), test_app_secret: testSecret() }); }
       await refresh();
     });
-    onCleanup(() => { alive = false; document.removeEventListener('keydown', keyboard); clearInterval(timer); clearTimeout(exchangeTimer); clearTimeout(refreshTimer); unsubscribe(); tone.stop(); void audio.stop(); api.disconnect(); if (vmAudio()) URL.revokeObjectURL(vmAudio()); if (profilePhoto()) URL.revokeObjectURL(profilePhoto()); Object.values(photos()).forEach(url => URL.revokeObjectURL(url)); });
+    onCleanup(() => { alive = false; stopNativeLogin(); document.removeEventListener('keydown', keyboard); clearInterval(timer); clearTimeout(exchangeTimer); clearTimeout(refreshTimer); unsubscribe(); tone.stop(); void audio.stop(); api.disconnect(); if (vmAudio()) URL.revokeObjectURL(vmAudio()); if (profilePhoto()) URL.revokeObjectURL(profilePhoto()); Object.values(photos()).forEach(url => URL.revokeObjectURL(url)); });
   });
 
   return <div class="app-shell">
@@ -335,7 +356,7 @@ export default function App() {
       <Show when={error()}><div class="alert error" role="alert"><span>{error()}</span><button aria-label="Dismiss error" onClick={() => setError('')}><Icon name="close" size={16} /></button></div></Show>
       <Show when={notice()}><div class="alert success" role="status"><Icon name="check" size={17} /><span>{notice()}</span><button aria-label="Dismiss notification" onClick={() => setNotice('')}><Icon name="close" size={16} /></button></div></Show>
       <div class="page-content">
-        <Show when={session()} fallback={<div class="welcome-layout"><section class="welcome-story"><span class="eyebrow"><span /> THE HUMAN SIDE OF CONNECTION</span><h1>Different minds.<br />Same conversation<span>.</span></h1><p>A familiar way to talk to your people and your silicons. Just an ID, a ring, and a little less distance.</p><div class="orbit-scene" aria-hidden="true"><div class="orbit orbit-one" /><div class="orbit orbit-two" /><div class="orbit orbit-three" /><span class="orbit-person"><Icon name="user" size={28} /></span><span class="orbit-silicon"><Icon name="spark" size={28} /></span><div class="orbit-center"><Logo /></div><span class="orbit-label">GOOD THINGS START WITH HELLO</span></div><div class="welcome-features"><span><Icon name="mic" size={16} /> Natural conversations</span><span><Icon name="devices" size={16} /> Every device, one line</span></div></section><section class="login-card"><div class="login-icon"><Icon name="arrow" size={26} /></div><span class="eyebrow">YOUR LINE IS WAITING</span><h2>Make yourself at home.</h2><p>Sign in with IAM and stay connected on this device.</p><Show when={realm() === 'production' && !('__TAURI_INTERNALS__' in window)}><button class="primary full carbon-login" type="button" disabled={busy()} onClick={() => void continueAsCarbon()}><Icon name="user" size={18} />{busy() ? 'Connecting…' : 'Continue as Carbon'}<Icon name="arrow" size={18} /></button><span class="sign-in-divider">or use an IAM token</span></Show><form onSubmit={e => { e.preventDefault(); void login(); }}><label for="iam-token">IAM short-lived token</label><input id="iam-token" type="password" autocomplete="off" placeholder="Paste your IAM token" required value={token()} onInput={e => { setToken(e.currentTarget.value); clearCarbonExchange(); setOrganizations([]); }} /><span class="field-hint">Ring remembers this device. Sign out when using a shared device.</span><button class="primary full" type="submit" disabled={busy() || !token().trim()}>{busy() ? 'Connecting…' : 'Connect to Ring'}<Icon name="arrow" size={18} /></button><button class="text-button advanced-button" type="button" onClick={() => setAdvanced(!advanced())}><Icon name="settings" size={14} />Connection settings<Icon name="chevron" size={12} /></button><Show when={advanced()}><div class="advanced"><label for="server">Server</label><input id="server" type="url" required value={server()} onInput={e => setServer(e.currentTarget.value)} /><label for="organization">Organization</label><Show when={organizations().length} fallback={<input id="organization" value={org()} onInput={e => setOrg(e.currentTarget.value)} placeholder="Optional IAM organization" />}><select id="organization" value={org()} onChange={e => setOrg(e.currentTarget.value)}><option value="">Choose your organization</option><For each={organizations()}>{organization => <option value={organization}>{organization}</option>}</For></select></Show><label for="realm">Environment</label><select id="realm" value={['production', 'test'].includes(realm()) ? realm() : 'custom'} onChange={e => setRealm(e.currentTarget.value === 'custom' ? '' : e.currentTarget.value)}><option value="production">Production</option><option value="test">Legacy test environment</option><option value="custom">Honeycomb test environment</option></select><Show when={!['production', 'test'].includes(realm())}><label for="environment-id">Environment UUID</label><input id="environment-id" required value={realm()} onInput={e => setRealm(e.currentTarget.value)} placeholder="Honeycomb environment UUID" autocomplete="off" /></Show><Show when={realm() !== 'production'}><label for="test-secret">Test app secret</label><input id="test-secret" type="password" value={testSecret()} onInput={e => setTestSecret(e.currentTarget.value)} autocomplete="off" /><small class="test-label">Isolated test environment. No production calls.</small></Show></div></Show></form><div class="login-footer"><span class="tiny-dot" /> YOUR IDENTITY, VERIFIED BY IAM</div></section></div>}>
+        <Show when={session()} fallback={<div class="welcome-layout"><section class="welcome-story"><span class="eyebrow"><span /> THE HUMAN SIDE OF CONNECTION</span><h1>Different minds.<br />Same conversation<span>.</span></h1><p>A familiar way to talk to your people and your silicons. Just an ID, a ring, and a little less distance.</p><div class="orbit-scene" aria-hidden="true"><div class="orbit orbit-one" /><div class="orbit orbit-two" /><div class="orbit orbit-three" /><span class="orbit-person"><Icon name="user" size={28} /></span><span class="orbit-silicon"><Icon name="spark" size={28} /></span><div class="orbit-center"><Logo /></div><span class="orbit-label">GOOD THINGS START WITH HELLO</span></div><div class="welcome-features"><span><Icon name="mic" size={16} /> Natural conversations</span><span><Icon name="devices" size={16} /> Every device, one line</span></div></section><section class="login-card"><div class="login-icon"><Icon name="arrow" size={26} /></div><span class="eyebrow">YOUR LINE IS WAITING</span><h2>Make yourself at home.</h2><p>Sign in with IAM and stay connected on this device.</p><Show when={realm() === 'production'}><button class="primary full carbon-login" type="button" disabled={busy()} onClick={() => void continueAsCarbon()}><Icon name="user" size={18} />{busy() ? 'Connecting…' : 'Continue as Carbon'}<Icon name="arrow" size={18} /></button><span class="sign-in-divider">or use an IAM token</span></Show><form onSubmit={e => { e.preventDefault(); void login(); }}><label for="iam-token">IAM short-lived token</label><input id="iam-token" type="password" autocomplete="off" placeholder="Paste your IAM token" required value={token()} onInput={e => { setToken(e.currentTarget.value); clearCarbonExchange(); setOrganizations([]); }} /><span class="field-hint">Ring remembers this device. Sign out when using a shared device.</span><button class="primary full" type="submit" disabled={busy() || !token().trim()}>{busy() ? 'Connecting…' : 'Connect to Ring'}<Icon name="arrow" size={18} /></button><button class="text-button advanced-button" type="button" onClick={() => setAdvanced(!advanced())}><Icon name="settings" size={14} />Connection settings<Icon name="chevron" size={12} /></button><Show when={advanced()}><div class="advanced"><label for="server">Server</label><input id="server" type="url" required value={server()} onInput={e => setServer(e.currentTarget.value)} /><label for="organization">Organization</label><Show when={organizations().length} fallback={<input id="organization" value={org()} onInput={e => setOrg(e.currentTarget.value)} placeholder="Optional IAM organization" />}><select id="organization" value={org()} onChange={e => setOrg(e.currentTarget.value)}><option value="">Choose your organization</option><For each={organizations()}>{organization => <option value={organization}>{organization}</option>}</For></select></Show><label for="realm">Environment</label><select id="realm" value={['production', 'test'].includes(realm()) ? realm() : 'custom'} onChange={e => setRealm(e.currentTarget.value === 'custom' ? '' : e.currentTarget.value)}><option value="production">Production</option><option value="test">Legacy test environment</option><option value="custom">Honeycomb test environment</option></select><Show when={!['production', 'test'].includes(realm())}><label for="environment-id">Environment UUID</label><input id="environment-id" required value={realm()} onInput={e => setRealm(e.currentTarget.value)} placeholder="Honeycomb environment UUID" autocomplete="off" /></Show><Show when={realm() !== 'production'}><label for="test-secret">Test app secret</label><input id="test-secret" type="password" value={testSecret()} onInput={e => setTestSecret(e.currentTarget.value)} autocomplete="off" /><small class="test-label">Isolated test environment. No production calls.</small></Show></div></Show></form><div class="login-footer"><span class="tiny-dot" /> YOUR IDENTITY, VERIFIED BY IAM</div></section></div>}>
           <Show when={page() === 'calls'}>
             <section class="page-heading"><div><span class="eyebrow">KEEP THE CONVERSATION GOING</span><h1>Your line is open<span>.</span></h1><p>A familiar voice is only a ring away.</p></div><button class="primary" disabled={status() !== 'connected'} onClick={() => openDial()}><Icon name="plus" size={18} />New call</button></section>
             <Show when={activeCall()}>{call => <button class="active-banner" onClick={() => selectCall(call())}><span class="live-pulse" /><div><strong>In a call with {otherName(call())}</strong><span>{callHere() ? 'Connected on this device' : 'Active on another device'} · {duration(Math.max(0, Math.floor((now() - new Date(call().answered_at || call().created_at).getTime()) / 1000)))}</span></div><span>Return to call <Icon name="arrow" size={17} /></span></button>}</Show>

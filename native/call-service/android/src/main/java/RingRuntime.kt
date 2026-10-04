@@ -78,7 +78,7 @@ internal class RingRuntime private constructor(val context: Context) {
             override fun onOpen(webSocket: WebSocket, response: Response) { main.post {
                 if (socket !== webSocket) return@post
                 val realm = credentials.getString("realm")
-                val hello = JSONObject().put("versions", org.json.JSONArray().put(1)).put("client", JSONObject().put("name", "ring-android").put("version", "0.1.4")).put("realm", realm).put("org_id", credentials.optString("org_id"))
+                val hello = JSONObject().put("versions", org.json.JSONArray().put(1)).put("client", JSONObject().put("name", "ring-android").put("version", "0.1.5")).put("realm", realm).put("org_id", credentials.optString("org_id"))
                 if (realm != "production") hello.put("test_app_secret", credentials.getString("test_app_secret"))
                 rawRequest("protocol.hello", hello) { result, error ->
                     val helloError = error ?: if (!acknowledgesRealm(realm, result)) "The server did not confirm the selected environment." else null

@@ -2,7 +2,9 @@
 
 The Tauri 2 shell packages the shared SolidJS frontend for macOS, Windows, Linux, iOS, and Android. Mobile audio and call delivery run in a Swift/Kotlin plugin independently of the webview. The backend WebSocket URL is selected on the sign-in screen; production builds should use `wss://backend.ring.teamofsilicons.com/ws`.
 
-Download [v0.1.4 desktop and Android installers](../docs/downloads.md), including checksums and build provenance.
+Choose **Continue as Carbon** to sign in through IAM in the system browser and return to Ring. The native app remembers the device session across restarts. An IAM-issued Ring token remains available for automation and isolated testing.
+
+Download [v0.1.5 desktop and Android installers](../docs/downloads.md), including checksums and build provenance.
 
 ## Desktop
 

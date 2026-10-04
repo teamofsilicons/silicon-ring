@@ -58,6 +58,9 @@ export function persistentStorage(persistent: Pick<Storage, 'getItem' | 'setItem
 
 export type CarbonLogin = { state: string; return_url: string; expires_at: number; connection: ConnectSettings };
 export type CarbonExchange = { token: string; id: string; expected_actor_type: 'carbon'; expires_at: number; connection: ConnectSettings };
+export const nativeCarbonReturnUrl = 'https://ring.teamofsilicons.com/native-login.html';
+const nativeCarbonUrl = 'silicon-ring://login/callback';
+const carbonCallbackKeys = ['slt', 'ring_auth_state', 'error', 'error_description'];
 export function restoreCarbonExchange(saved: CarbonExchange | null, now = Date.now()): CarbonExchange | null {
   if (!saved || typeof saved.token !== 'string' || !saved.token.trim() || typeof saved.id !== 'string' || !saved.id || saved.expected_actor_type !== 'carbon' || typeof saved.expires_at !== 'number' || saved.expires_at <= now || saved.expires_at > now + 120000) return null;
   try {
@@ -91,6 +94,24 @@ export function carbonCallback(currentUrl: string, pending: CarbonLogin | null, 
   if (!valid) return { cleanUrl, error: 'This IAM sign-in expired or was not started in this tab. Continue as Carbon again.' };
   if (denied || tokens.length !== 1 || !tokens[0].trim()) return { cleanUrl, error: 'IAM did not complete sign-in. Continue as Carbon again.' };
   return { cleanUrl, token: tokens[0], connection: pending.connection };
+}
+export function nativeCarbonLink(currentUrl: string): string | null {
+  try {
+    const callback = new URL(currentUrl), expected = new URL(nativeCarbonReturnUrl);
+    if (callback.origin !== expected.origin || callback.pathname !== expected.pathname || callback.username || callback.password || callback.hash || [...callback.searchParams.keys()].some(key => !carbonCallbackKeys.includes(key))) return null;
+    const states = callback.searchParams.getAll('ring_auth_state'), tokens = callback.searchParams.getAll('slt');
+    if (states.length !== 1 || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(states[0]) || tokens.length > 1 || !callback.searchParams.has('error') && (tokens.length !== 1 || !tokens[0].trim())) return null;
+    const result = new URL(nativeCarbonUrl);
+    for (const key of ['ring_auth_state', 'slt', 'error']) for (const value of callback.searchParams.getAll(key)) result.searchParams.append(key, value);
+    return result.toString();
+  } catch { return null; }
+}
+export function nativeCarbonCallback(currentUrl: string, pending: CarbonLogin | null, now = Date.now()) {
+  try {
+    const url = new URL(currentUrl);
+    if (url.protocol !== 'silicon-ring:' || url.host !== 'login' || url.pathname !== '/callback' || url.username || url.password || url.hash || [...url.searchParams.keys()].some(key => !carbonCallbackKeys.includes(key))) return null;
+    return carbonCallback(nativeCarbonReturnUrl + url.search, pending, now);
+  } catch { return null; }
 }
 export function isExpiredSession(error: unknown) {
   const fault = error as RingError;
@@ -164,7 +185,7 @@ export class RingSocket {
       ws.onerror = () => { clearTimeout(timeout); reject(new Error('Could not reach Ring. Make sure the server is running and its address is correct.')); };
     });
     try {
-      const hello = await this.request('protocol.hello', { versions: [1], client: { name: 'ring-web', version: '0.1.4' }, realm: settings.realm, org_id: settings.org_id || '', capabilities: ['audio.pcm16', 'events', 'handoff'], ...(settings.realm !== 'production' ? { test_app_secret: settings.test_app_secret } : {}) });
+      const hello = await this.request('protocol.hello', { versions: [1], client: { name: 'ring-web', version: '0.1.5' }, realm: settings.realm, org_id: settings.org_id || '', capabilities: ['audio.pcm16', 'events', 'handoff'], ...(settings.realm !== 'production' ? { test_app_secret: settings.test_app_secret } : {}) });
       checkRealm(settings.realm, hello?.realm);
       this.helloReady = true;
       if (this.session) {

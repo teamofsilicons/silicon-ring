@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeActor, normalizeRealm, bindSession, checkSessionContext, sessionToRestore, isActor, socketUrl, defaultSocketUrl, RingSocket, coalesceTranscript, readTranscriptSince, persistentStorage, carbonLogin, carbonCallback, restoreCarbonExchange, type CarbonExchange, type Session, type RingError } from './protocol.ts';
+import { normalizeActor, normalizeRealm, bindSession, checkSessionContext, sessionToRestore, isActor, socketUrl, defaultSocketUrl, RingSocket, coalesceTranscript, readTranscriptSince, persistentStorage, carbonLogin, carbonCallback, nativeCarbonReturnUrl, nativeCarbonLink, nativeCarbonCallback, restoreCarbonExchange, type CarbonExchange, type Session, type RingError } from './protocol.ts';
 test('packaged native clients use production while local web and development clients stay local', () => {
   assert.equal(defaultSocketUrl('localhost', true, false), 'wss://backend.ring.teamofsilicons.com/ws');
   assert.equal(defaultSocketUrl('localhost', true, true), 'ws://127.0.0.1:8765/ws');
@@ -76,6 +76,30 @@ test('Carbon login uses the IAM redirect contract and accepts only a fresh callb
     assert.throws(() => carbonLogin(login.toString(), 'ring', insecure, connection), /HTTPS/);
   }
   assert.doesNotThrow(() => carbonLogin('http://localhost:3000/login', 'ring', 'http://localhost:1420/', connection));
+});
+
+test('native Carbon callbacks return through a fixed HTTPS bridge and require the saved one-use state', () => {
+  const connection = { url: 'wss://example.com/ws', realm: 'production' };
+  const login = carbonLogin('https://iam.teamofsilicons.com/login', 'ring', nativeCarbonReturnUrl, connection, 1000);
+  const callback = new URL(new URL(login.url).searchParams.get('redirect_uri')!);
+  callback.searchParams.set('slt', 'one-use-native-token');
+  const link = nativeCarbonLink(callback.toString())!;
+  assert.equal(new URL(link).origin, 'null');
+  assert.ok(link.startsWith('silicon-ring://login/callback?'));
+  const durablePending = JSON.parse(JSON.stringify(login.pending));
+  const result = nativeCarbonCallback(link, durablePending, 1001)!;
+  assert.equal(result.token, 'one-use-native-token');
+  assert.deepEqual(result.connection, connection);
+  assert.equal(result.cleanUrl, nativeCarbonReturnUrl);
+  for (const pending of [null, { ...durablePending, state: 'different' }, { ...durablePending, expires_at: 1001 }, { ...durablePending, return_url: 'https://other.example/native-login.html' }]) assert.ok(nativeCarbonCallback(link, pending, 1001)?.error);
+  for (const invalid of [link.replace('silicon-ring:', 'other:'), link.replace('//login/', '//other/'), link.replace('/callback?', '/other?'), link + '#token', link + '&next=https://other.example/', 'not a URL']) assert.equal(nativeCarbonCallback(invalid, durablePending, 1001), null);
+  for (const invalid of [callback.toString().replace('ring.teamofsilicons.com', 'other.example'), callback.toString().replace('/native-login.html', '/other'), callback.toString() + '&slt=duplicate', callback.toString() + '&next=silicon-ring://other', callback.toString() + '#fragment']) assert.equal(nativeCarbonLink(invalid), null);
+  callback.searchParams.delete('slt'); callback.searchParams.set('error', 'denied'); callback.searchParams.set('error_description', 'untrusted provider description');
+  const denied = nativeCarbonLink(callback.toString())!;
+  assert.ok(denied); assert.equal(denied.includes('description'), false);
+  assert.ok(nativeCarbonCallback(denied, durablePending, 1001)?.error);
+  callback.searchParams.delete('error');
+  assert.equal(nativeCarbonLink(callback.toString()), null);
 });
 
 test('uncertain Carbon exchanges recover the exact request and connection only during the two-minute tab window', () => {
