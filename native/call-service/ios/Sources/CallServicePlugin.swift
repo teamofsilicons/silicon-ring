@@ -395,10 +395,19 @@ final class CallServicePlugin: Plugin, PKPushRegistryDelegate, CXProviderDelegat
     }
     private func registerPush() {
         #if DEBUG
-        let environment = "sandbox"
+        var environment = "sandbox"
         #else
-        let environment = "production"
+        var environment = "production"
         #endif
+        if let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+           let profile = try? Data(contentsOf: url),
+           let start = profile.range(of: Data("<plist".utf8))?.lowerBound,
+           let end = profile.range(of: Data("</plist>".utf8), in: start..<profile.endIndex)?.upperBound,
+           let plist = (try? PropertyListSerialization.propertyList(from: profile[start..<end], format: nil)) as? [String: Any],
+           let entitlements = plist["Entitlements"] as? [String: Any],
+           let aps = entitlements["aps-environment"] as? String, ["development", "production"].contains(aps) {
+            environment = aps == "development" ? "sandbox" : "production"
+        }
         if !pushToken.isEmpty && transport.ready { transport.request("devices.update", ["device_id": transport.device, "push_platform": "apns_voip", "push_token": pushToken, "push_environment": environment]) { _ in } }
     }
     func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) { pushToken = pushCredentials.token.map { String(format: "%02x", $0) }.joined(); registerPush() }
