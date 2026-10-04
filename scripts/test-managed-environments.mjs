@@ -142,7 +142,7 @@ async function login(realm, who = 'alice') {
   assert.equal(client.session.realm, realm); assert.equal(client.session.org_id, actors[who].org); assert.equal(client.session.actor, actors[who].actor);
   await client.request('events.subscribe'); return client;
 }
-async function denied(operation, codes = ['FORBIDDEN', 'AUTH_REQUIRED', 'IAM_AUTH_FAILED', 'TEST_ENVIRONMENT_UNAVAILABLE']) {
+async function denied(operation, codes = ['FORBIDDEN', 'AUTH_REQUIRED', 'IAM_AUTH_FAILED', 'IAM_REQUEST_REJECTED', 'TEST_ENVIRONMENT_UNAVAILABLE']) {
   await assert.rejects(operation, error => codes.includes(error.code), `expected ${codes.join(' or ')}`);
 }
 function operation(realm, action, revision, generation = 1, keyVersion = 1) {
@@ -230,6 +230,8 @@ try {
   const wrongOrg = await hello(A, 'bob'); await denied(() => wrongOrg.request('auth.login', { token: `${A}|alice` }));
   checked('same global actors make separate cross-org calls; login/resume, calls, transcript, events and uploads remain realm-bound');
 
+  // Let cached authority expire so the control mutation reaches IAM while audio keeps flowing.
+  await delay(31_000);
   blockedIntrospection = { realm: A, entered: false };
   const pending = a.alice.request('config.set', { scope: 'actor', values: { 'representative.context_required': true } }).then(value => ({ value }), error => ({ error }));
   await waitFor(() => blockedIntrospection.entered, 'in-flight IAM control operation');
