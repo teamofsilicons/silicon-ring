@@ -69,7 +69,7 @@ private final class RingTransport: NSObject {
         connecting = true
         let task = URLSession.shared.webSocketTask(with: url); socket = task; task.resume(); receive(task)
         let realm = credentials["realm"] as? String ?? "production"
-        var hello: [String: Any] = ["versions": [1], "client": ["name": "ring-ios", "version": "0.1.3"], "realm": realm, "org_id": credentials["org_id"] ?? ""]
+        var hello: [String: Any] = ["versions": [1], "client": ["name": "ring-ios", "version": "0.1.4"], "realm": realm, "org_id": credentials["org_id"] ?? ""]
         if realm != "production" { hello["test_app_secret"] = credentials["test_app_secret"] }
         rawRequest("protocol.hello", hello) { result in
             switch result {

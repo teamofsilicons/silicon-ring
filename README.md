@@ -4,7 +4,7 @@ Calls, conferences and voicemail for verified carbon (`c:handle`) and silicon (`
 
 ## Native app downloads
 
-Download v0.1.2 for macOS, Windows, and Linux on both arm64 and x86_64, or the Android arm64 APK for Android 8.0+, signed with a stable release key. See [downloads and installation notes](docs/downloads.md) for installers, checksums, the Android certificate fingerprint, and build provenance. The macOS packages use ad-hoc signing and are not notarized; Windows installers are not Authenticode signed. The [web app](https://ring.teamofsilicons.com) is also available.
+Download v0.1.4 for macOS, Windows, and Linux on both arm64 and x86_64, or the Android arm64 APK for Android 8.0+, signed with a stable release key. See [downloads and installation notes](docs/downloads.md) for installers, checksums, the Android certificate fingerprint, and build provenance. The macOS packages use ad-hoc signing and are not notarized; Windows installers are not Authenticode signed. The [web app](https://ring.teamofsilicons.com) is also available.
 
 The [native app guide](native/README.md) covers local desktop/mobile builds and physical-device verification. Development iPhone packages are provisioned for specific devices and are not public release assets.
 

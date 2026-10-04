@@ -77,7 +77,7 @@ struct Subscription {
     after_seq: u64,
 }
 fn provider_error(e: ring_providers::Error) -> Fault {
-    Fault{code:e.code,message:e.message,retryable:e.retryable,next_action:"Check the configured provider and app authorization, then retry the original request ID.".into(),details:None}
+    Fault{code:e.code,message:e.message,retryable:e.retryable,next_action:"Check the configured provider and app authorization, then retry the original request ID.".into(),details:e.details}
 }
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -480,9 +480,11 @@ async fn handle(
         ));
     }
     if m == "app.info" {
-        return Ok(
-            json!({"app_id":"ring","org_id":std::env::var("RING_OWNER_ORG").unwrap_or_else(|_|"teamofsilicons".into()),"selected_org":peer.org,"version":env!("CARGO_PKG_VERSION"),"protocol_major":1,"capabilities":CAPABILITIES,"endpoint":"wss://backend.ring.teamofsilicons.com/ws","repository":"https://github.com/teamofsilicons/silicon-ring","docs":"https://ring.teamofsilicons.com/docs","rust_package":"ring-client","install_url":"https://ring.teamofsilicons.com/install.sh","compatibility":{"supported_protocol_majors":[1],"sunset":null}}),
-        );
+        let mut info = json!({"app_id":"ring","org_id":std::env::var("RING_OWNER_ORG").unwrap_or_else(|_|"teamofsilicons".into()),"selected_org":peer.org,"version":env!("CARGO_PKG_VERSION"),"protocol_major":1,"capabilities":CAPABILITIES,"endpoint":"wss://backend.ring.teamofsilicons.com/ws","repository":"https://github.com/teamofsilicons/silicon-ring","docs":"https://ring.teamofsilicons.com/docs","rust_package":"ring-client","install_url":"https://ring.teamofsilicons.com/install.sh","compatibility":{"supported_protocol_majors":[1],"sunset":null}});
+        info["app_id"] = json!(std::env::var("RING_IAM_APP_ID").unwrap_or_else(|_| "ring".into()));
+        info["iam_login_url"] = json!(std::env::var("RING_IAM_LOGIN_URL")
+            .unwrap_or_else(|_| "https://iam.teamofsilicons.com/login".into()));
+        return Ok(info);
     }
     if m == "auth.login" {
         if peer.token.is_some() {
@@ -491,6 +493,17 @@ async fn handle(
             ));
         }
         let token = required(&p, "token")?;
+        let expected_actor = match p.get("expected_actor_type") {
+            None => None,
+            Some(kind) if kind == "carbon" => Some("c:"),
+            Some(kind) if kind == "silicon" => Some("si:"),
+            _ => return Err(invalid("expected_actor_type must be carbon or silicon")),
+        };
+        let _credentials = if peer.realm == "test" && !app.test_tokens.is_empty() {
+            None
+        } else {
+            Some(auth::IAM_CREDENTIALS.lock().await)
+        };
         let i = if peer.realm == "test" && !app.test_tokens.is_empty() {
             let i = app
                 .test_tokens
@@ -506,16 +519,14 @@ async fn handle(
                 })?;
             i
         } else {
-            if peer.org.is_empty() {
-                return Err(invalid(
-                    "org_id is required in protocol.hello for IAM login",
-                ));
-            }
             let iam = app.iam(&peer.realm)?;
             let session = iam
                 .login(token, &peer.org, rid)
                 .await
                 .map_err(provider_error)?;
+            if expected_actor.is_some_and(|prefix| !session.identity.actor_id.starts_with(prefix)) {
+                return Err(forbidden());
+            }
             let i = Identity {
                 actor: session.identity.actor_id.clone(),
                 org_id: session.identity.org_id.clone(),
@@ -526,6 +537,10 @@ async fn handle(
             auth::save(app, &session)?;
             i
         };
+        if expected_actor.is_some_and(|prefix| !i.actor.starts_with(prefix)) {
+            return Err(forbidden());
+        }
+        peer.org = i.org_id.clone();
         let login = app
             .engine
             .lock()
@@ -537,13 +552,14 @@ async fn handle(
     if m == "auth.resume" {
         let token = required(&p, "session_token")?;
         let s = app.engine.lock().unwrap().session(token)?;
-        auth::verify(app, &s.identity).await?;
         if s.identity.realm != peer.realm
             || !peer.org.is_empty() && s.identity.org_id != peer.org
             || p["device_id"].as_str().is_some_and(|d| d != s.device_id)
         {
             return Err(forbidden());
         }
+        auth::verify(app, &s.identity).await?;
+        let s = app.engine.lock().unwrap().session(token)?;
         peer.token = Some(token.into());
         return Ok(
             json!({"authenticated":true,"actor":s.identity.actor,"actor_id":s.identity.actor,"display_name":s.identity.display_name,"org_id":s.identity.org_id,"realm":s.identity.realm,"device_id":s.device_id,"expires_at":s.expires_at}),
@@ -560,7 +576,11 @@ async fn handle(
         )
     })?;
     let session = app.engine.lock().unwrap().session(token)?;
-    auth::verify(app, &session.identity).await?;
+    // Ending one's own media/call must remain possible while IAM is unavailable.
+    // The engine still enforces session, device and participant ownership.
+    if !matches!(m, "calls.cut" | "media.detach" | "auth.logout") {
+        auth::verify(app, &session.identity).await?;
+    }
     let session = app.engine.lock().unwrap().session(token)?;
     let i = &session.identity;
     if m == "release.info" && app.testing.is_some() {

@@ -1,5 +1,5 @@
-//! Signed IAM deliveries are durably retained before acknowledgment. Request-time introspection
-//! remains the authority, so delivery delay cannot extend a user's permission.
+//! Signed IAM deliveries are durably retained before acknowledgment. Each delivery forces fresh
+//! introspection, bypassing the short positive cache used by control requests.
 use crate::model::{forbidden, Result};
 use crate::App;
 use axum::{
@@ -282,9 +282,9 @@ pub async fn handle(State(app): State<App>, headers: HeaderMap, body: Bytes) -> 
             .filter(|i| i.realm == realm)
             .collect::<Vec<_>>();
         for identity in identities {
-            if crate::auth::verify(&app, &identity).await.is_err()
-                && crate::auth::revoke_identity(&app, &identity, "iam_webhook_authority_changed")
-                    .is_err()
+            if crate::auth::revalidate(&app, &identity, "iam_webhook_authority_changed")
+                .await
+                .is_err()
             {
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,

@@ -202,6 +202,7 @@ async fn slow_iam_preserves_media_events_request_order_and_disconnect_cleanup() 
     .await;
     let attached = reply(&mut socket, "attach").await;
     let stream_id = attached["stream_id"].as_str().unwrap().to_string();
+    app.engine.lock().unwrap().iam_verified.clear();
     gate.block_next.store(true, Ordering::SeqCst);
     send(&mut socket, "slow", "auth.status", json!({})).await;
     tokio::time::timeout(Duration::from_secs(3), gate.entered.acquire())
@@ -283,6 +284,7 @@ async fn slow_iam_preserves_media_events_request_order_and_disconnect_cleanup() 
         "event cursor was rewound after IAM completed"
     );
     // Closing during an attach must abort it before cleanup, so it cannot create a live orphan stream.
+    app.engine.lock().unwrap().iam_verified.clear();
     gate.block_next.store(true, Ordering::SeqCst);
     send(
         &mut socket,

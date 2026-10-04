@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeActor, normalizeRealm, bindSession, checkSessionContext, sessionToRestore, isActor, socketUrl, defaultSocketUrl, RingSocket, coalesceTranscript, readTranscriptSince, type Session } from './protocol.ts';
+import { normalizeActor, normalizeRealm, bindSession, checkSessionContext, sessionToRestore, isActor, socketUrl, defaultSocketUrl, RingSocket, coalesceTranscript, readTranscriptSince, persistentStorage, carbonLogin, carbonCallback, restoreCarbonExchange, type CarbonExchange, type Session, type RingError } from './protocol.ts';
 test('packaged native clients use production while local web and development clients stay local', () => {
   assert.equal(defaultSocketUrl('localhost', true, false), 'wss://backend.ring.teamofsilicons.com/ws');
   assert.equal(defaultSocketUrl('localhost', true, true), 'ws://127.0.0.1:8765/ws');
@@ -24,6 +24,70 @@ test('offline mutations fail explicitly instead of disappearing', async () => {
   await assert.rejects(new RingSocket().request('calls.init', { target: 'c:alex' }), /offline/);
 });
 
+test('browser sessions migrate from tab storage and survive a new tab until logout', () => {
+  const memory = () => { const values = new Map<string, string>(); return { getItem: (key: string) => values.get(key) || null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } }; };
+  const local = memory(), tab = memory();
+  const session: Session = { actor: 'c:a', org_id: 'team', device_id: 'device', session_token: 'opaque-ring-session', url: 'wss://example.com/ws', realm: 'production' };
+  tab.setItem('ring.session', JSON.stringify(session));
+  const storage = persistentStorage(local, tab);
+  assert.deepEqual(storage.read('ring.session', null), session);
+  assert.equal(tab.getItem('ring.session'), null);
+  assert.deepEqual(persistentStorage(local, memory()).read('ring.session', null), session);
+  const renewed = { ...session, expires_at: '2030-01-01T00:00:00Z' };
+  storage.write('ring.session', renewed);
+  assert.deepEqual(persistentStorage(local, memory()).read('ring.session', null), renewed);
+  tab.setItem('ring.session', JSON.stringify(session));
+  storage.remove('ring.session');
+  assert.equal(storage.read('ring.session', null), null);
+  assert.equal(tab.getItem('ring.session'), null);
+  local.setItem('ring.session', 'invalid-json');
+  assert.equal(storage.read('ring.session', null), null);
+  local.removeItem('ring.session'); tab.setItem('ring.session', JSON.stringify(session));
+  assert.deepEqual(persistentStorage({ ...local, setItem: () => { throw new Error('Storage full'); } }, tab).read('ring.session', null), session);
+});
+
+test('Carbon login uses the IAM redirect contract and accepts only a fresh callback from this tab', () => {
+  const connection = { url: 'wss://example.com/ws', realm: 'production', org_id: '' };
+  const { url, pending } = carbonLogin('https://iam.teamofsilicons.com/login', 'ring', 'https://ring.example/?view=calls#history', connection, 1000);
+  const login = new URL(url), callback = new URL(login.searchParams.get('redirect_uri')!);
+  assert.equal(login.pathname, '/login'); assert.equal(login.searchParams.get('app_id'), 'ring');
+  assert.equal(login.searchParams.get('identity_kind'), 'carbon');
+  assert.equal(login.searchParams.has('org_id'), false); assert.equal(login.searchParams.has('state'), false);
+  assert.equal(callback.searchParams.get('ring_auth_state'), pending.state);
+  assert.equal(callback.hash, '');
+  callback.searchParams.set('slt', 'one-use-iam-token');
+  const completed = carbonCallback(callback.toString(), pending, 1001)!;
+  assert.equal(completed.token, 'one-use-iam-token'); assert.deepEqual(completed.connection, connection);
+  assert.equal(completed.cleanUrl, 'https://ring.example/?view=calls');
+  assert.equal(carbonCallback(completed.cleanUrl, null), null);
+  for (const saved of [null, { ...pending, state: 'different' }, { ...pending, return_url: 'https://other.example/' }, { ...pending, expires_at: 1001 }, { ...pending, expires_at: 9999999 }]) {
+    const denied = carbonCallback(callback.toString(), saved, 1001)!;
+    assert.ok(denied.error); assert.equal(denied.token, undefined); assert.equal(denied.cleanUrl, completed.cleanUrl);
+  }
+  callback.searchParams.append('slt', 'duplicate');
+  assert.ok(carbonCallback(callback.toString(), pending, 1001)?.error);
+  callback.searchParams.set('slt', '');
+  assert.ok(carbonCallback(callback.toString(), pending, 1001)?.error);
+  callback.searchParams.set('error', 'rejected'); callback.searchParams.set('error_description', 'untrusted-content');
+  const denied = carbonCallback(callback.toString(), pending, 1001)!;
+  assert.ok(denied.error); assert.equal(denied.error.includes('untrusted-content'), false); assert.equal(denied.cleanUrl, completed.cleanUrl);
+  for (const insecure of ['http://ring.example/', 'https://user:password@ring.example/', 'javascript:alert(1)']) {
+    assert.throws(() => carbonLogin(insecure, 'ring', pending.return_url, connection), /HTTPS/);
+    assert.throws(() => carbonLogin(login.toString(), 'ring', insecure, connection), /HTTPS/);
+  }
+  assert.doesNotThrow(() => carbonLogin('http://localhost:3000/login', 'ring', 'http://localhost:1420/', connection));
+});
+
+test('uncertain Carbon exchanges recover the exact request and connection only during the two-minute tab window', () => {
+  const pending: CarbonExchange = { token: 'one-use-token', id: 'original-request', expected_actor_type: 'carbon', expires_at: 121000, connection: { url: 'wss://example.com/ws', realm: 'production', org_id: 'team' } };
+  const restored = restoreCarbonExchange(JSON.parse(JSON.stringify(pending)), 1000)!;
+  assert.deepEqual(restored, pending); assert.equal(restored.id, 'original-request');
+  for (const invalid of [null, { ...pending, id: '' }, { ...pending, token: '' }, { ...pending, expected_actor_type: 'silicon' }, { ...pending, expires_at: 1000 }, { ...pending, expires_at: 121001 }, { ...pending, connection: { ...pending.connection, url: 'ws://remote.example/ws' } }, { ...pending, connection: { ...pending.connection, realm: 'invalid' } }]) {
+    assert.equal(restoreCarbonExchange(invalid as CarbonExchange | null, 1000), null);
+  }
+  assert.equal(restoreCarbonExchange(pending, pending.expires_at), null);
+});
+
 test('environment UUIDs are canonical and cached sessions stay bound to their connection', () => {
   const realm = 'be0137a4-7901-4199-ae21-5a6ccf497a15';
   const settings = { url: 'wss://example.com/ws', realm, org_id: 'team' };
@@ -45,7 +109,7 @@ test('WebSocket authentication waits for the selected environment and rejects cr
   const settings = { url: 'wss://example.com/ws', realm, org_id: 'team', test_app_secret: 'test-secret' };
   const session: Session = { actor: 'c:a', org_id: 'team', device_id: 'device', session_token: 'token', realm, url: settings.url };
   const original = globalThis.WebSocket;
-  let hello: any = {}, resumed: any = session, requests: any[] = [], opened = 0;
+  let hello: any = {}, resumed: any = session, requests: any[] = [], opened = 0, resumeError: RingError | undefined;
   class FakeWebSocket {
     static OPEN = 1;
     readyState = 1;
@@ -55,7 +119,8 @@ test('WebSocket authentication waits for the selected environment and rejects cr
     constructor() { opened++; queueMicrotask(() => this.onopen?.()); }
     send(value: string) {
       const request = JSON.parse(value); requests.push(request);
-      queueMicrotask(() => this.onmessage?.({ data: JSON.stringify({ id: request.id, ok: true, result: request.method === 'protocol.hello' ? hello : request.method === 'auth.resume' ? resumed : {} }) }));
+      const response = request.method === 'auth.resume' && resumeError ? { id: request.id, ok: false, error: resumeError } : { id: request.id, ok: true, result: request.method === 'protocol.hello' ? hello : request.method === 'auth.resume' ? resumed : {} };
+      queueMicrotask(() => this.onmessage?.({ data: JSON.stringify(response) }));
     }
     close() { this.readyState = 3; this.onclose?.(); }
   }
@@ -110,6 +175,20 @@ test('WebSocket authentication waits for the selected environment and rejects cr
       api.disconnect();
       hello = { realm: settings.realm };
       await assert.rejects(new RingSocket().connect({ ...settings, realm }), /confirm the selected environment/);
+    }
+    hello = { realm }; resumed = { ...session, expires_at: '2030-01-01T00:00:00Z' };
+    const renewed = new RingSocket(); renewed.session = session;
+    let saved: Session | undefined;
+    renewed.onSession = value => { saved = value; };
+    await renewed.connect(settings); assert.equal(saved?.expires_at, resumed.expires_at); renewed.disconnect();
+    for (const [code, retryable, terminal] of [['IAM_UNAVAILABLE', true, false], ['AUTH_UNAVAILABLE', true, false], ['IAM_AUTH_FAILED', true, false], ['AUTH_REQUIRED', false, true], ['IAM_AUTH_FAILED', false, true], ['IAM_LOGIN_REQUIRED', false, true]] as const) {
+      resumeError = { code, retryable, message: 'Resume failed' };
+      const api = new RingSocket(); api.session = session;
+      let expired = 0; api.onExpired = () => { expired++; };
+      await assert.rejects(api.connect(settings), (error: any) => error.code === code && error.retryable === retryable);
+      assert.equal(expired, terminal ? 1 : 0);
+      assert.equal(api.session, terminal ? undefined : session);
+      api.disconnect();
     }
   } finally { globalThis.WebSocket = original; }
 });

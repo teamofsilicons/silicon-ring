@@ -2,6 +2,49 @@ use super::*;
 use tempfile::TempDir;
 
 #[test]
+fn session_expiry_does_not_interrupt_its_joined_call_or_bypass_device_revocation() {
+    let mut f = Fixture::new();
+    let mut identity = f.alice.identity.clone();
+    identity.actor = "c:alice".into();
+    let login = f.engine.login(identity, None).unwrap();
+    f.alice = f
+        .engine
+        .session(login["session_token"].as_str().unwrap())
+        .unwrap();
+    let ring = dial(&mut f.engine, &f.alice, "si:bob");
+    op(
+        &mut f.engine,
+        &f.bob,
+        "calls.accept",
+        json!({"ringid":ring}),
+    );
+    let mut expired = f.alice.clone();
+    expired.expires_at = after(-1);
+    assert!(f.engine.session_valid(&expired));
+    let mut other_device = expired.clone();
+    other_device.device_id = f.carol.device_id.clone();
+    assert!(!f.engine.session_valid(&other_device));
+    let mut other_org = expired.clone();
+    other_org.identity.org_id = "other".into();
+    assert!(!f.engine.session_valid(&other_org));
+    f.engine
+        .state
+        .devices
+        .get_mut(&expired.device_id)
+        .unwrap()
+        .revoked = true;
+    assert!(!f.engine.session_valid(&expired));
+    f.engine
+        .state
+        .devices
+        .get_mut(&expired.device_id)
+        .unwrap()
+        .revoked = false;
+    op(&mut f.engine, &f.alice, "calls.cut", json!({"ringid":ring}));
+    assert!(!f.engine.session_valid(&expired));
+}
+
+#[test]
 fn logout_clears_push_registration_and_pending_delivery() {
     let mut f = Fixture::new();
     op(

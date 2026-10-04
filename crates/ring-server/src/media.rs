@@ -464,17 +464,12 @@ impl Media {
     pub fn tick(&mut self, e: &mut Engine) -> bool {
         self.ticks += 1;
         self.prune_voicemail_streams(e);
-        let timestamp = now();
         for s in self.streams.values_mut().filter(|s| !s.rep && s.connected) {
             let valid = e
                 .state
                 .sessions
                 .get(&s.token_hash)
-                .is_some_and(|v| v.expires_at > timestamp)
-                && e.state
-                    .devices
-                    .get(&s.device_id)
-                    .is_some_and(|d| !d.revoked);
+                .is_some_and(|v| e.session_valid(v));
             if !valid {
                 s.connected = false;
                 s.disconnected_at = Some(Instant::now());

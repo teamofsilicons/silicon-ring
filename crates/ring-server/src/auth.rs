@@ -3,6 +3,14 @@ use serde_json::{json, Value};
 
 // ponytail: serialize Ting credential updates globally; use per-owner locks if throughput requires it.
 static TING_CREDENTIALS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+// ponytail: serialize IAM rotations/login globally; use per-owner locks if throughput requires it.
+pub static IAM_CREDENTIALS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub struct VerifiedCredential {
+    token: String,
+    expires_at: i64,
+    checked_at: std::time::Instant,
+}
 
 impl App {
     pub fn iam(&self, realm: &str) -> Result<ring_providers::Iam> {
@@ -62,6 +70,7 @@ pub fn storage_error(_: std::io::Error) -> Fault {
 pub fn credential_key(i: &Identity) -> String {
     format!("iam:{}", key(&i.realm, &i.org_id, &i.actor))
 }
+/// Caller holds IAM_CREDENTIALS across login/refresh and durable replacement.
 pub fn save(app: &App, s: &ring_providers::IamSession) -> Result<()> {
     let realm = if let Some(context) = &app.testing {
         if s.identity.realm != context.environment_id {
@@ -77,11 +86,37 @@ pub fn save(app: &App, s: &ring_providers::IamSession) -> Result<()> {
         "iam:{}",
         key(realm, &s.identity.org_id, &s.identity.actor_id)
     );
-    app.vault.set(&key,&json!({"access_token":s.access_token,"refresh_token":s.refresh_token,"expires_at":s.identity.expires_at,"refresh_request_id":id("refresh")})).map_err(storage_error)
+    app.vault.set(&key,&json!({"access_token":s.access_token,"refresh_token":s.refresh_token,"expires_at":s.identity.expires_at,"refresh_request_id":id("refresh")})).map_err(storage_error)?;
+    remember_verified(app, realm, &s.identity, &s.access_token)
 }
-/// Introspection on every control operation closes membership and permission changes promptly.
-/// Microphone frames use the session expiry and periodic revalidation, not 50 IAM calls per second.
+/// A short positive cache keeps controls local; background and signed webhook checks bypass it.
 pub async fn verify(app: &App, i: &Identity) -> Result<String> {
+    if i.realm == "test" && !app.test_tokens.is_empty() {
+        return Ok(String::new());
+    }
+    if let Some(token) = cached_token(app, i) {
+        return Ok(token);
+    }
+    let _credentials = IAM_CREDENTIALS.lock().await;
+    // Another request may have refreshed the rotating token while this request waited.
+    if let Some(token) = cached_token(app, i) {
+        return Ok(token);
+    }
+    verify_online(app, i).await
+}
+fn cached_token(app: &App, i: &Identity) -> Option<String> {
+    app.engine
+        .lock()
+        .unwrap()
+        .iam_verified
+        .get(&credential_key(i))
+        .filter(|saved| {
+            saved.checked_at.elapsed() < std::time::Duration::from_secs(30)
+                && saved.expires_at > chrono::Utc::now().timestamp() + 30
+        })
+        .map(|saved| saved.token.clone())
+}
+async fn verify_online(app: &App, i: &Identity) -> Result<String> {
     if i.realm == "test" && !app.test_tokens.is_empty() {
         return Ok(String::new());
     }
@@ -94,36 +129,107 @@ pub async fn verify(app: &App, i: &Identity) -> Result<String> {
         )
     })?;
     let iam = app.iam(&i.realm)?;
-    let token = if saved["expires_at"].as_i64().unwrap_or(0) <= chrono::Utc::now().timestamp() + 30
-    {
-        let refresh = required(&saved, "refresh_token")?;
-        let refreshed = iam
-            .refresh(refresh, &i.org_id, required(&saved, "refresh_request_id")?)
-            .await
-            .map_err(provider_error)?;
-        if refreshed.identity.actor_id != i.actor {
-            return Err(forbidden());
+    if saved["expires_at"].as_i64().unwrap_or(0) <= chrono::Utc::now().timestamp() + 30 {
+        return refresh(app, i, &iam, &saved).await;
+    }
+    let token = required(&saved, "access_token")?.to_string();
+    let verified = match iam.verify(&token, &i.org_id).await {
+        Ok(verified) => verified,
+        // IAM reports expired and revoked access tokens identically. Let the refresh
+        // grant establish authority before treating an inactive access token as logout.
+        Err(error) if error.code == "IAM_AUTH_FAILED" => {
+            return refresh(app, i, &iam, &saved).await
         }
-        save(app, &refreshed)?;
-        refreshed.access_token
-    } else {
-        required(&saved, "access_token")?.to_string()
+        Err(error) => return Err(provider_error(error)),
     };
-    let verified = iam
-        .verify(&token, &i.org_id)
-        .await
-        .map_err(provider_error)?;
     if verified.actor_id != i.actor || verified.org_id != i.org_id {
         return Err(forbidden());
     }
+    remember_verified(app, &i.realm, &verified, &token)?;
+    Ok(token)
+}
+async fn refresh(
+    app: &App,
+    i: &Identity,
+    iam: &ring_providers::Iam,
+    saved: &Value,
+) -> Result<String> {
+    let refreshed = iam
+        .refresh(
+            required(saved, "refresh_token")?,
+            &i.org_id,
+            required(saved, "refresh_request_id")?,
+        )
+        .await
+        .map_err(provider_error)?;
+    if refreshed.identity.actor_id != i.actor || refreshed.identity.org_id != i.org_id {
+        return Err(forbidden());
+    }
+    save(app, &refreshed)?;
+    // Iam::refresh already verified this access token, membership and display name.
+    Ok(refreshed.access_token)
+}
+fn remember_verified(
+    app: &App,
+    realm: &str,
+    verified: &ring_providers::iam::Identity,
+    token: &str,
+) -> Result<()> {
     let mut e = app.engine.lock().unwrap();
-    for s in e.state.sessions.values_mut().filter(|s| {
-        s.identity.actor == i.actor && s.identity.org_id == i.org_id && s.identity.realm == i.realm
-    }) {
+    let owner = key(realm, &verified.org_id, &verified.actor_id);
+    let renew_before = after(7 * 24 * 3600);
+    let sessions: Vec<_> = e
+        .state
+        .sessions
+        .iter()
+        .filter(|(_, s)| {
+            key(&s.identity.realm, &s.identity.org_id, &s.identity.actor) == owner
+                && e.session_valid(s)
+        })
+        .map(|(key, s)| (key.clone(), s.clone()))
+        .collect();
+    let mut renewed = false;
+    for (key, _) in &sessions {
+        let s = e.state.sessions.get_mut(key).unwrap();
         s.identity.admin = verified.admin;
         s.identity.display_name = verified.display_name.clone();
+        if s.expires_at < renew_before {
+            s.expires_at = after(30 * 24 * 3600);
+            renewed = true;
+        }
     }
-    Ok(token)
+    if renewed {
+        if let Err(error) = e.persist() {
+            e.state.sessions.extend(sessions);
+            return Err(error);
+        }
+    }
+    e.iam_verified.insert(
+        format!("iam:{owner}"),
+        VerifiedCredential {
+            token: token.into(),
+            expires_at: verified.expires_at,
+            checked_at: std::time::Instant::now(),
+        },
+    );
+    Ok(())
+}
+
+/// A timeout, unavailable provider or disk/configuration error is not a revocation.
+/// Hold the same lock through rejection so an older check cannot revoke a fresh login.
+pub async fn revalidate(app: &App, i: &Identity, reason: &str) -> Result<()> {
+    let _credentials = IAM_CREDENTIALS.lock().await;
+    if let Err(error) = verify_online(app, i).await {
+        app.engine
+            .lock()
+            .unwrap()
+            .iam_verified
+            .remove(&credential_key(i));
+        if !error.retryable && matches!(error.code.as_str(), "IAM_AUTH_FAILED" | "FORBIDDEN") {
+            revoke_identity(app, i, reason)?;
+        }
+    }
+    Ok(())
 }
 /// Resolve a global actor through their own current IAM grant in this realm.
 pub async fn verify_recipient(app: &App, caller: &Identity, actor: &str) -> Result<Identity> {
@@ -512,6 +618,7 @@ async fn ting_endpoint_client(
 
 pub fn revoke_identity(app: &App, i: &Identity, reason: &str) -> Result<()> {
     let mut e = app.engine.lock().unwrap();
+    e.iam_verified.remove(&credential_key(i));
     let rings: Vec<_> = e
         .state
         .calls
@@ -563,9 +670,7 @@ pub fn start_revalidation(app: App) {
             }
             let identities = monitored_identities(&app);
             for i in identities {
-                if verify(&app, &i).await.is_err() {
-                    let _ = revoke_identity(&app, &i, "iam_authority_lost");
-                }
+                let _ = revalidate(&app, &i, "iam_authority_lost").await;
             }
         }
     });
@@ -637,6 +742,321 @@ mod tests {
             )
             .unwrap();
         e.session(value["session_token"].as_str().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn iam_login_refresh_cache_and_revalidation_preserve_connected_calls() {
+        const CHILD: &str = "RING_IAM_SESSION_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "auth::tests::iam_login_refresh_cache_and_revalidation_preserve_connected_calls", "--nocapture"])
+                .env(CHILD, "1").env("RING_ENV", "development")
+                .env_remove("RING_ENCRYPTION_KEY").output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use axum::{
+            extract::State,
+            http::{HeaderMap, StatusCode},
+            routing::{get, post},
+            Form, Json, Router,
+        };
+        #[derive(Default)]
+        struct Mock {
+            mode: u8,
+            introspections: usize,
+            rotations: usize,
+            refreshes: Vec<(String, String)>,
+            issued: BTreeMap<String, usize>,
+        }
+        async fn tokens(
+            State(mock): State<Arc<Mutex<Mock>>>,
+            headers: HeaderMap,
+            Form(form): Form<BTreeMap<String, String>>,
+        ) -> (StatusCode, Json<Value>) {
+            let mut mock = mock.lock().unwrap();
+            let mut generation = mock.rotations;
+            if let Some(refresh) = form.get("refresh_token") {
+                let request_id = headers["idempotency-key"].to_str().unwrap().to_string();
+                mock.refreshes.push((refresh.clone(), request_id.clone()));
+                if mock.mode == 1 {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({"error":{"code":"unavailable","message":"Retry later"}})),
+                    );
+                }
+                if let Some(issued) = mock.issued.get(&request_id) {
+                    generation = *issued;
+                } else {
+                    assert_eq!(refresh, &format!("refresh-{}", mock.rotations));
+                    mock.rotations += 1;
+                    generation = mock.rotations;
+                    mock.issued.insert(request_id, generation);
+                }
+            } else {
+                assert_eq!(form.get("slt").map(String::as_str), Some("one-use-slt"));
+            }
+            (
+                StatusCode::OK,
+                Json(
+                    json!({"access_token":format!("access-{generation}"),"refresh_token":format!("refresh-{generation}"),"token_type":"Bearer","expires_in":3600,"scope":"","org_id":"org"}),
+                ),
+            )
+        }
+        async fn introspect(
+            State(mock): State<Arc<Mutex<Mock>>>,
+            Form(form): Form<BTreeMap<String, String>>,
+        ) -> (StatusCode, Json<Value>) {
+            let mut mock = mock.lock().unwrap();
+            mock.introspections += 1;
+            if mock.mode == 3 {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(
+                        json!({"error":{"code":"unavailable","message":"Response lost after rotation"}}),
+                    ),
+                );
+            }
+            if mock.mode == 2 || mock.mode == 4 && form["token"] == "access-1" {
+                return (StatusCode::OK, Json(json!({"active":false})));
+            }
+            (
+                StatusCode::OK,
+                Json(
+                    json!({"active":true,"public_id":"c:alice","actor_type":"carbon","client_id":"ring","expires_at":chrono::Utc::now().timestamp()+3600,"authorization":{"public_id":"c:alice","actor_type":"carbon","organization_id":"00000000-0000-4000-8000-000000000001","org_id":"org","membership_id":"c:alice[org]","membership_version":1,"authorization_epoch":1,"audience":"ring","testing_environment_id":null,"scopes":[],"org_role":"owner"}}),
+                ),
+            )
+        }
+        let mock = Arc::new(Mutex::new(Mock::default()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        std::env::set_var(
+            "RING_IAM_URL",
+            format!("http://{}", listener.local_addr().unwrap()),
+        );
+        std::env::set_var("RING_IAM_APP_SECRET", "test-ring-secret");
+        let router = Router::new()
+            .route("/api/v1/app-auth/tokens", post(tokens))
+            .route("/api/v1/oauth/introspect", post(introspect))
+            .route(
+                "/api/v1/me",
+                get(|| async { Json(json!({"display_name":"Alice"})) }),
+            )
+            .with_state(mock.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let service = app(dir.path());
+        let mut peer = crate::Peer {
+            hello: true,
+            realm: "production".into(),
+            org: String::new(),
+            token: None,
+            subscriptions: BTreeMap::new(),
+        };
+        let (out, _audio_rx) = tokio::sync::mpsc::channel(8);
+        assert_eq!(
+            crate::handle(
+                &service,
+                &mut peer,
+                "login-retry",
+                "auth.login",
+                json!({"token":"one-use-slt","expected_actor_type":"silicon"}),
+                out.clone()
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "FORBIDDEN"
+        );
+        assert!(service.engine.lock().unwrap().state.sessions.is_empty());
+        assert!(service
+            .vault
+            .get("iam:production|org|c:alice")
+            .unwrap()
+            .is_none());
+        let response = crate::handle(
+            &service,
+            &mut peer,
+            "login-retry",
+            "auth.login",
+            json!({"token":"one-use-slt","expected_actor_type":"carbon"}),
+            out.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(peer.org, "org");
+        let token = response["session_token"].as_str().unwrap();
+        let alice = service.engine.lock().unwrap().session(token).unwrap();
+        let owner = credential_key(&alice.identity);
+        assert_eq!(
+            service.vault.get(&owner).unwrap().unwrap()["refresh_token"],
+            "refresh-0"
+        );
+        for _ in 0..3 {
+            assert_eq!(verify(&service, &alice.identity).await.unwrap(), "access-0");
+        }
+        assert_eq!(mock.lock().unwrap().introspections, 2);
+        let bob = login(&service, "si:bob");
+        let ring = {
+            let mut e = service.engine.lock().unwrap();
+            let ring = e
+                .dispatch(&alice, "calls.init", &json!({"target":"si:bob"}))
+                .unwrap()["ringid"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            e.dispatch(&bob, "calls.accept", &json!({"ringid":ring}))
+                .unwrap();
+            e.state.sessions.get_mut(&digest(token)).unwrap().expires_at = after(60);
+            ring
+        };
+        let stream = {
+            let mut e = service.engine.lock().unwrap();
+            service
+                .media
+                .lock()
+                .unwrap()
+                .attach(
+                    &mut e,
+                    &alice,
+                    token,
+                    &json!({"ringid":ring,"device_id":alice.device_id}),
+                    out.clone(),
+                )
+                .unwrap()["stream_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        revalidate(&service, &alice.identity, "test-check")
+            .await
+            .unwrap();
+        assert!(
+            service
+                .engine
+                .lock()
+                .unwrap()
+                .session(token)
+                .unwrap()
+                .expires_at
+                > after(29 * 24 * 3600)
+        );
+        assert!(
+            Engine::open(dir.path())
+                .unwrap()
+                .session(token)
+                .unwrap()
+                .expires_at
+                > after(29 * 24 * 3600)
+        );
+
+        // Access and local session expiry during a call must not reuse the SLT or cut audio.
+        let mut saved = service.vault.get(&owner).unwrap().unwrap();
+        saved["expires_at"] = json!(0);
+        service.vault.set(&owner, &saved).unwrap();
+        service
+            .engine
+            .lock()
+            .unwrap()
+            .state
+            .sessions
+            .get_mut(&digest(token))
+            .unwrap()
+            .expires_at = after(-1);
+        mock.lock().unwrap().mode = 1;
+        revalidate(&service, &alice.identity, "transient-failure")
+            .await
+            .unwrap();
+        assert!(service.engine.lock().unwrap().session(token).is_ok());
+        assert!(service.engine.lock().unwrap().state.calls[&ring].active("c:alice"));
+        {
+            let mut e = service.engine.lock().unwrap();
+            service.media.lock().unwrap().tick(&mut e);
+        }
+        assert!(service.media.lock().unwrap().streams[&stream].connected);
+        use base64::Engine as _;
+        assert!(crate::frame(&service, &peer, &json!({"type":"media.audio","data":{"stream_id":stream,"seq":0,"offset_ms":0,"audio_base64":base64::engine::general_purpose::STANDARD.encode(vec![0;960])}})).is_none());
+        assert!(
+            verify(&service, &alice.identity)
+                .await
+                .unwrap_err()
+                .retryable
+        );
+        mock.lock().unwrap().mode = 0;
+        let (a, b, c) = tokio::join!(
+            verify(&service, &alice.identity),
+            verify(&service, &alice.identity),
+            verify(&service, &alice.identity)
+        );
+        assert_eq!(a.unwrap(), "access-1");
+        assert_eq!(b.unwrap(), "access-1");
+        assert_eq!(c.unwrap(), "access-1");
+        let refreshed = service.vault.get(&owner).unwrap().unwrap();
+        assert_eq!(refreshed["refresh_token"], "refresh-1");
+        assert_ne!(refreshed["refresh_request_id"], saved["refresh_request_id"]);
+        {
+            let mock = mock.lock().unwrap();
+            assert_eq!(mock.rotations, 1);
+            assert!(mock
+                .refreshes
+                .iter()
+                .all(|attempt| attempt == &mock.refreshes[0]));
+            // Both login attempts, explicit renewal, and successful refresh introspect once.
+            assert_eq!(mock.introspections, 4);
+        }
+        let restarted = app(dir.path());
+        assert_eq!(
+            verify(&restarted, &alice.identity).await.unwrap(),
+            "access-1"
+        );
+
+        // A token expiring sooner than its retained timestamp is recovered by one refresh.
+        mock.lock().unwrap().mode = 4;
+        revalidate(&service, &alice.identity, "early-access-expiry")
+            .await
+            .unwrap();
+        assert_eq!(
+            service.vault.get(&owner).unwrap().unwrap()["access_token"],
+            "access-2"
+        );
+        assert!(service.engine.lock().unwrap().session(token).is_ok());
+
+        // IAM rotates successfully but its subsequent verification response is lost.
+        let mut pending = service.vault.get(&owner).unwrap().unwrap();
+        pending["expires_at"] = json!(0);
+        service.vault.set(&owner, &pending).unwrap();
+        service.engine.lock().unwrap().iam_verified.clear();
+        mock.lock().unwrap().mode = 3;
+        assert!(
+            verify(&service, &alice.identity)
+                .await
+                .unwrap_err()
+                .retryable
+        );
+        assert_eq!(
+            service.vault.get(&owner).unwrap().unwrap()["refresh_token"],
+            "refresh-2"
+        );
+        mock.lock().unwrap().mode = 0;
+        assert_eq!(verify(&service, &alice.identity).await.unwrap(), "access-3");
+        assert_eq!(mock.lock().unwrap().rotations, 3);
+        assert_eq!(
+            service.vault.get(&owner).unwrap().unwrap()["refresh_token"],
+            "refresh-3"
+        );
+
+        // A confirmed revocation bypasses the warm cache and removes the active participant.
+        mock.lock().unwrap().mode = 2;
+        revalidate(&service, &alice.identity, "membership-revoked")
+            .await
+            .unwrap();
+        assert!(service.engine.lock().unwrap().session(token).is_err());
+        assert!(!service.engine.lock().unwrap().state.calls[&ring].active("c:alice"));
+        server.abort();
     }
 
     #[test]
@@ -1033,7 +1453,7 @@ mod tests {
                 .await
                 .unwrap_err()
                 .code,
-            "IAM_AUTH_FAILED"
+            "IAM_REQUEST_REJECTED"
         );
         // Reimporting only Ting need not notify Ring; IAM's current authority restores consent.
         ting_active.store(true, std::sync::atomic::Ordering::Release);

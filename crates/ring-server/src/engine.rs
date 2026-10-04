@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 pub struct Engine {
     pub state: State,
+    pub iam_verified: std::collections::BTreeMap<String, crate::auth::VerifiedCredential>,
     db: Connection,
     pub data_dir: PathBuf,
 }
@@ -31,6 +32,7 @@ impl Engine {
         }
         Ok(Self {
             state,
+            iam_verified: Default::default(),
             db,
             data_dir: dir.into(),
         })
@@ -74,8 +76,8 @@ impl Engine {
         let s = Session {
             identity: identity.clone(),
             device_id: device_id.clone(),
-            // Native incoming-call listeners must survive an idle night; IAM authority is
-            // still checked online on every control operation and every 30 seconds.
+            // IAM access/refresh tokens stay server-side. Verified authority renews this
+            // long-lived device session before its lease expires.
             expires_at: after(30 * 24 * 3600),
         };
         self.state.profiles.entry(owner).or_insert_with(|| Profile {
@@ -94,14 +96,7 @@ impl Engine {
         self.state
             .sessions
             .get(&digest(token))
-            .filter(|s| {
-                s.expires_at > now()
-                    && self
-                        .state
-                        .devices
-                        .get(&s.device_id)
-                        .is_some_and(|d| !d.revoked)
-            })
+            .filter(|s| self.session_valid(s))
             .cloned()
             .ok_or_else(|| {
                 Fault::new(
@@ -110,6 +105,21 @@ impl Engine {
                     "Run ring login with a new short-lived IAM token.",
                 )
             })
+    }
+    pub fn session_valid(&self, s: &Session) -> bool {
+        self.state.devices.get(&s.device_id).is_some_and(|d| {
+            !d.revoked && d.owner == key(&s.identity.realm, &s.identity.org_id, &s.identity.actor)
+        }) && (s.expires_at > now()
+            || self.state.calls.values().any(|c| {
+                c.state == "active"
+                    && c.realm == s.identity.realm
+                    && c.identity(&s.identity.actor).org_id == s.identity.org_id
+                    && c.participants.iter().any(|p| {
+                        p.actor == s.identity.actor
+                            && p.left_at.is_none()
+                            && p.device_id.as_deref() == Some(s.device_id.as_str())
+                    })
+            }))
     }
     pub fn request(&mut self, s: &Session, request_id: &str, method: &str, p: Value) -> Value {
         let fingerprint = digest(&format!("{method}:{p}"));

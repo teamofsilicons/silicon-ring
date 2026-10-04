@@ -8,3 +8,5 @@
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 @media(max-width:760px){input,textarea,select,.login-card input,.login-card select,.search-box input{font-size:16px}}
 .modal .modal-error{padding:11px;background:#f8eae5;color:#9d5b49;border-radius:8px;font-size:11px;line-height:1.7;margin-top:20px}
+
+.carbon-login{margin-top:24px}.sign-in-divider{display:block;text-align:center;font-size:9px;color:#8d9a81;margin:18px 0 -9px}.carbon-login+ .sign-in-divider+form{margin-top:24px}

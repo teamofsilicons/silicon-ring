@@ -1,6 +1,6 @@
 [package]
 name = "ring-client"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "Reusable authenticated Silicon Ring WebSocket client"
 license = "MIT"

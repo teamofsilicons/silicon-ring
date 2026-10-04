@@ -15,6 +15,8 @@ pub struct Error {
     pub code: String,
     pub message: String,
     pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 impl Error {
     pub fn new(code: &str, message: &str, retryable: bool) -> Self {
@@ -22,6 +24,7 @@ impl Error {
             code: code.into(),
             message: message.into(),
             retryable,
+            details: None,
         }
     }
     pub(crate) fn network(provider: &str) -> Self {

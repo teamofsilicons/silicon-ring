@@ -29,8 +29,12 @@ pub struct Iam {
 }
 fn unavailable(error: silicon_iam_client::Error) -> Error {
     match error {
+        silicon_iam_client::Error::Api(api) if api.code == "idempotency_in_progress" => Error::new(
+            "IAM_UNAVAILABLE", "IAM is still processing this operation. Retry with the original request ID.", true),
+        silicon_iam_client::Error::Api(api) if api.code == "invalid_grant" => Error::new(
+            "IAM_AUTH_FAILED", "IAM rejected the login or refresh grant. Sign in again through IAM.", false),
         silicon_iam_client::Error::Api(api) if api.status < 500 && api.status != 429 => Error::new(
-            "IAM_AUTH_FAILED", &format!("IAM rejected the operation ({}). Check the app's verified status, token, selected organization and consent.", api.code), false),
+            "IAM_REQUEST_REJECTED", &format!("IAM rejected the operation ({}). Check the application's credentials, scopes and request configuration.", api.code), false),
         silicon_iam_client::Error::Invalid(_) => Error::new("INVALID_IAM_CONFIGURATION", "IAM configuration or request binding is invalid.", false),
         _ => Error::new("IAM_UNAVAILABLE", "IAM did not confirm current identity and authority. Retry with the original operation ID after checking service availability.", true),
     }
@@ -173,7 +177,7 @@ impl Iam {
                     token: access_token.into(),
                     token_type_hint: None,
                 },
-                Some(org),
+                (!org.is_empty()).then_some(org),
             )
             .await
             .map_err(unavailable)?;
@@ -294,18 +298,34 @@ fn validate_identity(v: &Value, app: &str, org: &str, realm: Option<&str>) -> Re
         .as_object()
         .map(|_| vec![&v["authorization"]])
         .unwrap_or_default();
-    let grant = candidates
+    let grants: Vec<_> = candidates
         .into_iter()
         .chain(v["authorizations"].as_array().into_iter().flatten())
-        .find(|a| {
-            a["org_id"] == org
+        .filter(|a| {
+            (org.is_empty() || a["org_id"] == org)
+                && a["org_id"]
+                    .as_str()
+                    .is_some_and(|o| !o.is_empty() && !o.contains('|'))
                 && a["public_id"] == actor
                 && a["audience"] == app
                 && a["actor_type"] == kind
                 && a["testing_environment_id"].as_str() == realm
                 && a["membership_id"].as_str().is_some_and(|m| !m.is_empty())
         })
-        .ok_or_else(forbidden)?;
+        .collect();
+    let organizations: std::collections::BTreeSet<_> =
+        grants.iter().filter_map(|a| a["org_id"].as_str()).collect();
+    if org.is_empty() && organizations.len() > 1 {
+        let mut error = Error::new(
+            "IAM_ORG_REQUIRED",
+            "Choose an IAM organization to continue signing in to Ring.",
+            false,
+        );
+        error.details = Some(json!({"organizations": organizations}));
+        return Err(error);
+    }
+    let grant = grants.first().ok_or_else(forbidden)?;
+    let org = grant["org_id"].as_str().ok_or_else(forbidden)?;
     Ok(Identity {
         actor_id: actor.into(),
         org_id: org.into(),
@@ -479,9 +499,37 @@ impl Ting {
 mod tests {
     use super::*;
     #[test]
+    fn only_rejected_grants_are_auth_failures() {
+        for (status, code, expected, retryable) in [
+            (400, "invalid_grant", "IAM_AUTH_FAILED", false),
+            (401, "invalid_client", "IAM_REQUEST_REJECTED", false),
+            (403, "forbidden", "IAM_REQUEST_REJECTED", false),
+            (404, "not_found", "IAM_REQUEST_REJECTED", false),
+            (409, "idempotency_in_progress", "IAM_UNAVAILABLE", true),
+            (500, "internal", "IAM_UNAVAILABLE", true),
+            (429, "rate_limited", "IAM_UNAVAILABLE", true),
+        ] {
+            let error = unavailable(silicon_iam_client::Error::Api(Box::new(
+                silicon_iam_client::ApiError {
+                    status,
+                    code: code.into(),
+                    message: "not forwarded".into(),
+                    details: None,
+                    request_id: None,
+                },
+            )));
+            assert_eq!(error.code, expected);
+            assert_eq!(error.retryable, retryable);
+        }
+    }
+    #[test]
     fn identity_checks_actor_audience_membership_realm_and_expiry() {
         let mut v = json!({"active":true,"public_id":"si:alice","actor_type":"silicon","client_id":"ring","expires_at":i64::MAX,"authorization":{"public_id":"si:alice","actor_type":"silicon","audience":"ring","org_id":"tos","membership_id":"si:alice[tos]","testing_environment_id":null,"org_role":"owner"}});
         assert!(validate_identity(&v, "ring", "tos", None).unwrap().admin);
+        assert_eq!(
+            validate_identity(&v, "ring", "", None).unwrap().org_id,
+            "tos"
+        );
         assert!(validate_identity(&v, "other", "tos", None).is_err());
         assert!(validate_identity(&v, "ring", "other", None).is_err());
         assert!(validate_identity(&v, "ring", "tos", Some("test")).is_err());
@@ -490,6 +538,33 @@ mod tests {
         v["expires_at"] = json!(i64::MAX);
         v["active"] = json!(false);
         assert!(validate_identity(&v, "ring", "tos", None).is_err());
+    }
+    #[test]
+    fn organization_inference_requires_one_matching_iam_membership() {
+        let grant = json!({"public_id":"c:alice","actor_type":"carbon","audience":"ring","org_id":"first","membership_id":"c:alice[first]","testing_environment_id":null,"org_role":"member"});
+        let mut other = grant.clone();
+        other["org_id"] = json!("second");
+        other["membership_id"] = json!("c:alice[second]");
+        let mut value = json!({"active":true,"public_id":"c:alice","actor_type":"carbon","audience":"ring","expires_at":i64::MAX,"authorizations":[grant,other]});
+        let error = validate_identity(&value, "ring", "", None).unwrap_err();
+        assert_eq!(error.code, "IAM_ORG_REQUIRED");
+        assert_eq!(
+            error.details.unwrap()["organizations"],
+            json!(["first", "second"])
+        );
+        assert_eq!(
+            validate_identity(&value, "ring", "second", None)
+                .unwrap()
+                .org_id,
+            "second"
+        );
+        value["authorizations"][1]["audience"] = json!("other-app");
+        assert_eq!(
+            validate_identity(&value, "ring", "", None).unwrap().org_id,
+            "first"
+        );
+        value["authorizations"][0]["testing_environment_id"] = json!("wrong-realm");
+        assert!(validate_identity(&value, "ring", "", None).is_err());
     }
 }
 

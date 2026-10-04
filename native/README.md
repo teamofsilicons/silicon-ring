@@ -2,6 +2,8 @@
 
 The Tauri 2 shell packages the shared SolidJS frontend for macOS, Windows, Linux, iOS, and Android. Mobile audio and call delivery run in a Swift/Kotlin plugin independently of the webview. The backend WebSocket URL is selected on the sign-in screen; production builds should use `wss://backend.ring.teamofsilicons.com/ws`.
 
+Download [v0.1.4 desktop and Android installers](../docs/downloads.md), including checksums and build provenance.
+
 ## Desktop
 
 Install [Tauri's platform prerequisites](https://v2.tauri.app/start/prerequisites/) and a current stable Rust toolchain, then run from the repository root:

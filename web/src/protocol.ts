@@ -1,4 +1,4 @@
-export type RingError = { code: string; message: string; next_action?: string; retryable?: boolean };
+export type RingError = { code: string; message: string; next_action?: string; retryable?: boolean; details?: { organizations?: string[] } };
 export type RingEvent = { type: string; data: any; seq?: number; event_id?: string };
 export type Session = { actor: string; actor_id?: string; display_name?: string; org_id: string; device_id: string; session_token: string; expires_at?: string; realm?: string; url?: string };
 export type ConnectSettings = { url: string; realm: string; org_id?: string; test_app_secret?: string };
@@ -40,6 +40,63 @@ export function sessionToRestore(saved: Session | null, native: Session | null):
   return saved;
 }
 
+export function persistentStorage(persistent: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>, temporary: Pick<Storage, 'getItem' | 'removeItem'>) {
+  return {
+    read<T>(key: string, fallback: T): T {
+      try {
+        const value = persistent.getItem(key) || temporary.getItem(key);
+        if (!value) return fallback;
+        const parsed = JSON.parse(value);
+        try { persistent.setItem(key, value); temporary.removeItem(key); } catch {}
+        return parsed || fallback;
+      } catch { return fallback; }
+    },
+    write(key: string, value: unknown) { persistent.setItem(key, JSON.stringify(value)); temporary.removeItem(key); },
+    remove(key: string) { persistent.removeItem(key); temporary.removeItem(key); },
+  };
+}
+
+export type CarbonLogin = { state: string; return_url: string; expires_at: number; connection: ConnectSettings };
+export type CarbonExchange = { token: string; id: string; expected_actor_type: 'carbon'; expires_at: number; connection: ConnectSettings };
+export function restoreCarbonExchange(saved: CarbonExchange | null, now = Date.now()): CarbonExchange | null {
+  if (!saved || typeof saved.token !== 'string' || !saved.token.trim() || typeof saved.id !== 'string' || !saved.id || saved.expected_actor_type !== 'carbon' || typeof saved.expires_at !== 'number' || saved.expires_at <= now || saved.expires_at > now + 120000) return null;
+  try {
+    if (socketUrl(saved.connection.url) !== saved.connection.url || normalizeRealm(saved.connection.realm) !== saved.connection.realm) return null;
+    return saved;
+  } catch { return null; }
+}
+export function carbonLogin(iamLoginUrl: string, appId: string, returnUrl: string, connection: ConnectSettings, now = Date.now()) {
+  const login = new URL(iamLoginUrl), callback = new URL(returnUrl);
+  for (const url of [login, callback]) {
+    if (url.username || url.password || !(url.protocol === 'https:' || url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) throw new Error('Carbon sign-in requires HTTPS or a localhost web address.');
+  }
+  if (!/^[a-z][a-z0-9_-]{0,63}$/.test(appId)) throw new Error('Ring returned an invalid IAM application ID.');
+  callback.hash = '';
+  for (const key of ['slt', 'ring_auth_state', 'error', 'error_description']) callback.searchParams.delete(key);
+  const pending: CarbonLogin = { state: crypto.randomUUID(), return_url: callback.toString(), expires_at: now + 10 * 60 * 1000, connection: { ...connection, url: socketUrl(connection.url), realm: normalizeRealm(connection.realm) } };
+  // IAM preserves redirect_uri query parameters; it does not echo a top-level state parameter.
+  callback.searchParams.set('ring_auth_state', pending.state);
+  login.search = new URLSearchParams({ app_id: appId, identity_kind: 'carbon', redirect_uri: callback.toString() }).toString();
+  login.hash = '';
+  return { url: login.toString(), pending };
+}
+export function carbonCallback(currentUrl: string, pending: CarbonLogin | null, now = Date.now()) {
+  const url = new URL(currentUrl);
+  if (!url.searchParams.has('slt') && !url.searchParams.has('ring_auth_state')) return null;
+  const tokens = url.searchParams.getAll('slt'), states = url.searchParams.getAll('ring_auth_state');
+  const denied = url.searchParams.has('error');
+  for (const key of ['slt', 'ring_auth_state', 'error', 'error_description']) url.searchParams.delete(key);
+  const cleanUrl = url.toString();
+  const valid = pending && states.length === 1 && states[0] === pending.state && cleanUrl === pending.return_url && pending.expires_at > now && pending.expires_at <= now + 10 * 60 * 1000;
+  if (!valid) return { cleanUrl, error: 'This IAM sign-in expired or was not started in this tab. Continue as Carbon again.' };
+  if (denied || tokens.length !== 1 || !tokens[0].trim()) return { cleanUrl, error: 'IAM did not complete sign-in. Continue as Carbon again.' };
+  return { cleanUrl, token: tokens[0], connection: pending.connection };
+}
+export function isExpiredSession(error: unknown) {
+  const fault = error as RingError;
+  return fault?.retryable !== true && ['AUTH_REQUIRED', 'IAM_AUTH_FAILED', 'IAM_TOKEN_INVALID', 'IAM_LOGIN_REQUIRED', 'SESSION_CONTEXT_MISMATCH', 'SESSION_REALM_MISMATCH'].includes(fault?.code);
+}
+
 export class RingSocket {
   private socket?: WebSocket;
   private pending = new Map<string, { resolve: (result: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -52,6 +109,7 @@ export class RingSocket {
   session?: Session;
   onStatus: (state: 'offline' | 'connecting' | 'connected' | 'reconnecting') => void = () => {};
   onExpired: () => void = () => {};
+  onSession: (session: Session) => void = () => {};
   subscribe(listener: (event: RingEvent) => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   get ready() { return this.socket?.readyState === WebSocket.OPEN && this.helloReady; }
   async connect(settings: ConnectSettings) {
@@ -88,7 +146,7 @@ export class RingSocket {
         const request = this.pending.get(message.id)!;
         clearTimeout(request.timer); this.pending.delete(message.id);
         if (message.ok) request.resolve(message.result);
-        else { const e = message.error as RingError; request.reject(Object.assign(new Error(`${e.message}${e.next_action ? ` ${e.next_action}` : ''}`), { code: e.code })); }
+        else { const e = message.error as RingError; request.reject(Object.assign(new Error(`${e.message}${e.next_action ? ` ${e.next_action}` : ''}`), { code: e.code, retryable: e.retryable, details: e.details })); }
       } else if (message.type) for (const listener of this.listeners) listener(message);
     };
     ws.onclose = () => {
@@ -106,19 +164,20 @@ export class RingSocket {
       ws.onerror = () => { clearTimeout(timeout); reject(new Error('Could not reach Ring. Make sure the server is running and its address is correct.')); };
     });
     try {
-      const hello = await this.request('protocol.hello', { versions: [1], client: { name: 'ring-web', version: '0.1.3' }, realm: settings.realm, org_id: settings.org_id || undefined, capabilities: ['audio.pcm16', 'events', 'handoff'], ...(settings.realm !== 'production' ? { test_app_secret: settings.test_app_secret } : {}) });
+      const hello = await this.request('protocol.hello', { versions: [1], client: { name: 'ring-web', version: '0.1.4' }, realm: settings.realm, org_id: settings.org_id || '', capabilities: ['audio.pcm16', 'events', 'handoff'], ...(settings.realm !== 'production' ? { test_app_secret: settings.test_app_secret } : {}) });
       checkRealm(settings.realm, hello?.realm);
       this.helloReady = true;
       if (this.session) {
         const result = await this.request('auth.resume', { session_token: this.session.session_token, device_id: this.session.device_id });
         this.session = bindSession({ ...this.session, ...result, realm: result.realm }, settings);
+        this.onSession(this.session);
         await this.request('events.subscribe', {});
         for (const listener of this.listeners) listener({ type: 'connection.restored', data: {} });
       }
       this.onStatus('connected');
     } catch (error) {
       this.helloReady = false;
-      if ((error as any).code?.includes('AUTH') || (error as any).code?.includes('SESSION')) { this.session = undefined; this.onExpired(); }
+      if (isExpiredSession(error)) { this.session = undefined; this.onExpired(); }
       ws.close(); throw error;
     }
   }
