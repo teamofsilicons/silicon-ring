@@ -1,0 +1,137 @@
+{
+  "date": "2026-10-04",
+  "device": {
+    "model": "MacBookPro18,1",
+    "architecture": "arm64",
+    "macos_version": "27.0"
+  },
+  "release_version": "0.1.5",
+  "source_commit": "5857b161897a7fff82469ee69d84d4a870219499",
+  "installed_app": "/Applications/Silicon Ring.app",
+  "installed_executable_sha256": "78617ce6ca79bc3c850b164e76cbe96b51520bf661b222a01ac6761b95352593",
+  "signing": {
+    "identity": "Developer ID Application: Shubham Gupta (LTBSK59BJ2)",
+    "team_id": "LTBSK59BJ2",
+    "strict_verification": "passed",
+    "hardened_runtime": true,
+    "secure_timestamp": true,
+    "microphone_entitlement": true,
+    "network_client_entitlement": true,
+    "custom_url_scheme": "silicon-ring",
+    "notarized": false
+  },
+  "checks": {
+    "installed_final_build": "passed; installed executable matches signed final bundle",
+    "saved_fixture_session_restart": "passed; Connected after process restart and final build replacement",
+    "initial_two_way_pcm": {
+      "ringid": "ring_2cbec020e3b14642a176862e6fabfef1",
+      "peer_received_frames": 2370,
+      "non_silent_frames": 1545,
+      "peak_pcm16": 32768,
+      "peer_sent": "spoken test phrase followed by 440 Hz tone",
+      "transcript_observed": [
+        "This is the Ring audio test.",
+        "Please say hello if you can hear me.",
+        "Thank you."
+      ],
+      "mute_unmute": "passed in app UI",
+      "recording_status": "ready/full",
+      "recording_duration_ms": 47784
+    },
+    "final_pending_audio_and_hangup_fix": {
+      "source_commit_prefix": "6bb88d0",
+      "ringid": "ring_05d74f7b03e4454eb1d472c27a4c9f2a",
+      "peer_received_frames": 1107,
+      "non_silent_frames": 162,
+      "peak_pcm16": 1424,
+      "hangup": "passed; app returned to ended call without error"
+    },
+    "final_native_recording_download": {
+      "source_commit_prefix": "5857b16",
+      "result": "passed twice; app remained responsive; Recording saved to Downloads notice observed",
+      "collision_behavior": "second download creates numbered suffix and preserves original",
+      "downloads": [
+        {
+          "filename": "ring_2cbec020e3b14642a176862e6fabfef1 (1).wav",
+          "bytes": 2293484,
+          "sha256": "7865fefb81f2ffc976d1a4054fab35bbcf4dbfd926a919d39d57369613455b91",
+          "channels": 1,
+          "sample_rate": 24000,
+          "sample_width": 2,
+          "frames": 1146720,
+          "duration_s": 47.78
+        },
+        {
+          "filename": "ring_2cbec020e3b14642a176862e6fabfef1.wav",
+          "bytes": 2293484,
+          "sha256": "7865fefb81f2ffc976d1a4054fab35bbcf4dbfd926a919d39d57369613455b91",
+          "channels": 1,
+          "sample_rate": 24000,
+          "sample_width": 2,
+          "frames": 1146720,
+          "duration_s": 47.78
+        }
+      ],
+      "cleanup": "Both fresh synthetic test WAVs were SHA-256 checked and removed after release publication; no other Downloads files were touched."
+    },
+    "production_carbon_browser_round_trip": {
+      "result": "native-to-browser handoff passed; waiting for user approval of requested IAM directory permissions",
+      "native_button": "Continue as Carbon",
+      "destination": "https://iam.teamofsilicons.com/login",
+      "identity_kind": "carbon",
+      "app_id": "ring",
+      "redirect_uri": "https://ring.teamofsilicons.com/native-login.html",
+      "state_present": true,
+      "existing_account_picker": "c:shubham@tos selected",
+      "approval_required": [
+        "directory.carbons.read",
+        "directory.memberships.read",
+        "directory.profiles.read",
+        "directory.silicons.read"
+      ],
+      "approval_submitted": false,
+      "callback_to_native": "not reached; IAM permission review is intentionally pending"
+    },
+    "production_connection_restored": {
+      "server": "wss://backend.ring.teamofsilicons.com/ws",
+      "environment": "production",
+      "test_secret_cleared": true,
+      "test_organization_cleared": true,
+      "synthetic_session_signed_out": true
+    }
+  },
+  "isolated_test": {
+    "realm": "test",
+    "organization": "ring-device-check",
+    "target": "c:ring-device-mac",
+    "peer": "c:ring-device-peer"
+  },
+  "scope_note": "Physical Apple Silicon Mac. Synthetic isolated accounts were used for calls. The final audio cancellation/hangup code was rechecked on 6bb88d0. The final 5857b16 rebuild adds the desktop native WAV-saving path; it was installed, its session restoration verified, and two matching recordings downloaded without freezing or overwriting. Intel DMG is signed and statically verified but not run on Intel hardware.",
+  "release_validation": {
+    "ci_run_id": 37187541339,
+    "ci_jobs_passed": 8,
+    "ci_jobs_total": 8,
+    "public_native_files": 16,
+    "public_installers": 13,
+    "checksum_entries_verified": 15,
+    "both_macos_dmgs": "integrity, version, architecture, Developer ID signature, hardened runtime, microphone/network entitlements and silicon-ring URL scheme passed",
+    "linux_packages": "DEB/RPM version and architecture, DEB/AppImage ELF architecture passed",
+    "windows_installers": "MSI architecture templates and NSIS file/product version metadata passed",
+    "release_target_commit": "67564c53bd1cc8742bd102653971e31bc974f332",
+    "public_native_source_commit": "5857b161897a7fff82469ee69d84d4a870219499",
+    "changed_source_paths_since_public_native_build": [
+      "native/call-service/ios/Sources/CallServicePlugin.swift"
+    ],
+    "provenance_note": "Public native installers and native-provenance.json remain byte-identical verified builds from 5857b16. The release target and private locally signed iOS app advance to 67564c5, whose only source change is iOS APNs environment selection. No macOS, Android, Windows, Linux or shared web build input changed.",
+    "latest_source_native_ci": {
+      "source_commit": "67564c53bd1cc8742bd102653971e31bc974f332",
+      "run_id": 37188685455,
+      "jobs_passed": 8,
+      "jobs_total": 8,
+      "public_artifacts_replaced": false
+    },
+    "release_url": "https://github.com/teamofsilicons/silicon-ring/releases/tag/v0.1.5",
+    "published_at": "2026-10-04T08:29:49Z",
+    "published_asset_count": 37
+  }
+}

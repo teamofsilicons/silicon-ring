@@ -1,0 +1,84 @@
+{
+  "date": "2026-10-04",
+  "device": {
+    "model": "Pixel 8",
+    "android_version": "17",
+    "api": "37"
+  },
+  "baseline_version": "0.1.4",
+  "release_version": "0.1.5",
+  "checks": {
+    "production_login_baseline": "passed via authorized fresh Carbon SLT",
+    "microphone_permission": "granted",
+    "notification_permission": "granted",
+    "telecom_phone_account": "registered self-managed",
+    "fcm_registration": "present, production environment",
+    "process_restart_baseline": "session restored and connected",
+    "incoming_foreground_baseline": "native RingCallService + Telecom; accepted and ended; no PCM peer attached",
+    "upgrade_to_0.1.5": "passed without data deletion; session restored",
+    "release_signature": "persistent release SHA256 ed087dc34683dbb5cccb4088027b08b2fbe1f0eed6d1819f48f0b0bfe51680ce",
+    "release_manifest": "1005, non-debuggable, arm64, targetSdk36, silicon-ring scheme ACTION_VIEW + BROWSABLE",
+    "native_notification_answer_and_end": "passed",
+    "active_audio_service_types": "phoneCall|microphone (0x84)",
+    "native_audio_hardware": "active AudioRecord and AudioTrack at 24000 Hz mono PCM16, built-in microphone + earpiece",
+    "two_way_pcm": {
+      "frames_received_by_peer": 7346,
+      "frame_duration_ms": 20,
+      "non_silent_frames": 420,
+      "peak_pcm16": 13573,
+      "peer_sent": "spoken test phrase and 440 Hz tone"
+    },
+    "mute": "non-silent count stayed 174 during audible stimulus",
+    "unmute_background": "non-silent count increased to 342 after same stimulus; call continued >2 minutes",
+    "foreground_call_id": "ring_e5cfe52929e44808944b1499b53ba194",
+    "cold_fcm": {
+      "result": "passed",
+      "process_absent_before_call": true,
+      "process_restarted_by_push": true,
+      "foreground_start_reason": "PUSH_MESSAGING / com.google.android.c2dm.intent.RECEIVE",
+      "notification_decline": "passed; invitation declined",
+      "test_registration_only": "production APK test-realm FCM device temporarily marked sandbox"
+    },
+    "recording": "ready after 147.389 second accepted call",
+    "final_hangup_fix_rebuild": "passed, stable signature verified, installed in place",
+    "call_duration_seconds": 147.389,
+    "carbon_browser_round_trip": {
+      "result": "passed",
+      "flow": "native Continue as Carbon \u2192 system Chrome IAM account/organization picker \u2192 requested directory consent \u2192 live HTTPS native-login.html \u2192 silicon-ring custom URL callback \u2192 native Connected",
+      "organization": "tos",
+      "token_paste_required": false
+    },
+    "final_process_restart": "passed; production Carbon session restored, Connected",
+    "device_data_preserved": true,
+    "delayed_authenticated_refresh": "passed 131 seconds after production session restore",
+    "final_pending_audio_cancel": "final source includes cancellation of pending and active audio, with immediate local shutdown and no wait for media.detach before calls.cut",
+    "final_6bb_native_call": {
+      "ringid": "ring_e9995550232e4850aa708d405dc4e061",
+      "duration_seconds": 50.456,
+      "peer_received_frames": 2487,
+      "non_silent_frames": 1590,
+      "peak_pcm16": 13497,
+      "recording_status": "ready",
+      "answer": "native notification",
+      "end": "native notification",
+      "foreground_service_after_end": "absent",
+      "visible_hangup_errors": []
+    },
+    "final_5857_upgrade": "passed; persistent release signature verified, installation replaced app without data deletion, existing production Carbon session restored"
+  },
+  "isolated_test": {
+    "realm": "test",
+    "organization": "ring-device-check",
+    "target": "c:ring-device-android"
+  },
+  "artifact": {
+    "sha256": "763f397af1cb1e41151656abeadf48d853582309c8c37f5d1c41107795afe1c1",
+    "signing_certificate_sha256": "ed087dc34683dbb5cccb4088027b08b2fbe1f0eed6d1819f48f0b0bfe51680ce",
+    "version_code": 1005,
+    "version_name": "0.1.5",
+    "size": 12221716,
+    "filename": "silicon-ring-0.1.5-android-arm64.apk"
+  },
+  "scope_note": "Physical Pixel 8 running Android 17/API 37. Synthetic isolated accounts were used for audio and FCM checks. Native PCM/mute/background and FCM ran on 0.1.5; final pending-audio/hangup changes were rechecked in a 50.456-second 6bb88d0 call. The final 5857b16 rebuild changed only desktop recording saving and retained unchanged Android calling code. Final APK was installed and production session restoration verified.",
+  "source_commit": "5857b161897a7fff82469ee69d84d4a870219499"
+}

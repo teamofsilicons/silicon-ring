@@ -1,0 +1,102 @@
+{
+  "date": "2026-10-04",
+  "version": "0.1.5",
+  "installed_source_commit": "67564c53bd1cc8742bd102653971e31bc974f332",
+  "audio_test_source_commit": "6bb88d04c1e11a7f3b81e640a2f3202eff980ba1",
+  "audio_inputs_unchanged_in_installed_source": true,
+  "audio_source_difference": "6bb to 5857 adds desktop recording handling; 5857 to 675 changes only iOS push environment registration. Native mobile PCM and CallKit inputs are unchanged.",
+  "signing": {
+    "kind": "Apple Development",
+    "provisioning": "Development profile for the two connected registered devices",
+    "strict_signature_verification": "passed",
+    "apns_environment": "development"
+  },
+  "environment": "Temporary isolated device-check endpoint with synthetic Carbon identities",
+  "devices": [
+    {
+      "model": "iPhone 13 mini",
+      "os": "iOS 27.0",
+      "final_install_and_launch": "passed",
+      "foreground_callkit_incoming_and_answer": "passed",
+      "received_audio_test": "Remote peer sent spoken PCM and a 440 Hz tone",
+      "microphone_test": "A spoken test sentence played from the adjacent Mac was captured during the call",
+      "microphone_frames_received_by_peer": 3485,
+      "non_silent_microphone_frames": 2636,
+      "microphone_peak_pcm16": 2189,
+      "recording": {
+        "status": "ready",
+        "mime_type": "audio/wav",
+        "duration_ms": 70087,
+        "coverage": "full",
+        "missing_intervals": []
+      },
+      "remote_end": "Ended UI without a stale error; microphone stopped and Device Hub screen sharing became available again"
+    },
+    {
+      "model": "iPad Air 13-inch (M4)",
+      "os": "iPadOS 27.0",
+      "final_install_and_launch": "passed",
+      "foreground_callkit_incoming_and_answer": "passed",
+      "received_audio_test": "Remote peer sent spoken PCM and a 440 Hz tone",
+      "microphone_test": "The transcript visibly matched the spoken iPad test sentence played from the adjacent Mac",
+      "microphone_frames_received_by_peer": 2617,
+      "non_silent_microphone_frames": 627,
+      "microphone_peak_pcm16": 529,
+      "recording": {
+        "status": "ready",
+        "mime_type": "audio/wav",
+        "duration_ms": 55073,
+        "coverage": "full",
+        "missing_intervals": []
+      },
+      "remote_end": "Ended UI without a stale error; microphone stopped and Device Hub screen sharing became available again",
+      "terminated_process_apns_check": {
+        "source_commit": "67564c53bd1cc8742bd102653971e31bc974f332",
+        "ring_process_absent_before_push": true,
+        "native_incoming_on_home_screen": "passed",
+        "callkit_answer_and_audio_restart": "passed",
+        "microphone_frames_received_by_peer": 2889,
+        "non_silent_microphone_frames": 753,
+        "microphone_peak_pcm16": 599,
+        "recording": {
+          "status": "ready",
+          "duration_ms": 60380,
+          "coverage": "full",
+          "missing_intervals": []
+        },
+        "remote_end": "passed; microphone stopped"
+      }
+    }
+  ],
+  "limitations": [
+    "Terminated-process APNs delivery was repeated on the final iPad build; it was not repeated on the final iPhone build.",
+    "Bluetooth, cellular interruption and network recovery were not exercised in this check.",
+    "Development provisioning does not establish App Store or production APNs distribution."
+  ],
+  "production_authentication": {
+    "iphone": "Fresh IAM-issued native Carbon callback consumed, production session resumed after more than 35 seconds and app restart",
+    "ipad": "Preserved genuine Carbon session resumed after more than 35 seconds and app restart",
+    "test_secrets_cleared": true,
+    "pending_oauth_cleared": true,
+    "push_registration": "Both registered apns_voip with sandbox environment, matching their signed development profile",
+    "iphone_iam_bootstrap": {
+      "method": "IAM batch-login CLI followed by warm native callback",
+      "approve_scopes_flag_used": true,
+      "preexisting_per_user_grant_established": false,
+      "app_approved_scope_names": [
+        "directory.carbons.read",
+        "directory.memberships.read",
+        "directory.profiles.read",
+        "directory.silicons.read",
+        "obo:ting:subscriptions.register",
+        "obo:ting:tings.send",
+        "self.identity.read",
+        "self.membership.read",
+        "self.organizations.read",
+        "self.profile.read"
+      ],
+      "scope_snapshot_limitation": "App-level approval does not establish pre-existing per-user consent."
+    },
+    "after_backend_deployment": "Both existing sessions passed fresh-WebSocket production resume, profile/devices, capabilities, sandbox APNs and signed 0.1.5 release metadata after more than 35 seconds; this check made no IAM login/grant or device-state changes."
+  }
+}

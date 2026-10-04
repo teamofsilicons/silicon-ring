@@ -1,0 +1,232 @@
+{
+  "date": "2026-10-04",
+  "checked_at": "2026-10-04T08:46:02.183275+00:00",
+  "version": "0.1.5",
+  "release_commit": "67564c53bd1cc8742bd102653971e31bc974f332",
+  "release_url": "https://github.com/teamofsilicons/silicon-ring/releases/tag/v0.1.5",
+  "build_sources": {
+    "cli": {
+      "source_commit": "b9f2b3de4955d2a39c94f2217f6c1e4a42fe4f67",
+      "workflow_run": 37185747993,
+      "verified_platform_architectures": [
+        "linux-aarch64",
+        "linux-x86_64",
+        "macos-aarch64",
+        "macos-x86_64",
+        "windows-aarch64",
+        "windows-x86_64"
+      ],
+      "relevant_inputs_unchanged_at_release": true
+    },
+    "public_native_installers": {
+      "source_commit": "5857b161897a7fff82469ee69d84d4a870219499",
+      "workflow_run": 37187541339,
+      "relevant_inputs_unchanged_at_release": true,
+      "difference": "Release 67564c5 changes only iOS APNs environment registration; public desktop and Android artifacts retain their verified 5857b16 bytes."
+    },
+    "web": {
+      "source_commit": "5857b161897a7fff82469ee69d84d4a870219499",
+      "relevant_inputs_unchanged_at_release": true
+    },
+    "backend": {
+      "source_commit": "869512a6639557ae5bda8e4170b612e53d8e4883",
+      "relevant_inputs_unchanged_at_release": true
+    },
+    "installed_ios": {
+      "source_commit": "67564c53bd1cc8742bd102653971e31bc974f332",
+      "development_provisioned": true
+    }
+  },
+  "distribution": {
+    "github_public_downloads": {
+      "status": "passed",
+      "asset_count": 37,
+      "total_bytes": 294927574,
+      "all_anonymous_https_hashes_verified": true,
+      "published_at": "2026-10-04T08:29:49Z"
+    },
+    "cli_signatures": {
+      "algorithm": "Ed25519",
+      "pinned_public_key": "b6e640b29d9945186eda5dfeb50cf491d4e72a20aaefba6d18ddc22343b44a65",
+      "signed_platform_architectures": 6,
+      "checksums_verified": 20,
+      "release_index_sha256": "2b45a64e1184ae2d54486cc08b2805f04b5fa3ee1614ed79ae56bf9e72b5a7c9",
+      "honeycomb_archive_sha256": "1587139db079efb3cc303eb3587c52bae2d1ff1c8b1955bcf7690a0e0b067a1c"
+    },
+    "native_installers": {
+      "public_files": 16,
+      "installers": 13,
+      "macos_dmg_integrity_and_developer_id_signatures": "passed",
+      "android_release_signature": "passed",
+      "linux_package_architecture_and_version": "passed",
+      "windows_installer_metadata": "passed"
+    },
+    "https_installer": {
+      "status": "passed",
+      "fresh_and_existing_config_cases": 2,
+      "production_default": true,
+      "existing_config_preserved": true,
+      "automatic_daemon_running": true,
+      "temporary_daemons_stopped": true,
+      "temporary_homes_removed": true,
+      "global_install_modified": false
+    },
+    "honeycomb_installer": {
+      "status": "passed",
+      "fresh_and_existing_config_cases": 2,
+      "production_default": true,
+      "existing_config_preserved": true,
+      "automatic_daemon_running": true,
+      "temporary_daemons_stopped": true,
+      "temporary_homes_removed": true,
+      "global_install_modified": false,
+      "anonymous_catalog": {
+        "app_id": "ring",
+        "visibility": "public",
+        "state": "active",
+        "effective_revision": 2,
+        "latest_version": "0.1.5"
+      },
+      "pinned_signature_and_package_hash_verified": true,
+      "global_install_fingerprint_unchanged": true
+    }
+  },
+  "live_web_overlay": {
+    "status": "verified",
+    "source_commit": "5857b161897a7fff82469ee69d84d4a870219499",
+    "files_verified_over_public_https": 13,
+    "existing_hashed_assets_preserved": 7,
+    "atomic_exchange": true,
+    "backend_binary_sha256": "f80235c9cc6757aff20f09c78d18c9aca4f409ff10102c5bf9a84a2d73827175",
+    "backend_process_unchanged": true
+  },
+  "physical_devices": [
+    {
+      "device": {
+        "model": "MacBookPro18,1",
+        "architecture": "arm64",
+        "macos_version": "27.0"
+      },
+      "installed_source_commit": "5857b161897a7fff82469ee69d84d4a870219499",
+      "native_audio": "two-way PCM; mute/unmute; clean call end",
+      "native_recording_download": "two matching 47.78-second, 24 kHz mono PCM16 WAV downloads; original preserved by numbered suffix",
+      "production_carbon_login": {
+        "result": "native-to-browser handoff passed; waiting for user approval of requested IAM directory permissions",
+        "native_button": "Continue as Carbon",
+        "destination": "https://iam.teamofsilicons.com/login",
+        "identity_kind": "carbon",
+        "app_id": "ring",
+        "redirect_uri": "https://ring.teamofsilicons.com/native-login.html",
+        "state_present": true,
+        "existing_account_picker": "c:shubham@tos selected",
+        "approval_required": [
+          "directory.carbons.read",
+          "directory.memberships.read",
+          "directory.profiles.read",
+          "directory.silicons.read"
+        ],
+        "approval_submitted": false,
+        "callback_to_native": "not reached; IAM permission review is intentionally pending"
+      },
+      "report": "2026-10-04-macos-device.json"
+    },
+    {
+      "device": {
+        "model": "Pixel 8",
+        "android_version": "17",
+        "api": "37"
+      },
+      "installed_source_commit": "5857b161897a7fff82469ee69d84d4a870219499",
+      "native_audio": "two-way 24 kHz mono PCM16, mute/unmute and background call >2 minutes; final cancellation/hangup retest 50.456 seconds",
+      "cold_push": "FCM relaunched a terminated process; native notification decline passed",
+      "production_carbon_login": "real system-browser IAM picker and native custom-URL callback passed; production session restored after restart and 131 seconds",
+      "report": "2026-10-04-android-device.json"
+    },
+    {
+      "device": "iPhone 13 mini",
+      "os": "iOS 27.0",
+      "installed_source_commit": "67564c53bd1cc8742bd102653971e31bc974f332",
+      "callkit_answer": "passed",
+      "foreground_recording_duration_ms": 70087,
+      "microphone_frames_received_by_peer": 3485,
+      "non_silent_microphone_frames": 2636,
+      "remote_end": "clean UI and microphone stopped",
+      "terminated_process_apns": "not repeated on final build",
+      "production_session": "restored and resumed after app restart and more than 35 seconds",
+      "report": "2026-10-04-ios-devices.json"
+    },
+    {
+      "device": "iPad Air 13-inch (M4)",
+      "os": "iPadOS 27.0",
+      "installed_source_commit": "67564c53bd1cc8742bd102653971e31bc974f332",
+      "callkit_answer": "passed",
+      "foreground_recording_duration_ms": 55073,
+      "microphone_frames_received_by_peer": 2617,
+      "non_silent_microphone_frames": 627,
+      "remote_end": "clean UI and microphone stopped",
+      "terminated_process_apns": "passed on final 67564c5 build with a 60.380-second full recording",
+      "production_session": "restored and resumed after app restart and more than 35 seconds",
+      "report": "2026-10-04-ios-devices.json"
+    }
+  ],
+  "existing_production_sessions_after_deployment": {
+    "status": "passed",
+    "devices": [
+      {
+        "device": "ipad",
+        "app_version": "0.1.5",
+        "retention_seconds": 37.519,
+        "same_session_resumed_on_fresh_websocket": true,
+        "push_environment": "sandbox",
+        "pinned_release_signature_verified": true
+      },
+      {
+        "device": "iphone",
+        "app_version": "0.1.5",
+        "retention_seconds": 37.45,
+        "same_session_resumed_on_fresh_websocket": true,
+        "push_environment": "sandbox",
+        "pinned_release_signature_verified": true
+      }
+    ],
+    "iam_login_or_grant_calls": 0,
+    "logout_or_revoke_calls": 0
+  },
+  "production_cli_fresh_login": {
+    "status": "not_repeated",
+    "reason": "A fresh CLI token mint would approve all requested IAM scopes. The Mac browser is awaiting confirmation for four requested directory scopes, so this release smoke did not submit another scope approval."
+  },
+  "limits": [
+    "macOS native Carbon handoff reached the IAM account and organization picker; its four directory-scope consent selections remain pending user confirmation, so that complete browser-to-native login has not been verified.",
+    "Physical hardware checks cover one Apple Silicon Mac, Pixel 8, iPhone 13 mini and iPad Air 13-inch (M4). Intel Mac, Windows and Linux installer checks do not establish physical audio behavior.",
+    "macOS Developer ID signatures are verified; notarization was not performed.",
+    "iOS installs use development provisioning for the two registered devices; this is not App Store distribution.",
+    "Final-build cold APNs was repeated on iPad only. Bluetooth, cellular interruption and network-loss recovery were not exercised."
+  ],
+  "privacy": "No credentials, push tokens, device serials, private profiles or recorded audio are included in this aggregate.",
+  "remaining_checks": [
+    "macos_directory_scope_consent_and_completed_carbon_login"
+  ],
+  "production_authentication_bootstrap": {
+    "apple_earlier_setup": "Earlier iPhone production setup used IAM CLI batch-login with --approve-scopes twice to issue production SLTs. Prior per-user consent for those scopes was not independently established.",
+    "macos_browser_scope_consent": "The four requested directory scopes were never approved in the Mac browser; that browser-to-native callback remains incomplete.",
+    "postdeployment_verification": "Reused existing Apple sessions only: zero IAM login or grant calls and zero logout or revoke calls."
+  },
+  "final_ci": {
+    "source_commit": "67564c53bd1cc8742bd102653971e31bc974f332",
+    "check_run": 37188685457,
+    "check_jobs_passed": 7,
+    "native_run": 37188685455,
+    "native_jobs_passed": 8
+  },
+  "cleanup": {
+    "status": "complete",
+    "build_and_test_items_removed": 238,
+    "build_and_test_disk_bytes_before_removal": 33490255872,
+    "build_targets_absent": true,
+    "temporary_device_endpoint_removed": true,
+    "temporary_device_credentials_removed": true,
+    "synthetic_downloaded_recordings_removed": true,
+    "installed_apps_and_signing_keys_preserved": true
+  }
+}
