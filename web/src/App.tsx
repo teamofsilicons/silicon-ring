@@ -87,7 +87,7 @@ export default function App() {
   let loginAttempt: { token: string; id: string } | undefined = exchange || undefined;
   let carbonIdentity = !!exchange;
   function clearCarbonExchange() { carbonStorage.removeItem('ring.carbon-login'); carbonStorage.removeItem('ring.carbon-exchange'); exchange = null; carbonIdentity = false; loginAttempt = undefined; }
-  let audioCall = '', ringtoneCall = '', refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let audioCall = '', audioAttempt = 0, ringtoneCall = '', refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let transcriptView: { ringid: string; owner: Session; after: number; again?: boolean; pending?: Promise<void> } | undefined;
   let alive = true;
   const me = () => session()?.actor || session()?.actor_id || '';
@@ -231,16 +231,16 @@ export default function App() {
       if (method === 'calls.cut' && audioCall === ringid && !vmDraft()) {
         audioCall = ''; setAudioReady(false);
         // Stop capture before the server removes this participant's media access.
-        await audio.stop(api).catch(() => {});
+        void audio.stop(api).catch(() => {});
       }
       await api.request(method, { ringid, ...extras }); setDeclineOpen(false); await refresh();
     }, 'call_action');
   }
   async function startAudio(call: Call) {
     if (audioCall === call.ringid || vmDraft()) return;
-    audioCall = call.ringid;
-    try { await audio.start(api, call.ringid, session()!.device_id); setAudioReady(true); setMuted(false); }
-    catch (e) { audioCall = ''; setAudioReady(false); setError(`Microphone: ${errorMessage(e)}`); }
+    audioCall = call.ringid; const attempt = ++audioAttempt;
+    try { await audio.start(api, call.ringid, session()!.device_id); if (!alive || audioCall !== call.ringid || attempt !== audioAttempt) return; setAudioReady(true); setMuted(false); }
+    catch (e) { if (!alive || audioCall !== call.ringid || attempt !== audioAttempt) return; audioCall = ''; setAudioReady(false); setError(`Microphone: ${errorMessage(e)}`); }
   }
   async function moveHere() {
     await run(async () => { const call = activeCall()!; await startAudio(call); if (!audioReady()) return; try { await api.request('calls.handoff', { ringid: call.ringid, to_device_id: session()!.device_id }); await refresh(); } catch (e) { audioCall = ''; setAudioReady(false); await audio.stop(api); throw e; } }, 'call_action');

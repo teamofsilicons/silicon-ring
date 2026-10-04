@@ -1,4 +1,4 @@
-import { RingSocket } from './protocol';
+import type { RingSocket } from './protocol';
 const encode = (buffer: ArrayBuffer) => {
   const bytes = new Uint8Array(buffer); let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -14,16 +14,24 @@ export class CallAudio {
   private seq = 0;
   private speechSeq = 0;
   private offset = 0;
+  private generation = 0;
   onLevel: (level: number) => void = () => {};
   async start(api: RingSocket, ringid: string, device_id: string, voicemail_id?: string) {
-    if (this.streamId) await this.stop(api);
+    const stopped = this.stop(api), generation = this.generation;
+    await stopped;
+    if (generation !== this.generation) return;
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone access requires HTTPS or localhost.');
-    this.microphone = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    const microphone = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    if (generation !== this.generation) { microphone.getTracks().forEach(track => track.stop()); return; }
+    this.microphone = microphone;
     try {
-      this.context = new AudioContext({ sampleRate: 24000 });
-      await this.context.resume();
-      await this.context.audioWorklet.addModule('/pcm-worklet.js');
+      const context = this.context = new AudioContext({ sampleRate: 24000 });
+      await context.resume();
+      if (generation !== this.generation) return;
+      await context.audioWorklet.addModule('/pcm-worklet.js');
+      if (generation !== this.generation) return;
       const attachment = await api.request('media.attach', { ringid, device_id, purpose: voicemail_id ? 'voicemail' : 'call', ...(voicemail_id ? { voicemail_id } : {}) });
+      if (generation !== this.generation) { void api.request('media.detach', { stream_id: attachment.stream_id }).catch(() => {}); return; }
       this.streamId = attachment.stream_id; this.seq = 0; this.speechSeq = 0; this.offset = 0; this.lastSeq = 0; this.outputAt = 0; this.muted = false;
       this.worklet = new AudioWorkletNode(this.context, 'ring-pcm');
       this.worklet.port.onmessage = ({ data }) => {
@@ -42,7 +50,7 @@ export class CallAudio {
         if (event.type === 'media.audio' && event.data.stream_id === this.streamId && event.data.audio_base64) this.play(event.data.audio_base64);
         if (event.type === 'connection.lost') void this.stop();
       });
-    } catch (error) { await this.stop(); throw error; }
+    } catch (error) { if (generation !== this.generation) return; await this.stop(); throw error; }
   }
   private play(encoded: string) {
     if (!this.context || this.context.state === 'closed') return;
@@ -65,10 +73,12 @@ export class CallAudio {
     if (muted) this.onLevel(0);
   }
   async stop(api?: RingSocket, voicemail = false) {
+    ++this.generation;
     const stream_id = this.streamId; this.streamId = ''; this.unsubscribe?.(); this.unsubscribe = undefined;
     this.microphone?.getTracks().forEach(track => track.stop()); this.microphone = undefined;
     if (this.worklet) this.worklet.port.onmessage = null; this.worklet?.disconnect(); this.worklet = undefined;
-    await this.context?.close(); this.context = undefined; this.onLevel(0);
+    const context = this.context; this.context = undefined; this.onLevel(0);
+    await context?.close();
     if (api?.ready && stream_id) return api.request('media.detach', { stream_id, ...(voicemail ? { last_seq: this.lastSeq } : {}) });
   }
 }

@@ -1,6 +1,41 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { CallAudio } from './audio.ts';
 import { normalizeActor, normalizeRealm, bindSession, checkSessionContext, sessionToRestore, isActor, socketUrl, defaultSocketUrl, RingSocket, coalesceTranscript, readTranscriptSince, persistentStorage, carbonLogin, carbonCallback, nativeCarbonReturnUrl, nativeCarbonLink, nativeCarbonCallback, restoreCarbonExchange, type CarbonExchange, type Session, type RingError } from './protocol.ts';
+test('ending a call while microphone permission is pending stops the late microphone', async t => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  t.after(() => { if (original) Object.defineProperty(globalThis, 'navigator', original); else Reflect.deleteProperty(globalThis, 'navigator'); });
+  let grant!: (stream: MediaStream) => void, requested!: () => void, stopped = 0;
+  const permissionRequested = new Promise<void>(resolve => { requested = resolve; });
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { mediaDevices: { getUserMedia: () => { requested(); return new Promise<MediaStream>(resolve => { grant = resolve; }); } } } });
+  const requests: string[] = [];
+  const api = { ready: true, request: async (method: string) => { requests.push(method); return {}; } } as unknown as RingSocket;
+  const audio = new CallAudio(), starting = audio.start(api, 'ring-pending', 'device');
+  await permissionRequested; await audio.stop();
+  grant({ getTracks: () => [{ stop: () => { stopped++; } }] } as unknown as MediaStream);
+  await starting;
+  assert.equal(stopped, 1); assert.equal(audio.streamId, ''); assert.deepEqual(requests, []);
+});
+test('ending a call during media attachment detaches its late stream without restarting capture', async t => {
+  const originals = new Map(['navigator', 'AudioContext', 'AudioWorkletNode'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  t.after(() => { for (const [key, original] of originals) { if (original) Object.defineProperty(globalThis, key, original); else Reflect.deleteProperty(globalThis, key); } });
+  let attached!: (value: { stream_id: string }) => void, requested!: () => void, stopped = 0, closed = 0, worklets = 0;
+  const attachmentRequested = new Promise<void>(resolve => { requested = resolve; });
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop: () => { stopped++; } }] }) } } });
+  Object.defineProperty(globalThis, 'AudioContext', { configurable: true, value: class { audioWorklet = { addModule: async () => {} }; async resume() {} async close() { closed++; } } });
+  Object.defineProperty(globalThis, 'AudioWorkletNode', { configurable: true, value: class { constructor() { worklets++; } } });
+  const requests: Array<{ method: string; params: any }> = [];
+  const api = { ready: true, request: async (method: string, params: any) => {
+    requests.push({ method, params });
+    if (method === 'media.attach') { requested(); return new Promise(resolve => { attached = resolve; }); }
+    return {};
+  } } as unknown as RingSocket;
+  const audio = new CallAudio(), starting = audio.start(api, 'ring-pending', 'device');
+  await attachmentRequested; await audio.stop(); attached({ stream_id: 'late-stream' }); await starting;
+  assert.equal(stopped, 1); assert.equal(closed, 1); assert.equal(worklets, 0); assert.equal(audio.streamId, '');
+  assert.deepEqual(requests.map(item => item.method), ['media.attach', 'media.detach']);
+  assert.deepEqual(requests[1].params, { stream_id: 'late-stream' });
+});
 test('packaged native clients use production while local web and development clients stay local', () => {
   assert.equal(defaultSocketUrl('localhost', true, false), 'wss://backend.ring.teamofsilicons.com/ws');
   assert.equal(defaultSocketUrl('localhost', true, true), 'ws://127.0.0.1:8765/ws');

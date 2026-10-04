@@ -36,6 +36,7 @@ export class PhoneAudio {
   private browser = new CallAudio();
   private nativeStream = '';
   private nativeMuted = false;
+  private generation = 0;
   private poll?: ReturnType<typeof setInterval>;
   onMute: (muted: boolean) => void = () => {};
   set onLevel(callback: (level: number) => void) { this.browser.onLevel = callback; }
@@ -45,16 +46,20 @@ export class PhoneAudio {
   get lastSeq() { return this.browser.lastSeq; }
   async start(api: RingSocket, ringid: string, device_id: string, voicemail_id?: string) {
     if (!mobile) return this.browser.start(api, ringid, device_id, voicemail_id);
+    const generation = ++this.generation;
+    clearInterval(this.poll);
     const result = await command('start', { ringid, voicemail_id });
+    if (generation !== this.generation) return;
     this.nativeStream = result.stream_id; this.nativeMuted = false;
     clearInterval(this.poll);
-    this.poll = setInterval(() => { void command('status').then(state => { this.nativeStream = state.stream_id; this.nativeMuted = state.muted; this.onMute(state.muted); }).catch(() => {}); }, 1500);
+    this.poll = setInterval(() => { void command('status').then(state => { if (generation !== this.generation) return; this.nativeStream = state.stream_id; this.nativeMuted = state.muted; this.onMute(state.muted); }).catch(() => {}); }, 1500);
   }
   async mute(api: RingSocket, muted: boolean) {
     if (!mobile) return this.browser.mute(api, muted);
     await command('mute', { muted }); this.nativeMuted = muted;
   }
   async stop(api?: RingSocket, voicemail = false) {
+    ++this.generation;
     clearInterval(this.poll);
     if (!mobile) return this.browser.stop(api, voicemail);
     this.nativeStream = ''; this.onLevel(0);

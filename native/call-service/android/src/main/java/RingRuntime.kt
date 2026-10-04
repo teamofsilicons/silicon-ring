@@ -130,7 +130,7 @@ internal class RingRuntime private constructor(val context: Context) {
             if (type == "media.audio") { audio.output(data); return }
             if (type.startsWith("call.") || type.startsWith("participant.")) {
                 val ring = data.optString("ringid")
-                if (type == "call.ended" && audio.ringid == ring) audio.close()
+                if (type == "call.ended" && audio.matches(ring)) audio.close()
                 if (ring.isNotEmpty()) request("calls.get", JSONObject().put("ringid", ring)) { result, _ -> result?.let { reconcile(it) } }
             }
         } catch (_: Exception) { /* Malformed unsolicited frames do not change native state. */ }
@@ -150,7 +150,7 @@ internal class RingRuntime private constructor(val context: Context) {
             if (!audio.voicemail && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startAudio(ring, null) { _, _ -> }
             RingCallService.show(context, ring, "Call in progress", false)
         } else if (call.optString("state") == "ended" || (!here && call.optString("state") != "ringing")) {
-            if (audio.ringid == ring) stopAudio { _, _ -> }
+            if (audio.matches(ring)) stopAudio { _, _ -> }
             RingConnectionService.end(ring)
             if (RingConnectionService.connections.isEmpty()) context.stopService(Intent(context, RingCallService::class.java))
         }
@@ -171,13 +171,11 @@ internal class RingRuntime private constructor(val context: Context) {
         }
     }
     fun end(ringid: String, decline: Boolean, reply: RingReply = { _, _ -> }) {
-        fun endCall() {
-            request(if (decline) "calls.decline" else "calls.cut", JSONObject().put("ringid", ringid).put("give_no_reason", true)) { value, error ->
-                if (error == null) { RingConnectionService.end(ringid); context.stopService(Intent(context, RingCallService::class.java)) }
-                reply(value, error)
-            }
+        if (audio.matches(ringid)) stopAudio { _, _ -> }
+        request(if (decline) "calls.decline" else "calls.cut", JSONObject().put("ringid", ringid).put("give_no_reason", true)) { value, error ->
+            if (error == null) { RingConnectionService.end(ringid); context.stopService(Intent(context, RingCallService::class.java)) }
+            reply(value, error)
         }
-        if (audio.ringid == ringid) stopAudio { _, _ -> endCall() } else endCall()
     }
     fun startAudio(ringid: String, voicemail: String?, reply: RingReply) {
         if (ringid.isEmpty()) { reply(null, "A call ID is required."); return }
@@ -211,6 +209,7 @@ internal class RingAudio(private val runtime: RingRuntime) {
     private var pendingRing = ""
     private var pendingVoicemail: String? = null
     private val startWaiters = mutableListOf<RingReply>()
+    fun matches(ring: String) = ring.isNotEmpty() && (ringid == ring || pendingRing == ring)
     private var lastOutput = -1
     private var startedAt = android.os.SystemClock.elapsedRealtime()
     private var lastOffset = -20
