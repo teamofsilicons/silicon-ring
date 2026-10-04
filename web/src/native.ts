@@ -7,6 +7,12 @@ export async function openNativeLogin(url: string) {
   const { openUrl } = await import('@tauri-apps/plugin-opener');
   await openUrl(url);
 }
+export async function saveNativeRecording(blob: Blob, filename: string) {
+  if (!isNative() || isNativeMobile()) return false;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('save_recording', await blob.arrayBuffer(), { headers: { 'x-ring-filename': filename } });
+  return true;
+}
 export async function listenNativeLogin(onUrl: (url: string) => void): Promise<() => void> {
   if (!isNative()) return () => {};
   const { getCurrent, onOpenUrl } = await import('@tauri-apps/plugin-deep-link');

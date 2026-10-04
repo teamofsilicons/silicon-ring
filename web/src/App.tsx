@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import { RingTone } from './audio';
-import { PhoneAudio, configureNative, logoutNative, restoreNative, isNativeMobile, isNative, openNativeLogin, listenNativeLogin } from './native';
+import { PhoneAudio, configureNative, logoutNative, restoreNative, isNativeMobile, isNative, openNativeLogin, listenNativeLogin, saveNativeRecording } from './native';
 import { RingSocket, type Call, type Session, type ConnectSettings, type CarbonLogin, type CarbonExchange, displayActor, downloadAsset, uploadAsset, readTranscriptSince, coalesceTranscript, errorMessage, isActor, normalizeActor, normalizeRealm, bindSession, sessionToRestore, defaultSocketUrl, persistentStorage, carbonLogin, carbonCallback, nativeCarbonReturnUrl, nativeCarbonCallback, restoreCarbonExchange, isExpiredSession, socketUrl } from './protocol';
 
 type IconName = 'phone' | 'history' | 'voicemail' | 'devices' | 'settings' | 'arrow' | 'plus' | 'search' | 'close' | 'chevron' | 'mic' | 'muted' | 'end' | 'download' | 'check' | 'logout' | 'user' | 'bell' | 'spark' | 'refresh' | 'play' | 'back';
@@ -260,7 +260,7 @@ export default function App() {
     });
   }
   async function saveRecording(call: Call) {
-    await run(async () => { const recording = await api.request('recordings.get', { ringid: call.ringid }); if (recording.status !== 'ready' || !(recording.audio_asset_id || recording.asset_id)) throw new Error(`Recording is ${recording.status || 'not available yet'}.`); const blob = await downloadAsset(api, recording.audio_asset_id || recording.asset_id); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `${call.ringid}.wav`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
+    await run(async () => { const recording = await api.request('recordings.get', { ringid: call.ringid }); if (recording.status !== 'ready' || !(recording.audio_asset_id || recording.asset_id)) throw new Error(`Recording is ${recording.status || 'not available yet'}.`); const blob = await downloadAsset(api, recording.audio_asset_id || recording.asset_id); const filename = `${call.ringid}.wav`; if (await saveNativeRecording(blob, filename)) { setNotice('Recording saved to Downloads.'); return; } const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
   }
   async function openVoicemail(vm: any) {
     await run(async () => { const result = await api.request('voicemail.get', { voicemail_id: vm.voicemail_id }); setOpenedVm(result); if (vmAudio()) URL.revokeObjectURL(vmAudio()); setVmAudio(''); if (result.audio_asset_id || result.asset_id) setVmAudio(URL.createObjectURL(await downloadAsset(api, result.audio_asset_id || result.asset_id))); });
