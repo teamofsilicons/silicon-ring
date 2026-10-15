@@ -97,10 +97,14 @@ A session stays bound to the server that issued it; sign out to switch.
   ringtone. Answering or silencing anywhere stops it everywhere (`call.ringing_stopped`).
 - **Calls.** The media grant from `POST /v1/calls`, `/accept` or `/media` goes to
   `ring_media_connect`. Events (state, active speakers, levels) come back as JSON on a native
-  thread and are marshalled to the UI thread. If audio drops, Ring reclaims the call with
-  `POST /v1/calls/{ringid}/media` within the server's 30 s grace period.
+  thread and are marshalled to the UI thread. If audio drops, or Ring restarts while the server
+  says this PC still carries a call, Ring reclaims it with `POST /v1/calls/{ringid}/media` within
+  the server's 30 s grace period. Interim transcript lines are replaced by the final entry with
+  the same `segment_id`.
 - **Handoff.** When the call is active on another of your devices, a banner offers
-  "Switch to this PC"; when another device takes it, this one disconnects on `call.handoff`.
+  "On a call with … on <device> · Switch to this PC"; when another device takes it, this one
+  disconnects on `call.handoff` and shows "Moved to <device>" (the device's name, else a word
+  for its platform).
 - **Data.** Ring keeps `session.dat` (DPAPI) and `preferences.json` (theme, tray, audio devices,
   server) in `%LOCALAPPDATA%\Ring`. Under `HKCU` it writes only the Run entry ("Open at login") and
   the notification registration Windows needs for an unpackaged app. It talks to nothing but the

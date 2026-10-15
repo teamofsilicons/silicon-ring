@@ -29,10 +29,13 @@ This directory is its own Cargo workspace (not a member of the root workspace).
 - **Calls**: the dialer looks people up live (`GET /v1/accounts/{ref}`) and lists recent people;
   the outgoing screen plays `ringback.wav`; the call screen shows a timer, participants with a
   speaking pulse (from LiveKit active speakers matched to `media_identity`), the live transcript
-  (final and interim lines moving up and fading), mute with a level meter, the microphone and
+  (final and interim lines moving up and fading; a final entry replaces the interim line with its
+  `segment_id`), mute with a level meter, the microphone and
   speaker in use (see Limitations), add person, and hang up. Voicemail recording shows "Leave a message after the beep"
   and a Done button. Calls on another of your devices show "On a call with … on iPhone · Switch to
-  this computer" (`POST /calls/{ringid}/media`); a call moved away shows "Moved to …".
+  this computer" (`POST /calls/{ringid}/media`); a call moved away shows "Moved to …" (the
+  device's name, else a word for its platform). If Ring restarts mid-call while the server says
+  this computer still carries the call, it rejoins it the same way within the 30 s grace period.
 - **Recents** (call details with a timeline, decline reasons, the transcript and the recording),
   **Voicemail** (unread dots, inline playback, a detail dialog with a scrubber and Call back) and
   **Settings** (account, this device's name and "Ring on this device", devices with sign-out,
