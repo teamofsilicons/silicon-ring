@@ -103,6 +103,31 @@ public static class Format
 
     public static string Pixel(string text) => text.ToUpperInvariant();
 
+    /// <summary>How a device is named in "Moved to …" and "On a call … on …": its name, else a word for its platform.</summary>
+    public static string DeviceLabel(DeviceRef? device)
+    {
+        if (device is null)
+        {
+            return "another device";
+        }
+        if (!string.IsNullOrWhiteSpace(device.Name))
+        {
+            return device.Name.Trim();
+        }
+        return device.Platform switch
+        {
+            "ios" => "iPhone",
+            "ipados" => "iPad",
+            "macos" => "Mac",
+            "android" => "Android phone",
+            "windows" => "Windows PC",
+            "linux" => "Linux computer",
+            "web" => "the web",
+            "cli" => "the command line",
+            _ => "another device",
+        };
+    }
+
     /// <summary>Normalizes what the user typed into an actor reference: trims, drops "@", lowercases the prefix.</summary>
     public static string? ActorReference(string input)
     {

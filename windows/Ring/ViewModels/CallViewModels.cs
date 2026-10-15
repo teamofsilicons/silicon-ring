@@ -177,6 +177,9 @@ public sealed class ActiveCall : ObservableObject
 
     public HashSet<long> SeenSeqs { get; } = [];
 
+    /// <summary>Speech segments whose final entry has landed, so a late interim cannot bring them back.</summary>
+    public HashSet<string> FinishedSegments { get; } = [];
+
     public int RejoinAttempts { get; set; }
 
     public bool LeftByUser { get; set; }

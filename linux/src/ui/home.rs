@@ -230,15 +230,13 @@ impl HomePage {
                     .iter()
                     .map(|a| a.label().to_string())
                     .collect();
-                let where_ = device
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| widgets::platform_name(device.platform).to_string());
-                self.elsewhere.set_title(&format!(
-                    "On a call with {} on {}",
-                    names.join(", "),
-                    where_
-                ));
+                let with = if names.is_empty() {
+                    "On a call".to_string()
+                } else {
+                    format!("On a call with {}", names.join(", "))
+                };
+                self.elsewhere
+                    .set_title(&format!("{with} on {}", widgets::device_label(device)));
                 self.elsewhere_ringid.replace(Some(call.ringid.clone()));
                 self.elsewhere.set_revealed(true);
             }

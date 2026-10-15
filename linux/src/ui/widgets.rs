@@ -7,7 +7,8 @@ use std::collections::{HashMap, HashSet};
 use adw::prelude::*;
 use gtk::{gdk, glib};
 use ring_proto::{
-    Account, AccountKind, Call, CallState, Direction, EndReason, InvitationState, Platform, Time,
+    Account, AccountKind, Call, CallState, DeviceRef, Direction, EndReason, InvitationState,
+    Platform, Time,
 };
 
 use crate::app::App;
@@ -256,6 +257,31 @@ pub fn platform_name(platform: Option<Platform>) -> &'static str {
         Some(Platform::Cli) => "CLI",
         None => "device",
     }
+}
+
+/// How a device is named in "Moved to …" and "On a call … on …": its name, else a word for its
+/// platform.
+pub fn device_label(device: &DeviceRef) -> String {
+    if let Some(name) = device
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        return name.to_string();
+    }
+    match device.platform {
+        Some(Platform::Ios) => "iPhone",
+        Some(Platform::Ipados) => "iPad",
+        Some(Platform::Macos) => "Mac",
+        Some(Platform::Android) => "Android phone",
+        Some(Platform::Windows) => "Windows PC",
+        Some(Platform::Linux) => "Linux computer",
+        Some(Platform::Web) => "the web",
+        Some(Platform::Cli) => "the command line",
+        None => "another device",
+    }
+    .to_string()
 }
 
 /// The people on a call other than `me`: joined participants first, then pending invitees.

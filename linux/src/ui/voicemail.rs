@@ -247,8 +247,7 @@ impl VoicemailPage {
     }
 
     fn stop_inline(&self) {
-        self.inline_generation
-            .set(self.inline_generation.get() + 1);
+        self.inline_generation.set(self.inline_generation.get() + 1);
         if let Some(inline) = self.inline.take() {
             set_play_icon(&inline.button, false);
         }

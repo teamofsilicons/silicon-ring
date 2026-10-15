@@ -115,6 +115,14 @@ struct Tile {
     muted: gtk::Image,
 }
 
+/// An interim speech line: one speech-to-text segment until its final entry replaces it.
+struct Partial {
+    segment_id: String,
+    speaker: String,
+    revealer: gtk::Revealer,
+    label: gtk::Label,
+}
+
 #[derive(Default)]
 struct ViewState {
     call: Option<Call>,
@@ -122,7 +130,10 @@ struct ViewState {
     local_identity: Option<String>,
     tiles: HashMap<String, Tile>,
     lines: BTreeMap<u64, gtk::Revealer>,
-    partials: HashMap<String, (gtk::Revealer, gtk::Label)>,
+    /// Interim lines, oldest first.
+    partials: Vec<Partial>,
+    /// Segments whose final entry has landed, so a late interim cannot bring them back.
+    finished_segments: HashSet<String>,
     remote_muted: HashMap<String, bool>,
     ended: bool,
 }
@@ -696,12 +707,7 @@ impl CallView {
         }
         let stick = self.near_bottom();
         if entry.kind == EntryKind::Speech {
-            if let Some(actor) = entry.actor.as_ref() {
-                if let Some((revealer, _)) = self.0.state.borrow_mut().partials.remove(&actor.uuid)
-                {
-                    self.0.transcript.remove(&revealer);
-                }
-            }
+            self.finish_partial(entry);
         }
         let (line, _) = entry_widget(speaker.as_deref(), &text, false);
         let revealer = Self::reveal(&line);
@@ -721,11 +727,12 @@ impl CallView {
                 (None, true) => self.0.transcript.prepend(&revealer),
                 _ => {
                     self.0.transcript.append(&revealer);
-                    // Live partial lines stay below the final ones.
-                    for (partial, _) in state.partials.values() {
-                        self.0
-                            .transcript
-                            .reorder_child_after(partial, self.0.transcript.last_child().as_ref());
+                    // Live partial lines stay below the final ones, in the order they began.
+                    for partial in &state.partials {
+                        self.0.transcript.reorder_child_after(
+                            &partial.revealer,
+                            self.0.transcript.last_child().as_ref(),
+                        );
                     }
                 }
             }
@@ -741,10 +748,60 @@ impl CallView {
         }
     }
 
-    /// Interim speech, muted until the final entry replaces it.
-    pub fn partial(&self, speaker: &Account, _segment_id: &str, text: &str) {
+    /// Removes the interim line a final speech entry replaces: the one with its `segment_id`,
+    /// or that speaker's newest when the entry carries none. That speaker's older interim lines
+    /// go too, since their segments can no longer be finalised out of order.
+    fn finish_partial(&self, entry: &TranscriptEntry) {
+        let segment = entry
+            .data
+            .get("segment_id")
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty());
+        let mut state = self.0.state.borrow_mut();
+        if let Some(id) = segment {
+            if state.finished_segments.len() >= 1024 {
+                state.finished_segments.clear();
+            }
+            state.finished_segments.insert(id.to_string());
+        }
+        let index = match (segment, entry.actor.as_ref()) {
+            (Some(id), _) => state.partials.iter().position(|p| p.segment_id == id),
+            (None, Some(actor)) => state.partials.iter().rposition(|p| p.speaker == actor.uuid),
+            (None, None) => None,
+        };
+        let Some(index) = index else { return };
+        let speaker = state.partials[index].speaker.clone();
+        let mut position = 0;
+        state.partials.retain(|p| {
+            let keep = position > index || (position < index && p.speaker != speaker);
+            position += 1;
+            if !keep {
+                self.0.transcript.remove(&p.revealer);
+            }
+            keep
+        });
+    }
+
+    /// Interim speech, muted until the final entry for its segment replaces it.
+    pub fn partial(&self, speaker: &Account, segment_id: &str, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        // Without a segment id, one interim line per speaker.
+        let segment_id = if segment_id.is_empty() {
+            format!("speaker:{}", speaker.uuid)
+        } else {
+            segment_id.to_string()
+        };
         let me = self.0.state.borrow().me.clone();
-        if text.trim().is_empty() {
+        if self
+            .0
+            .state
+            .borrow()
+            .finished_segments
+            .contains(&segment_id)
+        {
             return;
         }
         let stick = self.near_bottom();
@@ -753,8 +810,9 @@ impl CallView {
             .state
             .borrow()
             .partials
-            .get(&speaker.uuid)
-            .map(|(_, label)| label.clone());
+            .iter()
+            .find(|p| p.segment_id == segment_id)
+            .map(|p| p.label.clone());
         match existing {
             Some(label) => label.set_label(text),
             None => {
@@ -766,11 +824,12 @@ impl CallView {
                 let (line, label) = entry_widget(Some(&name), text, true);
                 let revealer = Self::reveal(&line);
                 self.0.transcript.append(&revealer);
-                self.0
-                    .state
-                    .borrow_mut()
-                    .partials
-                    .insert(speaker.uuid.clone(), (revealer, label));
+                self.0.state.borrow_mut().partials.push(Partial {
+                    segment_id,
+                    speaker: speaker.uuid.clone(),
+                    revealer,
+                    label,
+                });
             }
         }
         if stick {

@@ -321,6 +321,9 @@ public sealed class TranscriptEntry
             ? v.GetString()
             : null;
 
+    /// <summary>The speech-to-text segment a final "speech" entry completes, matching its transcript.partial events.</summary>
+    public string? SegmentId => DataString("segment_id") is { Length: > 0 } id ? id : null;
+
     public Account? DataAccount(string name)
     {
         if (Data.ValueKind != JsonValueKind.Object || !Data.TryGetProperty(name, out var v) || v.ValueKind != JsonValueKind.Object)
@@ -523,12 +526,18 @@ public sealed class RingingStoppedData
     public string Ringid { get; init; } = "";
     public string InvitationId { get; init; } = "";
     public string Reason { get; init; } = "";
+
+    /// <summary>The caller, so a missed-call notice needs no cached call (absent from older servers).</summary>
+    public Account? From { get; init; }
 }
 
 public sealed class HandoffData
 {
     public string Ringid { get; init; } = "";
     public string DeviceId { get; init; } = "";
+
+    /// <summary>The device that now carries the call (absent from older servers).</summary>
+    public DeviceRef? Device { get; init; }
 }
 
 public sealed class TranscriptEntryData

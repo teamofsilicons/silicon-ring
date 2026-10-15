@@ -27,6 +27,8 @@ public sealed class CallCoordinator
     private ActiveCall? _active;
     private CallMedia? _media;
     private ElsewhereCall? _elsewhere;
+    // A rejoin of a call this device carried before the app restarted is in flight.
+    private bool _restoring;
 
     public CallCoordinator(AppServices app)
     {
@@ -137,15 +139,25 @@ public sealed class CallCoordinator
             Apply(call);
         }
 
-        // Our audio dropped while we were away (app restart, sleep): rejoin within the grace period.
-        if (_active is null)
+        // The server says this device still carries a call the app has no session for (a restart
+        // or crash mid-call, or audio lost while asleep): rejoin within the server's grace period.
+        if (_active is null && !_restoring && MyDeviceId.Length > 0)
         {
             var mine = open.FirstOrDefault(c =>
                 c.State is CallStates.Active or CallStates.Voicemail &&
                 c.ParticipantFor(MyUuid) is { IsJoined: true } p && p.Device?.DeviceId == MyDeviceId);
             if (mine is not null)
             {
-                await ClaimAsync(mine.Ringid, rejoin: true);
+                _restoring = true;
+                try
+                {
+                    LocalLog.Write($"rejoining {mine.Ringid}, which this device carried before a restart");
+                    await ClaimAsync(mine.Ringid, rejoin: true);
+                }
+                finally
+                {
+                    _restoring = false;
+                }
             }
         }
         HistoryChanged?.Invoke();
@@ -221,7 +233,7 @@ public sealed class CallCoordinator
     {
         _handled.Add(data.InvitationId);
         var incoming = Incoming.FirstOrDefault(i => i.InvitationId == data.InvitationId);
-        Account? caller = incoming?.Caller;
+        var caller = incoming?.Caller ?? data.From;
         if (caller is null && _open.TryGetValue(data.Ringid, out var call))
         {
             caller = call.Invitations.FirstOrDefault(i => i.InvitationId == data.InvitationId)?.From;
@@ -529,11 +541,16 @@ public sealed class CallCoordinator
             }
             return;
         }
+        if (active.IsEnded)
+        {
+            // Hung up or moved away here while the call goes on; the outcome stays on screen.
+            return;
+        }
 
         if (_media is not null && mine.Device?.DeviceId is { Length: > 0 } carrier && carrier != MyDeviceId)
         {
             // Another of our devices took the call (the handoff event may arrive after this).
-            MovedAway(active, mine.Device?.Name);
+            MovedAway(active, mine.Device);
             return;
         }
 
@@ -691,10 +708,10 @@ public sealed class CallCoordinator
     }
 
     /// <summary>Another of this account's devices took the call: drop our audio and say where it went.</summary>
-    private void MovedAway(ActiveCall active, string? deviceName)
+    private void MovedAway(ActiveCall active, DeviceRef? device)
     {
         Finish(active, "MOVED", null);
-        active.Banner = $"Moved to {(string.IsNullOrWhiteSpace(deviceName) ? "another device" : deviceName)}";
+        active.Banner = $"Moved to {Format.DeviceLabel(device)}";
     }
 
     private void StopRingback()
@@ -855,14 +872,35 @@ public sealed class CallCoordinator
         }
         if (_active is { } active && active.Ringid == data.Ringid && !active.IsEnded)
         {
-            string? deviceName = null;
-            if (_open.TryGetValue(data.Ringid, out var call))
+            var device = data.Device ?? DeviceIn(_open.GetValueOrDefault(data.Ringid), data.DeviceId);
+            MovedAway(active, device);
+            if (device is null)
             {
-                deviceName = call.ParticipantFor(MyUuid)?.Device is { DeviceId: var id, Name: var name } && id == data.DeviceId ? name : null;
+                _ = NameMovedDeviceAsync(active, data.DeviceId);
             }
-            MovedAway(active, deviceName);
         }
         UpdateElsewhere();
+    }
+
+    private static DeviceRef? DeviceIn(Call? call, string deviceId) =>
+        call?.Participants.Select(p => p.Device).FirstOrDefault(d => d?.DeviceId == deviceId);
+
+    /// <summary>An older server's handoff names no device: read it from the call instead.</summary>
+    private async Task NameMovedDeviceAsync(ActiveCall active, string deviceId)
+    {
+        try
+        {
+            var call = await _app.Api.GetCallAsync(active.Ringid);
+            if (DeviceIn(call, deviceId) is { } device && ReferenceEquals(_active, active))
+            {
+                active.Banner = $"Moved to {Format.DeviceLabel(device)}";
+            }
+            Apply(call);
+        }
+        catch (ApiException)
+        {
+            // "Moved to another device" stays.
+        }
     }
 
     private void UpdateElsewhere()
@@ -881,8 +919,7 @@ public sealed class CallCoordinator
             }
             var others = call.JoinedParticipants.Where(p => p.Account.Uuid != MyUuid).Select(p => p.Account.Label).ToList();
             var with = others.Count == 0 ? "a call" : $"a call with {string.Join(", ", others)}";
-            var where = string.IsNullOrWhiteSpace(mine.Device.Name) ? "another device" : mine.Device.Name;
-            next = new ElsewhereCall(call.Ringid, $"On {with} on {where}");
+            next = new ElsewhereCall(call.Ringid, $"On {with} on {Format.DeviceLabel(mine.Device)}");
             break;
         }
         if (next != _elsewhere)
@@ -956,17 +993,67 @@ public sealed class CallCoordinator
         }
         if (entry.Kind == EntryKinds.Speech && actor is not null)
         {
-            // The final text replaces that speaker's interim line.
-            for (var i = active.Transcript.Count - 1; i >= 0; i--)
+            FinishInterim(active, entry.SegmentId, actor.Uuid);
+        }
+        // Live interim lines stay below the final ones.
+        var firstInterim = -1;
+        for (var i = 0; i < active.Transcript.Count; i++)
+        {
+            if (active.Transcript[i].IsInterim)
             {
-                if (active.Transcript[i].IsInterim && active.Transcript[i].SpeakerUuid == actor.Uuid)
-                {
-                    active.Transcript.RemoveAt(i);
-                }
+                firstInterim = i;
+                break;
             }
         }
-        active.Transcript.Add(line);
+        if (firstInterim >= 0)
+        {
+            active.Transcript.Insert(firstInterim, line);
+        }
+        else
+        {
+            active.Transcript.Add(line);
+        }
         TrimTranscript(active);
+    }
+
+    /// <summary>
+    /// Removes the interim line a final speech entry replaces: the one for its segment, or the
+    /// speaker's newest when the entry names none. That speaker's older interim lines go too,
+    /// since their segments can no longer be finalised out of order.
+    /// </summary>
+    private static void FinishInterim(ActiveCall active, string? segmentId, string speakerUuid)
+    {
+        if (segmentId is not null)
+        {
+            if (active.FinishedSegments.Count >= 1024)
+            {
+                active.FinishedSegments.Clear();
+            }
+            active.FinishedSegments.Add(segmentId);
+        }
+        var transcript = active.Transcript;
+        var index = -1;
+        for (var i = transcript.Count - 1; i >= 0; i--)
+        {
+            var candidate = transcript[i];
+            if (candidate.IsInterim && (segmentId is null ? candidate.SpeakerUuid == speakerUuid : candidate.Key == $"p:{segmentId}"))
+            {
+                index = i;
+                break;
+            }
+        }
+        if (index < 0)
+        {
+            return;
+        }
+        var speaker = transcript[index].SpeakerUuid;
+        for (var i = index; i >= 0; i--)
+        {
+            if (transcript[i].IsInterim && transcript[i].SpeakerUuid == speaker)
+            {
+                transcript.RemoveAt(i);
+            }
+        }
     }
 
     private static TranscriptLine SystemLine(TranscriptEntry entry, string text) =>
@@ -974,11 +1061,13 @@ public sealed class CallCoordinator
 
     private void AddPartial(ActiveCall active, TranscriptPartialData partial)
     {
-        if (string.IsNullOrWhiteSpace(partial.Text))
+        var segment = partial.SegmentId is { Length: > 0 } id ? id : null;
+        if (string.IsNullOrWhiteSpace(partial.Text) || (segment is not null && active.FinishedSegments.Contains(segment)))
         {
             return;
         }
-        var key = $"p:{partial.SegmentId}";
+        // Without a segment id, one interim line per speaker.
+        var key = segment is not null ? $"p:{segment}" : $"p:speaker:{partial.Speaker.Uuid}";
         var existing = active.Transcript.FirstOrDefault(l => l.Key == key);
         if (existing is not null)
         {

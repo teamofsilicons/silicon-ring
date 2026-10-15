@@ -14,9 +14,9 @@ use ring_core::events::Update;
 use ring_core::media::{CallMedia, MediaEvent, MediaOptions, MediaState};
 use ring_core::{CallFilter, Client, VoicemailFilter};
 use ring_proto::{
-    AcceptCall, Call, CallState, CarbonLogin, CreateCall, DeclineCall, Device, DeviceUpdate, Event,
-    Invitation, InvitationState, Me, MediaGrant, Meta, ParticipantState, Platform,
-    RingingStoppedReason, SettingsPatch, Voicemail, codes,
+    AcceptCall, Call, CallState, CarbonLogin, CreateCall, DeclineCall, Device, DeviceRef,
+    DeviceUpdate, Event, Invitation, InvitationState, Me, MediaGrant, Meta, ParticipantState,
+    Platform, RingingStoppedReason, SettingsPatch, Voicemail, codes,
 };
 
 use crate::config::{Appearance, Config};
@@ -79,6 +79,8 @@ pub struct Inner {
     sounds: Sounds,
     notifier: Rc<Notifier>,
     refresh_pending: Cell<bool>,
+    /// A rejoin of a call this device carried before the app restarted is in flight.
+    restoring: Cell<bool>,
     /// `--new-call` (or the desktop action) arrived before the session was restored.
     dialer_pending: Cell<bool>,
 }
@@ -109,6 +111,15 @@ fn device_name() -> String {
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| glib::host_name().to_string());
     name.chars().take(ring_proto::limits::DEVICE_NAME).collect()
+}
+
+/// The device a call names for `device_id` (on whichever participant carries it).
+fn device_in(call: &Call, device_id: &str) -> Option<DeviceRef> {
+    call.participants
+        .iter()
+        .filter_map(|p| p.device.as_ref())
+        .find(|d| d.device_id == device_id)
+        .cloned()
 }
 
 /// The id of the system default device in a listing, for "System default" during a call.
@@ -148,6 +159,7 @@ impl App {
             sounds: Sounds::new(),
             notifier: Rc::new(Notifier::default()),
             refresh_pending: Cell::new(false),
+            restoring: Cell::new(false),
             dialer_pending: Cell::new(false),
         }));
         INSTANCE.with(|i| i.replace(Some(app.clone())));
@@ -494,10 +506,11 @@ impl App {
         let api_url = self.0.options.api_url.clone();
         let token = session.session_token.clone();
         // The server session exists now, so a storage failure must not throw it away.
-        if let Err(err) = runtime::run(async move { secret::store(&api_url, &token).await }).await
-        {
+        if let Err(err) = runtime::run(async move { secret::store(&api_url, &token).await }).await {
             tracing::warn!("{err}");
-            self.toast("Signed in, but Ring couldn't save the session. You'll sign in again next time.");
+            self.toast(
+                "Signed in, but Ring couldn't save the session. You'll sign in again next time.",
+            );
         }
         Ok(Some(session.session_token))
     }
@@ -717,9 +730,12 @@ impl App {
                 ringid,
                 invitation_id,
                 reason,
+                ..
             } => self.ringing_stopped(&ringid, &invitation_id, reason),
-            Event::CallHandoff { ringid, device_id } => self.handoff(&ringid, &device_id),
-            Event::TranscriptEntry { ringid, entry } => {
+            Event::CallHandoff {
+                ringid, device_id, ..
+            } => self.handoff(&ringid, &device_id),
+            Event::TranscriptEntry { ringid, entry, .. } => {
                 if self.active_ringid().as_deref() == Some(ringid.as_str()) {
                     self.window().call.add_entry(&entry);
                 }
@@ -729,6 +745,7 @@ impl App {
                 speaker,
                 segment_id,
                 text,
+                ..
             } => {
                 if self.active_ringid().as_deref() == Some(ringid.as_str()) {
                     self.window().call.partial(&speaker, &segment_id, &text);
@@ -787,6 +804,24 @@ impl App {
                         }
                     }
                     let me = app.my_uuid();
+                    // The server says this device still carries a live call the app has no
+                    // session for: the app restarted or crashed mid-call. Rejoin it within the
+                    // server's grace period rather than strand the call on a dead device.
+                    let my_device = app.my_device_id();
+                    let carried = page
+                        .items
+                        .iter()
+                        .find(|call| {
+                            matches!(call.state, CallState::Active | CallState::Voicemail)
+                                && call.participants.iter().any(|p| {
+                                    p.account.uuid == me
+                                        && p.state == ParticipantState::Joined
+                                        && p.device
+                                            .as_ref()
+                                            .is_some_and(|d| d.device_id == my_device)
+                                })
+                        })
+                        .map(|call| call.ringid.clone());
                     for call in page.items {
                         app.call_changed(call.clone());
                         if let Some(invitation) = call.ringing_invitation_for(&me).cloned() {
@@ -794,6 +829,9 @@ impl App {
                                 app.ring(&call, &invitation);
                             }
                         }
+                    }
+                    if let Some(ringid) = carried {
+                        app.restore_call(ringid);
                     }
                 }
                 Err(err) => tracing::warn!("reconcile failed: {err}"),
@@ -1472,40 +1510,71 @@ impl App {
         });
     }
 
+    /// Rejoins a call the server says this device carries although the app has no session for
+    /// it (`POST /v1/calls/{ringid}/media`), as after a restart mid-call.
+    fn restore_call(&self, ringid: String) {
+        if self.has_active_call() || self.0.restoring.replace(true) {
+            return;
+        }
+        tracing::info!("rejoining call {ringid}, which this device carried before a restart");
+        let generation = self.0.generation.get();
+        let client = self.client();
+        let app = self.clone();
+        glib::spawn_future_local(async move {
+            let id = ringid.clone();
+            let result = runtime::run(async move { client.media(&id).await }).await;
+            app.0.restoring.set(false);
+            if app.0.generation.get() != generation || app.has_active_call() {
+                return;
+            }
+            match result {
+                Ok(answer) => app.begin_call(answer.call, answer.media),
+                Err(err) => tracing::warn!("could not rejoin call {ringid}: {err}"),
+            }
+        });
+    }
+
     fn handoff(&self, ringid: &str, device_id: &str) {
         if self.active_ringid().as_deref() != Some(ringid) || device_id == self.my_device_id() {
             return;
         }
-        let device_name = self
+        let known = self
             .0
             .active
             .borrow()
             .as_ref()
-            .and_then(|a| {
-                a.call.participants.iter().find_map(|p| {
-                    p.device
-                        .as_ref()
-                        .filter(|d| d.device_id == device_id)
-                        .cloned()
-                })
-            })
-            .map(|d| {
-                d.name
-                    .unwrap_or_else(|| widgets::platform_name(d.platform).to_string())
-            })
-            .unwrap_or_else(|| "another device".to_string());
+            .and_then(|a| device_in(&a.call, device_id));
         self.end_local_call(None, false);
-        self.window().call.show_moved(&device_name);
-        self.toast(&format!("Moved to {device_name}"));
-        // The server's call.updated for the new device fills in the "switch back" banner.
+        if let Some(device) = &known {
+            self.show_moved(Some(device));
+        }
+        // The fresh call names the new device when the cached one did not yet, and fills in the
+        // "switch back" banner.
         let client = self.client();
         let app = self.clone();
         let id = ringid.to_string();
+        let device_id = device_id.to_string();
         glib::spawn_future_local(async move {
-            if let Ok(call) = runtime::run(async move { client.call(&id).await }).await {
+            let call = runtime::run(async move { client.call(&id).await })
+                .await
+                .ok();
+            if known.is_none() && !app.has_active_call() {
+                let device = call.as_ref().and_then(|c| device_in(c, &device_id));
+                app.show_moved(device.as_ref());
+            }
+            if let Some(call) = call {
                 app.call_changed(call);
             }
         });
+    }
+
+    /// "Moved to <device>" on the call screen and as a toast.
+    fn show_moved(&self, device: Option<&DeviceRef>) {
+        let name = device
+            .map(widgets::device_label)
+            .unwrap_or_else(|| "another device".to_string());
+        self.window().call.show_moved(&name);
+        self.toast(&format!("Moved to {name}"));
     }
 
     pub fn show_call(&self) {
