@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification icon: assets/icon/monochrome.svg (viewBox 40 40 120 120). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="120" android:viewportHeight="120">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M48,59.5a11.5,11.5 0 1,0 23,0a11.5,11.5 0 1,0 -23,0z" />
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="6"
+        android:pathData="M27.5,59.5a32,32 0 1,0 64,0a32,32 0 1,0 -64,0z" />
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="5"
+        android:pathData="M4.5,59.5a55,55 0 1,0 110,0a55,55 0 1,0 -110,0z" />
+</vector>

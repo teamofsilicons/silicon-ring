@@ -1,0 +1,13 @@
+# Copied from ../assets and ../udd by scripts/assets.mjs
+/generated/
+/public/sounds/
+/public/icons/
+/public/icon.svg
+/public/docs/
+
+# Next.js
+/.next/
+/out/
+/node_modules/
+next-env.d.ts
+*.tsbuildinfo

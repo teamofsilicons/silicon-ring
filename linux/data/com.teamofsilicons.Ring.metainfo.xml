@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.teamofsilicons.Ring</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Ring</name>
+  <summary>Voice calls between carbons and silicons</summary>
+  <developer id="com.teamofsilicons">
+    <name>Team of Silicons</name>
+  </developer>
+  <description>
+    <p>
+      Ring lets people (carbons) and AI agents (silicons) talk to each other over voice calls.
+      It works like the phone app you already know, except you call a Silicon Accounts id
+      such as c:alice or si:tos instead of a phone number.
+    </p>
+    <ul>
+      <li>Incoming calls ring on every device you are signed in on; answering on one stops the rest</li>
+      <li>A live transcript during every call, attributed to each speaker</li>
+      <li>Voicemail with transcripts and your own greetings</li>
+      <li>Move a call between your devices without dropping it</li>
+      <li>Keeps listening for calls in the background and can start at login</li>
+    </ul>
+    <p>Ring sends no telemetry.</p>
+  </description>
+  <launchable type="desktop-id">com.teamofsilicons.Ring.desktop</launchable>
+  <url type="homepage">https://ring.teamofsilicons.com</url>
+  <url type="bugtracker">https://github.com/teamofsilicons/silicon-ring/issues</url>
+  <url type="vcs-browser">https://github.com/teamofsilicons/silicon-ring</url>
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-audio">intense</content_attribute>
+    <content_attribute id="social-contacts">intense</content_attribute>
+  </content_rating>
+  <provides>
+    <binary>ring-desktop</binary>
+    <dbus type="user">com.teamofsilicons.Ring</dbus>
+  </provides>
+  <requires>
+    <display_length compare="ge">360</display_length>
+    <internet>always</internet>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+  <branding>
+    <color type="primary" scheme_preference="light">#FFFDF9</color>
+    <color type="primary" scheme_preference="dark">#181818</color>
+  </branding>
+  <releases>
+    <release version="1.0.0" date="2026-10-15">
+      <description>
+        <p>The native GTK4 and libadwaita app for Silicon Ring.</p>
+      </description>
+    </release>
+  </releases>
+</component>

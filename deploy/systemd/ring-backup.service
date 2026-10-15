@@ -1,0 +1,21 @@
+[Unit]
+Description=Back up the Silicon Ring database to S3
+Documentation=https://github.com/teamofsilicons/silicon-ring/blob/main/docs/operations.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root reads /etc/ring/server.env for the bucket; the copy is made with SQLite's online backup.
+ExecStart=/usr/bin/python3 -I /opt/ring/current/deploy/backup.py --env-file /etc/ring/server.env --label scheduled
+Environment=HOME=/tmp
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+# SQLite needs write access to the -shm file even to copy a WAL database.
+ReadWritePaths=/var/backups/ring /var/lib/ring
+PrivateTmp=true
+PrivateDevices=true

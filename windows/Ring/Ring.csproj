@@ -1,0 +1,73 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <RootNamespace>Ring</RootNamespace>
+    <AssemblyName>Ring</AssemblyName>
+    <Product>Ring</Product>
+    <AssemblyTitle>Ring</AssemblyTitle>
+    <Company>Team of Silicons</Company>
+    <Copyright>Team of Silicons</Copyright>
+    <Version>1.0.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\Ring.ico</ApplicationIcon>
+    <Platforms>x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <!-- Unpackaged and self-contained: a plain folder (zip or MSI) with the Windows App SDK inside. -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Program.cs owns Main so it can enforce a single instance before XAML starts. -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.13" />
+  </ItemGroup>
+
+  <!-- Shared brand assets from the repository root, copied beside Ring.exe. -->
+  <ItemGroup>
+    <Content Include="Assets\Ring.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\assets\icon\png\icon-256.png" Link="Assets\RingIcon.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\assets\fonts\bdo-grotesk\*.ttf" Link="Assets\Fonts\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\assets\fonts\hedvig-letters-serif\*.ttf" Link="Assets\Fonts\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\assets\fonts\geist-pixel\GeistPixel-Square.ttf" Link="Assets\Fonts\GeistPixel-Square.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\assets\fonts\geist-pixel\LICENSE.txt" Link="Assets\Fonts\GeistPixel-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\assets\sounds\*.wav" Link="Assets\Sounds\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    ring_ffi.dll (crates/ring-ffi) carries call audio. Build it first as a release build of
+    silicon-ring-ffi for the matching Rust target, or pass -p:RingFfiDll=<path>.
+  -->
+  <PropertyGroup>
+    <RingFfiTriple Condition="'$(RuntimeIdentifier)' == 'win-arm64' or '$(Platform)' == 'ARM64'">aarch64-pc-windows-msvc</RingFfiTriple>
+    <RingFfiTriple Condition="'$(RingFfiTriple)' == ''">x86_64-pc-windows-msvc</RingFfiTriple>
+    <RingFfiDll Condition="'$(RingFfiDll)' == ''">$(MSBuildThisFileDirectory)..\..\target\$(RingFfiTriple)\release\ring_ffi.dll</RingFfiDll>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(RingFfiDll)')">
+    <None Include="$(RingFfiDll)" Link="ring_ffi.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="RingWarnMissingFfi" BeforeTargets="Build" Condition="!Exists('$(RingFfiDll)')">
+    <Warning Text="ring_ffi.dll was not found at $(RingFfiDll); Ring will build but calls will have no audio." />
+  </Target>
+
+</Project>

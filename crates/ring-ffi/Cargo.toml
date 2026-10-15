@@ -7,10 +7,15 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+publish = false
 
 [lib]
 name = "ring_ffi"
-crate-type = ["cdylib", "staticlib", "rlib"]
+# ring_ffi.dll for the Windows app; the rlib keeps `cargo check`/clippy usable from the workspace.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-ring-proto.workspace = true
+ring-core = { workspace = true, features = ["media"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true }

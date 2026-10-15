@@ -1,0 +1,210 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Silicon Ring on one Graviton host: Caddy, ring-server, ring-media and a single-node LiveKit SFU.
+  Updates the existing silicon-ring stack in place; the assets bucket and the Elastic IP survive
+  instance replacement, so ring.teamofsilicons.com and backend.ring.teamofsilicons.com keep resolving.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet with an internet gateway route.
+  InstanceType:
+    Type: String
+    Default: t4g.medium
+    AllowedPattern: '(t4g|m7g|m8g|c7g|c8g|r7g|r8g)\.[a-z0-9]+'
+    ConstraintDescription: Must be a Graviton (arm64) instance type; the release binaries are aarch64.
+  SecretsArn:
+    Type: String
+    AllowedPattern: 'arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+'
+    Description: Secrets Manager secret (silicon-ring/production) holding the runtime environment as a JSON object.
+  LatestAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: >-
+      Amazon Linux 2023 arm64, used when PinnedAmi is empty. CloudFormation resolves it on every
+      stack update, and a newer image replaces the instance (and its local SQLite).
+  PinnedAmi:
+    Type: String
+    Default: ''
+    AllowedPattern: '(ami-[0-9a-f]{8,17})?'
+    Description: >-
+      The image the running instance was launched from. deploy/deploy.py stack fills it in so an
+      unrelated stack update never replaces the host; leave it empty to move to LatestAmi.
+
+Conditions:
+  UsePinnedAmi: !Not [!Equals [!Ref PinnedAmi, '']]
+
+Resources:
+  # Unchanged from the original stack: it holds recordings, voicemail, releases and backups.
+  Assets:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Assets
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt Assets.Arn
+              - !Sub '${Assets.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      # Kept from the original stack: a new description would replace the group.
+      GroupDescription: Ring HTTPS and certificate validation; administration via SSM only.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP, for ACME and the redirect to HTTPS
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS for the web app, the API and LiveKit signalling
+        - IpProtocol: udp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTP/3
+        - IpProtocol: tcp
+          FromPort: 7881
+          ToPort: 7881
+          CidrIp: 0.0.0.0/0
+          Description: LiveKit ICE over TCP
+        - IpProtocol: udp
+          FromPort: 7882
+          ToPort: 7892
+          CidrIp: 0.0.0.0/0
+          Description: LiveKit ICE over UDP
+        - IpProtocol: udp
+          FromPort: 3478
+          ToPort: 3478
+          CidrIp: 0.0.0.0/0
+          Description: LiveKit TURN over UDP
+
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Policies:
+        - PolicyName: ring-storage-and-runtime-secret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: RuntimeSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref SecretsArn
+              - Sid: ListAssets
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt Assets.Arn
+              - Sid: ReadWriteAssets
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject, s3:AbortMultipartUpload]
+                Resource: !Sub '${Assets.Arn}/*'
+  Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref Role]
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !If [UsePinnedAmi, !Ref PinnedAmi, !Ref LatestAmi]
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref Profile
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: [!Ref SecurityGroup]
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            Encrypted: true
+            VolumeType: gp3
+            VolumeSize: 30
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: silicon-ring
+      # Packages, users and directories only. deploy/install-release.sh (run over SSM by
+      # deploy/deploy.py) installs Caddy, LiveKit, the Ring binaries, units and configuration.
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euo pipefail
+          dnf -y install python3 tar gzip sqlite util-linux
+          for user in ring caddy livekit; do
+            id "$user" >/dev/null 2>&1 || useradd --system --home-dir "/var/lib/$user" --shell /sbin/nologin "$user"
+          done
+          install -d -m 0700 /etc/ring
+          install -d -m 0750 -g livekit /etc/livekit
+          install -d -m 0755 /etc/caddy /opt/ring /opt/ring/releases /opt/ring/tools
+          install -d -m 0700 -o ring -g ring /var/lib/ring
+          install -d -m 0700 -o caddy -g caddy /var/lib/caddy
+          install -d -m 0700 -o livekit -g livekit /var/lib/livekit
+          install -d -m 0700 /var/backups/ring
+          install -d -m 0755 /etc/systemd/journald.conf.d
+          printf '[Journal]\nStorage=persistent\nSystemMaxUse=512M\n' > /etc/systemd/journald.conf.d/ring.conf
+          # Larger socket buffers for the SFU's UDP media, as LiveKit recommends.
+          printf 'net.core.rmem_max=5000000\nnet.core.wmem_max=5000000\nnet.core.rmem_default=1000000\nnet.core.wmem_default=1000000\n' > /etc/sysctl.d/90-ring-livekit.conf
+          sysctl --system >/dev/null
+          systemctl restart systemd-journald
+          systemctl enable --now amazon-ssm-agent
+
+  # Unchanged from the original stack. A replaced instance takes over the same address.
+  Address:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Instance
+
+Outputs:
+  InstanceId:
+    Value: !Ref Instance
+  PublicIp:
+    Value: !Ref Address
+  AssetsBucket:
+    Value: !Ref Assets
+  SecretsArn:
+    Value: !Ref SecretsArn
+  SecurityGroupId:
+    Value: !Ref SecurityGroup
+  ImageId:
+    Value: !If [UsePinnedAmi, !Ref PinnedAmi, !Ref LatestAmi]

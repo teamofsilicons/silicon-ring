@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="40 40 120 120" fill="none">
+  <!-- Single-colour Ring mark for tray, notification, themed and symbolic icons. -->
+  <circle cx="99.5" cy="99.5" r="11.5" fill="#000"/>
+  <circle cx="99.5" cy="99.5" r="32" stroke="#000" stroke-width="6"/>
+  <circle cx="99.5" cy="99.5" r="55" stroke="#000" stroke-width="5"/>
+</svg>

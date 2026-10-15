@@ -1,0 +1,90 @@
+/* Call details and voicemail detail. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-section);
+}
+
+.back {
+  margin-left: calc(-1 * var(--space-group));
+}
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-related);
+  text-align: center;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-group);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-group);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.transcript {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-inset);
+  margin: 0;
+  padding: var(--space-inset);
+  border: var(--ring-hairline) solid var(--border-strong);
+  border-radius: var(--radius-container);
+  background: var(--surface);
+  box-shadow: var(--shadow-resting);
+  list-style: none;
+}
+
+.transcriptLine {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-tight);
+}
+
+.transcriptMeta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-group);
+}
+
+.transcriptText {
+  color: var(--foreground);
+  font-size: var(--text-base);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.player {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-related) var(--space-group);
+  padding: var(--space-inset);
+  border: var(--ring-hairline) solid var(--border-strong);
+  border-radius: var(--radius-container);
+  background: var(--surface);
+  box-shadow: var(--shadow-resting);
+}
+
+.scrubber {
+  min-width: 0;
+}
+
+.playerTime {
+  grid-column: 2;
+  justify-self: end;
+}

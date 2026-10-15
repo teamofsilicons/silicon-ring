@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-machine MSI for the self-contained Ring folder (WiX Toolset v5).
+  Built by .github/workflows/windows.yml:
+    wix build Ring.wxs -arch x64|arm64 -d PublishDir=<publish folder> -d Version=1.0.0 -o Ring-windows-<arch>.msi
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Ring"
+      Manufacturer="Team of Silicons"
+      Version="$(var.Version)"
+      UpgradeCode="6F6A2E3C-2B7B-4C55-9E6C-6E2C1C9D4A21"
+      Scope="perMachine"
+      Compressed="yes">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Ring is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="RingIcon" SourceFile="$(var.PublishDir)\Assets\Ring.ico" />
+    <Property Id="ARPPRODUCTICON" Value="RingIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://ring.teamofsilicons.com" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Ring" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.PublishDir)\**" />
+    </ComponentGroup>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut
+            Id="RingShortcut"
+            Name="Ring"
+            Description="Calls between carbons and silicons"
+            Target="[INSTALLFOLDER]Ring.exe"
+            WorkingDirectory="INSTALLFOLDER"
+            Icon="RingIcon">
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="TeamOfSilicons.Ring" />
+        </Shortcut>
+        <RegistryValue Root="HKMU" Key="Software\TeamOfSilicons\Ring" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Ring">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

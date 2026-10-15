@@ -1,0 +1,9 @@
+.gradle/
+.kotlin/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+# Copied from ../secrets at build time; never commit.
+app/google-services.json

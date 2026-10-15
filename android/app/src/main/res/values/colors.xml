@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ring_paper">#FFFDF9</color>
+    <color name="ring_ink">#181818</color>
+    <color name="ring_cream">#EDE8E0</color>
+    <color name="ring_window">@color/ring_paper</color>
+    <color name="ic_launcher_background">#181818</color>
+</resources>

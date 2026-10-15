@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="Ring.Views.CallDetailsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Ring.Controls"
+    xmlns:vm="using:Ring.ViewModels"
+    Background="Transparent"
+    FontFamily="{StaticResource RingSansFont}">
+    <ScrollViewer Padding="24,0,24,24" VerticalScrollBarVisibility="Auto">
+        <StackPanel MaxWidth="760" HorizontalAlignment="Stretch" Spacing="16">
+            <!-- Who and how it went -->
+            <Border Style="{StaticResource RingCardStyle}">
+                <StackPanel Spacing="14">
+                    <ItemsControl x:Name="PeopleList">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Vertical" Spacing="12" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:PersonItem">
+                                <Grid ColumnSpacing="14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <controls:Avatar VerticalAlignment="Center" Account="{x:Bind Account}" Size="48" />
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3">
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <TextBlock Style="{StaticResource RingHeadingStyle}" Text="{x:Bind Name}" />
+                                            <Border Style="{StaticResource RingSiliconBadgeStyle}" Visibility="{x:Bind SiliconVisibility}">
+                                                <TextBlock Style="{StaticResource RingSiliconBadgeTextStyle}" Text="SILICON" />
+                                            </Border>
+                                        </StackPanel>
+                                        <TextBlock FontSize="11" Style="{StaticResource RingPixelLabelStyle}" Text="{x:Bind Meta}" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <Rectangle Height="0.5" Fill="{ThemeResource RingBorderBrush}" />
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center" Spacing="4">
+                            <TextBlock x:Name="OutcomeText" Style="{StaticResource RingPixelLabelStyle}" Foreground="{ThemeResource RingInkBrush}" />
+                            <TextBlock x:Name="WhenText" Style="{StaticResource RingPixelLabelStyle}" />
+                            <TextBlock x:Name="ReasonsText" Style="{StaticResource RingSecondaryTextStyle}" Visibility="Collapsed" />
+                        </StackPanel>
+                        <Button x:Name="CallAgainButton" Grid.Column="1" VerticalAlignment="Center" Click="OnCallAgainClick" Style="{StaticResource RingPrimaryButtonStyle}">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon FontSize="14" Glyph="&#xE717;" />
+                                <TextBlock Text="Call" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Recording -->
+            <Border x:Name="RecordingCard" Style="{StaticResource RingCardStyle}" Visibility="Collapsed">
+                <StackPanel Spacing="10">
+                    <TextBlock Style="{StaticResource RingSectionHeaderStyle}" Text="RECORDING" />
+                    <MediaPlayerElement x:Name="RecordingPlayer" Height="96" AreTransportControlsEnabled="True" AutoPlay="False" Visibility="Collapsed" />
+                    <TextBlock x:Name="RecordingStatus" Style="{StaticResource RingSecondaryTextStyle}" />
+                </StackPanel>
+            </Border>
+
+            <!-- Timeline and transcript, in the style of the teamofsilicons.com writings timeline -->
+            <Border Style="{StaticResource RingCardStyle}">
+                <StackPanel Spacing="12">
+                    <TextBlock Style="{StaticResource RingSectionHeaderStyle}" Text="TIMELINE" />
+                    <ItemsControl x:Name="TimelineList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:TimelineItem">
+                                <Grid ColumnSpacing="14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="52" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock
+                                        Margin="0,2,0,0"
+                                        HorizontalAlignment="Right"
+                                        FontSize="11"
+                                        Style="{StaticResource RingPixelLabelStyle}"
+                                        Text="{x:Bind Time}" />
+                                    <Rectangle Grid.Column="1" Width="0.5" HorizontalAlignment="Center" Fill="{ThemeResource RingBorderStrongBrush}" />
+                                    <Ellipse
+                                        Grid.Column="1"
+                                        Width="7"
+                                        Height="7"
+                                        Margin="0,5,0,0"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Top"
+                                        Fill="{ThemeResource RingAccentBrush}" />
+                                    <StackPanel Grid.Column="2" Padding="0,0,0,14" Spacing="2">
+                                        <TextBlock FontSize="11" Style="{StaticResource RingPixelLabelStyle}" Text="{x:Bind Title}" />
+                                        <TextBlock
+                                            IsTextSelectionEnabled="True"
+                                            Style="{StaticResource RingBodyTextStyle}"
+                                            Text="{x:Bind Body}"
+                                            Visibility="{x:Bind BodyVisibility}" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock x:Name="TimelineEmpty" Style="{StaticResource RingSecondaryTextStyle}" Text="Nothing was said on this call." Visibility="Collapsed" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

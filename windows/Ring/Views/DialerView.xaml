@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="Ring.Views.DialerView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Ring.Controls"
+    xmlns:vm="using:Ring.ViewModels"
+    FontFamily="{StaticResource RingSansFont}">
+    <StackPanel Width="420" Spacing="14">
+        <TextBox
+            x:Name="QueryBox"
+            IsSpellCheckEnabled="False"
+            KeyDown="OnQueryKeyDown"
+            PlaceholderText="c:handle or si:handle"
+            TextChanged="OnQueryChanged" />
+
+        <TextBlock
+            x:Name="StatusText"
+            Style="{StaticResource RingPixelLabelStyle}"
+            Visibility="Collapsed" />
+
+        <!-- Live lookup result -->
+        <Border x:Name="ResultCard" Style="{StaticResource RingCardStyle}" Visibility="Collapsed">
+            <Grid ColumnSpacing="14">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <controls:Avatar x:Name="ResultAvatar" VerticalAlignment="Center" Size="48" />
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="4">
+                    <TextBlock x:Name="ResultName" Style="{StaticResource RingHeadingStyle}" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock x:Name="ResultHandle" VerticalAlignment="Center" Style="{StaticResource RingPixelLabelStyle}" />
+                        <Border x:Name="SiliconBadge" Style="{StaticResource RingSiliconBadgeStyle}" Visibility="Collapsed">
+                            <TextBlock Style="{StaticResource RingSiliconBadgeTextStyle}" Text="SILICON" />
+                        </Border>
+                        <Border x:Name="OnRingBadge" Style="{StaticResource RingBadgeStyle}">
+                            <TextBlock x:Name="OnRingText" Style="{StaticResource RingBadgeTextStyle}" Text="ON RING" />
+                        </Border>
+                    </StackPanel>
+                </StackPanel>
+                <Button
+                    x:Name="ResultCallButton"
+                    Grid.Column="2"
+                    VerticalAlignment="Center"
+                    Click="OnResultCallClick"
+                    Style="{StaticResource RingPrimaryButtonStyle}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon FontSize="14" Glyph="&#xE717;" />
+                        <TextBlock x:Name="ResultCallLabel" Text="Call" />
+                    </StackPanel>
+                </Button>
+            </Grid>
+        </Border>
+
+        <TextBlock x:Name="RecentHeader" Style="{StaticResource RingSectionHeaderStyle}" Text="RECENT" />
+        <ListView
+            x:Name="RecentList"
+            MaxHeight="300"
+            IsItemClickEnabled="True"
+            ItemClick="OnRecentClick"
+            ItemContainerStyle="{StaticResource RingListViewItemStyle}"
+            SelectionMode="None">
+            <ListView.ItemTemplate>
+                <DataTemplate x:DataType="vm:PersonItem">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <controls:Avatar VerticalAlignment="Center" Account="{x:Bind Account}" Size="36" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Style="{StaticResource RingStrongTextStyle}" Text="{x:Bind Name}" />
+                                <Border Style="{StaticResource RingSiliconBadgeStyle}" Visibility="{x:Bind SiliconVisibility}">
+                                    <TextBlock Style="{StaticResource RingSiliconBadgeTextStyle}" Text="SILICON" />
+                                </Border>
+                            </StackPanel>
+                            <TextBlock FontSize="11" Style="{StaticResource RingPixelLabelStyle}" Text="{x:Bind Meta}" />
+                        </StackPanel>
+                    </Grid>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+    </StackPanel>
+</UserControl>

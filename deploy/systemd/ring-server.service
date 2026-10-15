@@ -1,0 +1,48 @@
+[Unit]
+Description=Silicon Ring control plane (ring-server)
+Documentation=https://github.com/teamofsilicons/silicon-ring/blob/main/docs/operations.md
+Wants=network-online.target livekit.service
+After=network-online.target livekit.service
+StartLimitIntervalSec=120
+StartLimitBurst=20
+
+[Service]
+Type=simple
+User=ring
+Group=ring
+WorkingDirectory=/var/lib/ring
+EnvironmentFile=/etc/ring/server.env
+ExecStart=/opt/ring/current/bin/ring-server
+Restart=always
+RestartSec=2
+TimeoutStopSec=30
+UMask=0077
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ring
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

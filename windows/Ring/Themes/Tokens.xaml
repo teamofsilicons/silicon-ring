@@ -1,0 +1,307 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Ring design tokens (udd/design.md). The light values are teamofsilicons.com; the dark theme is
+    derived from the Ring mark (ink background, cream marks). Generated from the token table; keep
+    the three dictionaries in step when a value changes.
+-->
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Accent ramp: light theme fills with Dark1, dark theme with Light2. -->
+    <Color x:Key="SystemAccentColor">#1F5CB1</Color>
+    <Color x:Key="SystemAccentColorDark1">#1F5CB1</Color>
+    <Color x:Key="SystemAccentColorDark2">#184A94</Color>
+    <Color x:Key="SystemAccentColorDark3">#123A75</Color>
+    <Color x:Key="SystemAccentColorLight1">#4A80D2</Color>
+    <Color x:Key="SystemAccentColorLight2">#3872CA</Color>
+    <Color x:Key="SystemAccentColorLight3">#8DB2EC</Color>
+
+    <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+            <Color x:Key="RingBackgroundColor">#FFFDF9</Color>
+            <Color x:Key="RingSurfaceColor">#FFFFFF</Color>
+            <Color x:Key="RingSurfaceRaisedColor">#FFFFFF</Color>
+            <Color x:Key="RingSurfaceMutedColor">#F6F2EA</Color>
+            <Color x:Key="RingBeigeColor">#EDE8E0</Color>
+            <Color x:Key="RingForegroundColor">#1E1E1C</Color>
+            <Color x:Key="RingInkColor">#181818</Color>
+            <Color x:Key="RingTextSecondaryColor">#4A4842</Color>
+            <Color x:Key="RingTextMutedColor">#6E6B63</Color>
+            <Color x:Key="RingBorderColor">#E7E3D8</Color>
+            <Color x:Key="RingBorderStrongColor">#D9D2C4</Color>
+            <Color x:Key="RingAccentColor">#1F5CB1</Color>
+            <Color x:Key="RingAccentHoverColor">#184A94</Color>
+            <Color x:Key="RingOnPrimaryColor">#FFFFFF</Color>
+            <Color x:Key="RingAccentTextColor">#1F5CB1</Color>
+            <Color x:Key="RingAccentSubtleColor">#141F5CB1</Color>
+            <Color x:Key="RingAccentBorderColor">#401F5CB1</Color>
+            <Color x:Key="RingSuccessColor">#1F7A4D</Color>
+            <Color x:Key="RingDangerColor">#C8322B</Color>
+            <Color x:Key="RingWarningColor">#B66400</Color>
+            <Color x:Key="RingScrimColor">#66181818</Color>
+            <Color x:Key="RingOverlayColor">#0F181818</Color>
+            <Color x:Key="RingBackgroundTransparentColor">#00FFFDF9</Color>
+            <SolidColorBrush x:Key="RingBackgroundBrush" Color="#FFFDF9" />
+            <SolidColorBrush x:Key="RingSurfaceBrush" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="RingSurfaceRaisedBrush" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="RingSurfaceMutedBrush" Color="#F6F2EA" />
+            <SolidColorBrush x:Key="RingBeigeBrush" Color="#EDE8E0" />
+            <SolidColorBrush x:Key="RingForegroundBrush" Color="#1E1E1C" />
+            <SolidColorBrush x:Key="RingInkBrush" Color="#181818" />
+            <SolidColorBrush x:Key="RingTextSecondaryBrush" Color="#4A4842" />
+            <SolidColorBrush x:Key="RingTextMutedBrush" Color="#6E6B63" />
+            <SolidColorBrush x:Key="RingBorderBrush" Color="#E7E3D8" />
+            <SolidColorBrush x:Key="RingBorderStrongBrush" Color="#D9D2C4" />
+            <SolidColorBrush x:Key="RingAccentBrush" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="RingAccentHoverBrush" Color="#184A94" />
+            <SolidColorBrush x:Key="RingOnPrimaryBrush" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="RingAccentTextBrush" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="RingAccentSubtleBrush" Color="#141F5CB1" />
+            <SolidColorBrush x:Key="RingAccentBorderBrush" Color="#401F5CB1" />
+            <SolidColorBrush x:Key="RingSuccessBrush" Color="#1F7A4D" />
+            <SolidColorBrush x:Key="RingDangerBrush" Color="#C8322B" />
+            <SolidColorBrush x:Key="RingWarningBrush" Color="#B66400" />
+            <SolidColorBrush x:Key="RingScrimBrush" Color="#66181818" />
+            <SolidColorBrush x:Key="RingOverlayBrush" Color="#0F181818" />
+            <SolidColorBrush x:Key="RingBackgroundTransparentBrush" Color="#00FFFDF9" />
+            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="#F6F2EA" />
+            <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="#F6F2EA" />
+            <SolidColorBrush x:Key="NavigationViewTopPaneBackground" Color="#F6F2EA" />
+            <SolidColorBrush x:Key="NavigationViewContentBackground" Color="#FFFDF9" />
+            <SolidColorBrush x:Key="NavigationViewContentGridBorderBrush" Color="#E7E3D8" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelected" Color="#EDE8E0" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelectedPointerOver" Color="#EDE8E0" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelectedPressed" Color="#EDE8E0" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundPointerOver" Color="#0F181818" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundPressed" Color="#0F181818" />
+            <SolidColorBrush x:Key="NavigationViewSelectionIndicatorForeground" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="NavigationViewItemForegroundSelected" Color="#181818" />
+            <SolidColorBrush x:Key="NavigationViewItemForegroundSelectedPointerOver" Color="#181818" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundPointerOver" Color="#0F181818" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="#EDE8E0" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="#EDE8E0" />
+            <SolidColorBrush x:Key="ContentDialogBackground" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ContentDialogBorderBrush" Color="#D9D2C4" />
+            <SolidColorBrush x:Key="FlyoutPresenterBackground" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="FlyoutBorderThemeBrush" Color="#D9D2C4" />
+            <SolidColorBrush x:Key="InfoBarInformationalSeverityBackgroundBrush" Color="#EDE8E0" />
+            <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#184A94" />
+            <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#184A94" />
+            <SolidColorBrush x:Key="AccentTextFillColorPrimaryBrush" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="AccentTextFillColorSecondaryBrush" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="AccentTextFillColorTertiaryBrush" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="AccentButtonBackground" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#184A94" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#184A94" />
+            <SolidColorBrush x:Key="AccentButtonForeground" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrush" Color="#401F5CB1" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrushPointerOver" Color="#401F5CB1" />
+            <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#184A94" />
+            <SolidColorBrush x:Key="ToggleSwitchFillOnPressed" Color="#184A94" />
+            <SolidColorBrush x:Key="ToggleSwitchStrokeOn" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFill" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFillPointerOver" Color="#184A94" />
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedStroke" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeChecked" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="HyperlinkButtonForeground" Color="#1F5CB1" />
+            <SolidColorBrush x:Key="HyperlinkButtonForegroundPointerOver" Color="#184A94" />
+            <SolidColorBrush x:Key="TextControlFocusedBorderBrush" Color="#1F5CB1" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Default">
+            <Color x:Key="RingBackgroundColor">#181818</Color>
+            <Color x:Key="RingSurfaceColor">#1E1E1C</Color>
+            <Color x:Key="RingSurfaceRaisedColor">#252421</Color>
+            <Color x:Key="RingSurfaceMutedColor">#22211E</Color>
+            <Color x:Key="RingBeigeColor">#2E2C28</Color>
+            <Color x:Key="RingForegroundColor">#EDE8E0</Color>
+            <Color x:Key="RingInkColor">#F6F2EA</Color>
+            <Color x:Key="RingTextSecondaryColor">#C9C3B6</Color>
+            <Color x:Key="RingTextMutedColor">#9C978C</Color>
+            <Color x:Key="RingBorderColor">#2F2D29</Color>
+            <Color x:Key="RingBorderStrongColor">#3D3A35</Color>
+            <Color x:Key="RingAccentColor">#3872CA</Color>
+            <Color x:Key="RingAccentHoverColor">#4A80D2</Color>
+            <Color x:Key="RingOnPrimaryColor">#FFFFFF</Color>
+            <Color x:Key="RingAccentTextColor">#8DB2EC</Color>
+            <Color x:Key="RingAccentSubtleColor">#295B8FD9</Color>
+            <Color x:Key="RingAccentBorderColor">#595B8FD9</Color>
+            <Color x:Key="RingSuccessColor">#4CC38A</Color>
+            <Color x:Key="RingDangerColor">#F2706A</Color>
+            <Color x:Key="RingWarningColor">#F0B54A</Color>
+            <Color x:Key="RingScrimColor">#66181818</Color>
+            <Color x:Key="RingOverlayColor">#14F6F2EA</Color>
+            <Color x:Key="RingBackgroundTransparentColor">#00181818</Color>
+            <SolidColorBrush x:Key="RingBackgroundBrush" Color="#181818" />
+            <SolidColorBrush x:Key="RingSurfaceBrush" Color="#1E1E1C" />
+            <SolidColorBrush x:Key="RingSurfaceRaisedBrush" Color="#252421" />
+            <SolidColorBrush x:Key="RingSurfaceMutedBrush" Color="#22211E" />
+            <SolidColorBrush x:Key="RingBeigeBrush" Color="#2E2C28" />
+            <SolidColorBrush x:Key="RingForegroundBrush" Color="#EDE8E0" />
+            <SolidColorBrush x:Key="RingInkBrush" Color="#F6F2EA" />
+            <SolidColorBrush x:Key="RingTextSecondaryBrush" Color="#C9C3B6" />
+            <SolidColorBrush x:Key="RingTextMutedBrush" Color="#9C978C" />
+            <SolidColorBrush x:Key="RingBorderBrush" Color="#2F2D29" />
+            <SolidColorBrush x:Key="RingBorderStrongBrush" Color="#3D3A35" />
+            <SolidColorBrush x:Key="RingAccentBrush" Color="#3872CA" />
+            <SolidColorBrush x:Key="RingAccentHoverBrush" Color="#4A80D2" />
+            <SolidColorBrush x:Key="RingOnPrimaryBrush" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="RingAccentTextBrush" Color="#8DB2EC" />
+            <SolidColorBrush x:Key="RingAccentSubtleBrush" Color="#295B8FD9" />
+            <SolidColorBrush x:Key="RingAccentBorderBrush" Color="#595B8FD9" />
+            <SolidColorBrush x:Key="RingSuccessBrush" Color="#4CC38A" />
+            <SolidColorBrush x:Key="RingDangerBrush" Color="#F2706A" />
+            <SolidColorBrush x:Key="RingWarningBrush" Color="#F0B54A" />
+            <SolidColorBrush x:Key="RingScrimBrush" Color="#66181818" />
+            <SolidColorBrush x:Key="RingOverlayBrush" Color="#14F6F2EA" />
+            <SolidColorBrush x:Key="RingBackgroundTransparentBrush" Color="#00181818" />
+            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="#22211E" />
+            <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="#22211E" />
+            <SolidColorBrush x:Key="NavigationViewTopPaneBackground" Color="#22211E" />
+            <SolidColorBrush x:Key="NavigationViewContentBackground" Color="#181818" />
+            <SolidColorBrush x:Key="NavigationViewContentGridBorderBrush" Color="#2F2D29" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelected" Color="#2E2C28" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelectedPointerOver" Color="#2E2C28" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelectedPressed" Color="#2E2C28" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundPointerOver" Color="#14F6F2EA" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundPressed" Color="#14F6F2EA" />
+            <SolidColorBrush x:Key="NavigationViewSelectionIndicatorForeground" Color="#3872CA" />
+            <SolidColorBrush x:Key="NavigationViewItemForegroundSelected" Color="#F6F2EA" />
+            <SolidColorBrush x:Key="NavigationViewItemForegroundSelectedPointerOver" Color="#F6F2EA" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundPointerOver" Color="#14F6F2EA" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="#2E2C28" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="#2E2C28" />
+            <SolidColorBrush x:Key="ContentDialogBackground" Color="#252421" />
+            <SolidColorBrush x:Key="ContentDialogBorderBrush" Color="#3D3A35" />
+            <SolidColorBrush x:Key="FlyoutPresenterBackground" Color="#252421" />
+            <SolidColorBrush x:Key="FlyoutBorderThemeBrush" Color="#3D3A35" />
+            <SolidColorBrush x:Key="InfoBarInformationalSeverityBackgroundBrush" Color="#2E2C28" />
+            <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#3872CA" />
+            <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#4A80D2" />
+            <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#4A80D2" />
+            <SolidColorBrush x:Key="AccentTextFillColorPrimaryBrush" Color="#8DB2EC" />
+            <SolidColorBrush x:Key="AccentTextFillColorSecondaryBrush" Color="#8DB2EC" />
+            <SolidColorBrush x:Key="AccentTextFillColorTertiaryBrush" Color="#8DB2EC" />
+            <SolidColorBrush x:Key="AccentButtonBackground" Color="#3872CA" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#4A80D2" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#4A80D2" />
+            <SolidColorBrush x:Key="AccentButtonForeground" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrush" Color="#595B8FD9" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrushPointerOver" Color="#595B8FD9" />
+            <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#3872CA" />
+            <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#4A80D2" />
+            <SolidColorBrush x:Key="ToggleSwitchFillOnPressed" Color="#4A80D2" />
+            <SolidColorBrush x:Key="ToggleSwitchStrokeOn" Color="#3872CA" />
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFill" Color="#3872CA" />
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFillPointerOver" Color="#4A80D2" />
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedStroke" Color="#3872CA" />
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="#3872CA" />
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeChecked" Color="#3872CA" />
+            <SolidColorBrush x:Key="HyperlinkButtonForeground" Color="#8DB2EC" />
+            <SolidColorBrush x:Key="HyperlinkButtonForegroundPointerOver" Color="#4A80D2" />
+            <SolidColorBrush x:Key="TextControlFocusedBorderBrush" Color="#3872CA" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="HighContrast">
+            <Color x:Key="RingBackgroundColor">#181818</Color>
+            <Color x:Key="RingSurfaceColor">#1E1E1C</Color>
+            <Color x:Key="RingSurfaceRaisedColor">#252421</Color>
+            <Color x:Key="RingSurfaceMutedColor">#22211E</Color>
+            <Color x:Key="RingBeigeColor">#2E2C28</Color>
+            <Color x:Key="RingForegroundColor">#EDE8E0</Color>
+            <Color x:Key="RingInkColor">#F6F2EA</Color>
+            <Color x:Key="RingTextSecondaryColor">#C9C3B6</Color>
+            <Color x:Key="RingTextMutedColor">#9C978C</Color>
+            <Color x:Key="RingBorderColor">#2F2D29</Color>
+            <Color x:Key="RingBorderStrongColor">#3D3A35</Color>
+            <Color x:Key="RingAccentColor">#3872CA</Color>
+            <Color x:Key="RingAccentHoverColor">#4A80D2</Color>
+            <Color x:Key="RingOnPrimaryColor">#FFFFFF</Color>
+            <Color x:Key="RingAccentTextColor">#8DB2EC</Color>
+            <Color x:Key="RingAccentSubtleColor">#295B8FD9</Color>
+            <Color x:Key="RingAccentBorderColor">#595B8FD9</Color>
+            <Color x:Key="RingSuccessColor">#4CC38A</Color>
+            <Color x:Key="RingDangerColor">#F2706A</Color>
+            <Color x:Key="RingWarningColor">#F0B54A</Color>
+            <Color x:Key="RingScrimColor">#66181818</Color>
+            <Color x:Key="RingOverlayColor">#14F6F2EA</Color>
+            <Color x:Key="RingBackgroundTransparentColor">#00181818</Color>
+            <SolidColorBrush x:Key="RingBackgroundBrush" Color="#181818" />
+            <SolidColorBrush x:Key="RingSurfaceBrush" Color="#1E1E1C" />
+            <SolidColorBrush x:Key="RingSurfaceRaisedBrush" Color="#252421" />
+            <SolidColorBrush x:Key="RingSurfaceMutedBrush" Color="#22211E" />
+            <SolidColorBrush x:Key="RingBeigeBrush" Color="#2E2C28" />
+            <SolidColorBrush x:Key="RingForegroundBrush" Color="#EDE8E0" />
+            <SolidColorBrush x:Key="RingInkBrush" Color="#F6F2EA" />
+            <SolidColorBrush x:Key="RingTextSecondaryBrush" Color="#C9C3B6" />
+            <SolidColorBrush x:Key="RingTextMutedBrush" Color="#9C978C" />
+            <SolidColorBrush x:Key="RingBorderBrush" Color="#2F2D29" />
+            <SolidColorBrush x:Key="RingBorderStrongBrush" Color="#3D3A35" />
+            <SolidColorBrush x:Key="RingAccentBrush" Color="#3872CA" />
+            <SolidColorBrush x:Key="RingAccentHoverBrush" Color="#4A80D2" />
+            <SolidColorBrush x:Key="RingOnPrimaryBrush" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="RingAccentTextBrush" Color="#8DB2EC" />
+            <SolidColorBrush x:Key="RingAccentSubtleBrush" Color="#295B8FD9" />
+            <SolidColorBrush x:Key="RingAccentBorderBrush" Color="#595B8FD9" />
+            <SolidColorBrush x:Key="RingSuccessBrush" Color="#4CC38A" />
+            <SolidColorBrush x:Key="RingDangerBrush" Color="#F2706A" />
+            <SolidColorBrush x:Key="RingWarningBrush" Color="#F0B54A" />
+            <SolidColorBrush x:Key="RingScrimBrush" Color="#66181818" />
+            <SolidColorBrush x:Key="RingOverlayBrush" Color="#14F6F2EA" />
+            <SolidColorBrush x:Key="RingBackgroundTransparentBrush" Color="#00181818" />
+            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="#22211E" />
+            <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="#22211E" />
+            <SolidColorBrush x:Key="NavigationViewTopPaneBackground" Color="#22211E" />
+            <SolidColorBrush x:Key="NavigationViewContentBackground" Color="#181818" />
+            <SolidColorBrush x:Key="NavigationViewContentGridBorderBrush" Color="#2F2D29" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelected" Color="#2E2C28" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelectedPointerOver" Color="#2E2C28" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelectedPressed" Color="#2E2C28" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundPointerOver" Color="#14F6F2EA" />
+            <SolidColorBrush x:Key="NavigationViewItemBackgroundPressed" Color="#14F6F2EA" />
+            <SolidColorBrush x:Key="NavigationViewSelectionIndicatorForeground" Color="#3872CA" />
+            <SolidColorBrush x:Key="NavigationViewItemForegroundSelected" Color="#F6F2EA" />
+            <SolidColorBrush x:Key="NavigationViewItemForegroundSelectedPointerOver" Color="#F6F2EA" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundPointerOver" Color="#14F6F2EA" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="#2E2C28" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="#2E2C28" />
+            <SolidColorBrush x:Key="ContentDialogBackground" Color="#252421" />
+            <SolidColorBrush x:Key="ContentDialogBorderBrush" Color="#3D3A35" />
+            <SolidColorBrush x:Key="FlyoutPresenterBackground" Color="#252421" />
+            <SolidColorBrush x:Key="FlyoutBorderThemeBrush" Color="#3D3A35" />
+            <SolidColorBrush x:Key="InfoBarInformationalSeverityBackgroundBrush" Color="#2E2C28" />
+            <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#3872CA" />
+            <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#4A80D2" />
+            <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#4A80D2" />
+            <SolidColorBrush x:Key="AccentTextFillColorPrimaryBrush" Color="#8DB2EC" />
+            <SolidColorBrush x:Key="AccentTextFillColorSecondaryBrush" Color="#8DB2EC" />
+            <SolidColorBrush x:Key="AccentTextFillColorTertiaryBrush" Color="#8DB2EC" />
+            <SolidColorBrush x:Key="AccentButtonBackground" Color="#3872CA" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#4A80D2" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#4A80D2" />
+            <SolidColorBrush x:Key="AccentButtonForeground" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrush" Color="#595B8FD9" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrushPointerOver" Color="#595B8FD9" />
+            <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#3872CA" />
+            <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#4A80D2" />
+            <SolidColorBrush x:Key="ToggleSwitchFillOnPressed" Color="#4A80D2" />
+            <SolidColorBrush x:Key="ToggleSwitchStrokeOn" Color="#3872CA" />
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFill" Color="#3872CA" />
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFillPointerOver" Color="#4A80D2" />
+            <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedStroke" Color="#3872CA" />
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="#3872CA" />
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeChecked" Color="#3872CA" />
+            <SolidColorBrush x:Key="HyperlinkButtonForeground" Color="#8DB2EC" />
+            <SolidColorBrush x:Key="HyperlinkButtonForegroundPointerOver" Color="#4A80D2" />
+            <SolidColorBrush x:Key="TextControlFocusedBorderBrush" Color="#3872CA" />
+        </ResourceDictionary>
+    </ResourceDictionary.ThemeDictionaries>
+</ResourceDictionary>

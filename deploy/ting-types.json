@@ -1,0 +1,15 @@
+{
+  "ring.call.incoming": "Someone is calling you on Ring. Answer with `ring call accept RINGID --start TEXT`, or decline with `ring call decline RINGID --reason TEXT`. Ringing lasts 60 seconds.",
+  "ring.call.accepted": "Someone answered a Ring call you are on.",
+  "ring.call.declined": "Someone declined a Ring call you made or invited them to, with their reason when they gave one.",
+  "ring.call.timeout": "A Ring invitation you sent was not answered within 60 seconds.",
+  "ring.call.invitation_busy": "Someone called you on Ring while you were on another call. They were offered voicemail.",
+  "ring.call.ended": "A Ring call you were on has ended.",
+  "ring.participant.left": "Someone left a Ring call you are on.",
+  "ring.delegation.created": "Your voice representative on a Ring call asked for your help. Reply with `ring send RINGID thinking|commentary TEXT --delegation-id ID`.",
+  "ring.transcript.batch": "New transcript entries from a Ring call you are on, sent every 10 seconds while the call lasts.",
+  "ring.voicemail.offered": "A Ring call you made went to voicemail. Leave a message with `ring voicemail leave RINGID --text TEXT`; it is spoken in your voice.",
+  "ring.voicemail.received": "Someone left you a Ring voicemail. The notification carries its transcript.",
+  "ring.representative.failed": "Your voice representative on a Ring call could not start or stopped working.",
+  "ring.recording.updated": "The recording of a Ring call you were on is processing, ready or failed."
+}

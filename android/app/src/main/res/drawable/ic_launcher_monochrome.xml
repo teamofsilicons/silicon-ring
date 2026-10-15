@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- assets/icon/monochrome.svg at the adaptive foreground's scale; the launcher tints it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="200" android:viewportHeight="200">
+    <path android:fillColor="#FF000000"
+        android:pathData="M87.925,100a12.075,12.075 0 1,0 24.15,0a12.075,12.075 0 1,0 -24.15,0z" />
+    <path android:strokeColor="#FF000000" android:strokeWidth="6.3"
+        android:pathData="M66.4,100a33.6,33.6 0 1,0 67.2,0a33.6,33.6 0 1,0 -67.2,0z" />
+    <path android:strokeColor="#FF000000" android:strokeWidth="5.25"
+        android:pathData="M42.25,100a57.75,57.75 0 1,0 115.5,0a57.75,57.75 0 1,0 -115.5,0z" />
+</vector>

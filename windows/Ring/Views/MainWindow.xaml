@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Ring.Views.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Ring.Controls"
+    xmlns:views="using:Ring.Views"
+    Title="Ring">
+    <UserControl x:Name="RootControl" FontFamily="{StaticResource RingSansFont}">
+        <Grid Background="{ThemeResource RingBackgroundBrush}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="40" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- Title bar: the mark and the pixel wordmark; the rest is a drag region. -->
+            <Grid x:Name="TitleBarArea" Background="Transparent">
+                <StackPanel Margin="16,0,0,0" VerticalAlignment="Center" Orientation="Horizontal" Spacing="8">
+                    <controls:RingMark Width="16" Height="16" ShowTile="True" />
+                    <TextBlock
+                        VerticalAlignment="Center"
+                        CharacterSpacing="80"
+                        FontFamily="{StaticResource RingPixelFont}"
+                        FontSize="12"
+                        Foreground="{ThemeResource RingInkBrush}"
+                        Text="RING" />
+                </StackPanel>
+            </Grid>
+
+            <views:SignInView x:Name="SignInHost" Grid.Row="1" Visibility="Collapsed" />
+            <views:ShellView x:Name="ShellHost" Grid.Row="1" Visibility="Collapsed" />
+            <views:CallView x:Name="CallHost" Grid.Row="1" Visibility="Collapsed" />
+        </Grid>
+    </UserControl>
+</Window>

@@ -1,0 +1,83 @@
+# Production gateway for Silicon Ring. Installed to /etc/caddy/Caddyfile by deploy/install-release.sh.
+#
+#   ring.teamofsilicons.com          static web export, /v1/* (API and /v1/ws) and /rtc* (LiveKit)
+#   backend.ring.teamofsilicons.com  /rtc* to LiveKit, everything else to ring-server
+#
+# ring-server cannot tell proxied requests from local ones, so /internal/* is never forwarded.
+# LiveKit's own API (/twirp/*) stays on loopback for ring-server and ring-media.
+{
+	# A socket in caddy's 0700 home, so no other local user (ring, livekit) can reconfigure the
+	# gateway. ExecReload in caddy.service runs as caddy and finds it through this file.
+	admin unix//var/lib/caddy/admin.sock
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+(common) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Cross-Origin-Opener-Policy "same-origin"
+		-Server
+	}
+	@internal path /internal /internal/*
+	handle @internal {
+		respond 404
+	}
+	@livekit path /rtc /rtc/*
+	handle @livekit {
+		reverse_proxy 127.0.0.1:7880 {
+			# Keep media signalling up across config reloads; calls outlive a deploy of Caddy.
+			stream_close_delay 10m
+		}
+	}
+}
+
+ring.teamofsilicons.com {
+	import common
+
+	@api path /v1 /v1/*
+	handle @api {
+		reverse_proxy 127.0.0.1:8765 {
+			stream_close_delay 10m
+		}
+	}
+
+	handle {
+		root * /opt/ring/current/web
+		# Inline scripts are pinned per page by hash in a <meta> CSP (web/scripts/csp.mjs); both
+		# policies apply, so this header allows inline scripts only as far as that meta allows.
+		header {
+			Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https://silicon-ring-assets-smdjuu0paizr.s3.us-west-1.amazonaws.com https://silicon-ring-assets-smdjuu0paizr.s3.amazonaws.com; font-src 'self' data:; connect-src 'self' wss://ring.teamofsilicons.com https://backend.ring.teamofsilicons.com wss://backend.ring.teamofsilicons.com; worker-src 'self' blob:; manifest-src 'self'; frame-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self' https://accounts.teamofsilicons.com; upgrade-insecure-requests"
+			Permissions-Policy "microphone=(self), camera=(), geolocation=(), payment=(), usb=(), autoplay=(self)"
+		}
+		# Matchers see the request path before try_files maps /call to call.html, so everything
+		# except the content-hashed bundles revalidates; a stale page would load deleted chunks.
+		@immutable path /_next/static/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+		@revalidate not path /_next/static/*
+		header @revalidate Cache-Control "no-cache"
+		try_files {path} {path}.html {path}/index.html
+		file_server
+	}
+
+	handle_errors 404 {
+		root * /opt/ring/current/web
+		rewrite * /404.html
+		file_server
+	}
+}
+
+backend.ring.teamofsilicons.com {
+	import common
+
+	handle {
+		reverse_proxy 127.0.0.1:8765 {
+			stream_close_delay 10m
+		}
+	}
+}

@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="40 40 120 120">
+  <!-- The Ring mark as filled shapes (GTK recolours symbolic icons by fill). -->
+  <path fill="#2e3436" fill-rule="evenodd" d="M88 99.5a11.5 11.5 0 1 0 23 0a11.5 11.5 0 1 0-23 0Z M64.5 99.5a35 35 0 1 0 70 0a35 35 0 1 0-70 0Z M70.5 99.5a29 29 0 1 0 58 0a29 29 0 1 0-58 0Z M42 99.5a57.5 57.5 0 1 0 115 0a57.5 57.5 0 1 0-115 0Z M47 99.5a52.5 52.5 0 1 0 105 0a52.5 52.5 0 1 0-105 0Z"/>
+</svg>

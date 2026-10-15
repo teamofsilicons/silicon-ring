@@ -1,0 +1,9 @@
+# libwebrtc is a very large static archive; GNU ld takes many minutes (and gigabytes) to link
+# it, while lld links it in seconds. clang is already required by webrtc-sys.
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

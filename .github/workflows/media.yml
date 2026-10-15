@@ -1,0 +1,79 @@
+name: Server binaries
+
+# Builds ring-server and ring-media for the production host (Graviton, Amazon Linux 2023) inside
+# an amazonlinux:2023 container on a native arm64 runner, so the binaries link against glibc 2.34.
+# The artifact is what deploy/deploy.py packages (download it into dist/server/).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, rebuild-v1]
+    paths:
+      - "crates/ring-proto/**"
+      - "crates/ring-server/**"
+      - "crates/ring-media/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/al2023-toolchain.sh"
+      - "scripts/check-linux-binary.sh"
+      - ".github/workflows/media.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: media-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ring-server + ring-media (linux aarch64, AL2023)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    container:
+      image: amazonlinux:2023
+    env:
+      CARGO_HOME: /usr/local/cargo
+      RUSTUP_HOME: /usr/local/rustup
+      # Relative on purpose: in a container job the github.workspace context is the runner's host
+      # path, not the /__w mount the steps run in, so the target dir would miss the cache below.
+      CARGO_TARGET_DIR: target/al2023
+      CARGO_TERM_COLOR: always
+      CC: clang
+      CXX: clang++
+    steps:
+      - name: Tools the checkout needs
+        run: dnf -y -q install git tar gzip
+
+      - uses: actions/checkout@v7
+
+      - name: Toolchain (Rust 1.98.1, clang 21, GLib headers)
+        run: |
+          sh scripts/al2023-toolchain.sh
+          echo "/usr/local/cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: al2023-aarch64
+          workspaces: ". -> target/al2023"
+
+      - name: Build
+        run: cargo build --release --locked -p silicon-ring-server -p silicon-ring-media
+
+      - name: Check architecture and glibc floor
+        run: sh scripts/check-linux-binary.sh "$CARGO_TARGET_DIR/release/ring-server" "$CARGO_TARGET_DIR/release/ring-media"
+
+      - name: Collect
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p dist/server
+          install -m 0755 "$CARGO_TARGET_DIR/release/ring-server" "$CARGO_TARGET_DIR/release/ring-media" dist/server/
+          python3 -I scripts/server-receipt.py dist/server --rustc "$(rustc --version)"
+          cat dist/server/SHA256SUMS
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ring-server-linux-aarch64
+          path: dist/server/
+          if-no-files-found: error
+          retention-days: 30

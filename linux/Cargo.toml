@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "ring-linux"
+description = "Silicon Ring for Linux: calls between carbons and silicons (GTK4/libadwaita)"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+repository = "https://github.com/teamofsilicons/silicon-ring"
+homepage = "https://ring.teamofsilicons.com"
+publish = false
+
+[[bin]]
+name = "ring-desktop"
+path = "src/main.rs"
+
+[dependencies]
+ring-core = { package = "silicon-ring-core", path = "../crates/ring-core", features = ["media"] }
+ring-proto = { package = "silicon-ring-proto", path = "../crates/ring-proto" }
+gtk = { package = "gtk4", version = "0.11.5", features = ["v4_14"] }
+adw = { package = "libadwaita", version = "0.9.2", features = ["v1_5"] }
+gdk-x11 = { package = "gdk4-x11", version = "0.11" }
+glib = { version = "0.22", features = ["v2_70"] }
+gio = { version = "0.22", features = ["v2_70"] }
+ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "notification", "background"] }
+oo7 = { version = "0.6", default-features = false, features = ["tokio", "native_crypto"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+async-channel = "2"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Debug builds skip dependency debuginfo so linking libwebrtc stays fast.
+[profile.dev.package."*"]
+debug = false
+
+# Thin LTO keeps the binary lean without serialising codegen; most of its size is libwebrtc,
+# which rustc does not optimise anyway.
+[profile.release]
+lto = "thin"
+strip = "symbols"

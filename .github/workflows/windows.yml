@@ -1,0 +1,183 @@
+name: Windows app
+
+# Builds ring_ffi.dll (crates/ring-ffi) and the WinUI 3 app (windows/) for x64 and arm64 on
+# native runners, then publishes a self-contained folder as a zip (and an MSI) per architecture.
+# Nothing is signed or released here; the artifacts are for testing and for a release job.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [rebuild-v1, main]
+    paths:
+      - "windows/**"
+      - "crates/**"
+      - "assets/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RING_VERSION: "1.0.0"
+  CARGO_TERM_COLOR: always
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+
+jobs:
+  build:
+    name: Ring for Windows (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            rust_target: x86_64-pc-windows-msvc
+            rid: win-x64
+            platform: x64
+          - arch: arm64
+            runner: windows-11-arm
+            rust_target: aarch64-pc-windows-msvc
+            rid: win-arm64
+            platform: ARM64
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust 1.98
+        uses: dtolnay/rust-toolchain@1.98
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.rust_target }}
+
+      # The ring crate (rustls) compiles its C with clang on Windows arm64; MSVC can't build it.
+      - name: Put clang on PATH
+        if: matrix.arch == 'arm64'
+        run: |
+          if (Get-Command clang -ErrorAction SilentlyContinue) { clang --version; exit 0 }
+          $candidates = @()
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -products * -property installationPath
+            if ($vs) { $candidates += (Join-Path $vs "VC\Tools\Llvm\ARM64\bin") }
+          }
+          $candidates += "C:\Program Files\LLVM\bin"
+          foreach ($dir in $candidates) {
+            if (Test-Path (Join-Path $dir "clang.exe")) {
+              Add-Content -Path $env:GITHUB_PATH -Value $dir
+              & (Join-Path $dir "clang.exe") --version
+              exit 0
+            }
+          }
+          if (Get-Command choco -ErrorAction SilentlyContinue) {
+            choco install llvm -y --no-progress
+            if ($LASTEXITCODE -eq 0 -and (Test-Path "C:\Program Files\LLVM\bin\clang.exe")) {
+              Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\LLVM\bin"
+              exit 0
+            }
+          }
+          throw "clang was not found; ring needs it to build for aarch64-pc-windows-msvc"
+
+      - name: Build ring_ffi.dll
+        env:
+          # libwebrtc is built against the static CRT.
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release -p silicon-ring-ffi --target ${{ matrix.rust_target }}
+
+      - name: Probe the C ABI of ring_ffi.dll
+        run: >-
+          ./windows/scripts/probe-ring-ffi.ps1
+          -Dll target/${{ matrix.rust_target }}/release/ring_ffi.dll
+          -ExpectVersion $env:RING_VERSION
+
+      - name: List audio devices through ring_ffi.dll
+        # Hosted runners usually have no audio endpoints; this only shows that enumeration is safe.
+        continue-on-error: true
+        run: ./windows/scripts/probe-ring-ffi.ps1 -Dll target/${{ matrix.rust_target }}/release/ring_ffi.dll -Devices
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish Ring (self-contained, unpackaged)
+        run: |
+          $dll = Join-Path $env:GITHUB_WORKSPACE "target\${{ matrix.rust_target }}\release\ring_ffi.dll"
+          dotnet publish windows/Ring/Ring.csproj `
+            --configuration Release `
+            --runtime ${{ matrix.rid }} `
+            --self-contained true `
+            --output out/Ring `
+            -p:Platform=${{ matrix.platform }} `
+            -p:RingFfiDll="$dll"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check the published folder
+        run: |
+          $required = @(
+            "Ring.exe",
+            "ring_ffi.dll",
+            "Microsoft.WindowsAppRuntime.dll",
+            "Assets\Ring.ico",
+            "Assets\RingIcon.png",
+            "Assets\Fonts\BDOGrotesk-Regular.ttf",
+            "Assets\Fonts\BDOGrotesk-Medium.ttf",
+            "Assets\Fonts\HedvigLettersSerif-Regular.ttf",
+            "Assets\Fonts\GeistPixel-Square.ttf",
+            "Assets\Sounds\ringback.wav",
+            "Assets\Sounds\ringtone.wav"
+          )
+          $missing = $required | Where-Object { -not (Test-Path (Join-Path "out/Ring" $_)) }
+          if ($missing) { throw "missing from the publish folder: $($missing -join ', ')" }
+          Get-ChildItem out/Ring -File | Measure-Object -Property Length -Sum |
+            ForEach-Object { Write-Host ("{0} files, {1:N1} MB" -f $_.Count, ($_.Sum / 1MB)) }
+
+      - name: Smoke-run Ring.exe
+        # Catches XAML and startup failures; a headless runner may still lack a desktop.
+        continue-on-error: true
+        run: |
+          $data = Join-Path $env:RUNNER_TEMP "ring-smoke"
+          New-Item -ItemType Directory -Force $data | Out-Null
+          $env:LOCALAPPDATA = $data
+          $process = Start-Process -FilePath "out/Ring/Ring.exe" -PassThru
+          Start-Sleep -Seconds 20
+          if ($process.HasExited) { throw "Ring.exe exited during startup with code $($process.ExitCode)" }
+          Write-Host "Ring.exe is running (pid $($process.Id))"
+          Stop-Process -Id $process.Id -Force
+
+      - name: Zip
+        run: Compress-Archive -Path out/Ring -DestinationPath "Ring-windows-${{ matrix.arch }}.zip" -CompressionLevel Optimal
+
+      - name: MSI (WiX)
+        continue-on-error: true
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          $publish = (Resolve-Path out/Ring).Path
+          wix build windows/installer/Ring.wxs `
+            -arch ${{ matrix.arch }} `
+            -d "PublishDir=$publish" `
+            -d "Version=$env:RING_VERSION" `
+            -o "Ring-windows-${{ matrix.arch }}.msi"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Ring-windows-${{ matrix.arch }}
+          path: |
+            Ring-windows-${{ matrix.arch }}.zip
+            Ring-windows-${{ matrix.arch }}.msi
+          if-no-files-found: error

@@ -25,7 +25,11 @@ tokio = { workspace = true }
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "query", "http2"] }
+# TLS is rustls with the `ring` provider and the compiled-in Mozilla roots: no OpenSSL, no
+# aws-lc build, and it works the same in an empty container as on a desktop.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "query", "http2"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 sha2 = "0.10"

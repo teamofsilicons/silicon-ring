@@ -1,0 +1,379 @@
+/* Call screens: outgoing, voicemail, in call, ended, and the incoming-call sheet. */
+
+.screen {
+  display: flex;
+  min-height: 100dvh;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-section);
+  padding: var(--space-page) var(--space-inset) calc(var(--space-block) + env(safe-area-inset-bottom));
+}
+
+/* In a call the screen is exactly the viewport: the transcript takes the height that is left and scrolls inside it,
+   so the controls never slide off the bottom. */
+.inCall {
+  height: 100dvh;
+}
+
+.stage {
+  display: flex;
+  width: 100%;
+  max-width: 560px;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-comfort);
+}
+
+.status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-related);
+  text-align: center;
+}
+
+.callStatus {
+  font-size: var(--text-sm);
+}
+
+.controls {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: var(--space-block);
+}
+
+.endActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-group);
+}
+
+.notes {
+  display: flex;
+  width: 100%;
+  max-width: 480px;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-group);
+}
+
+.notes:empty {
+  display: none;
+}
+
+/* The Ring mark's rings, around an avatar: expanding while ringing, pulsing while someone speaks. */
+.halo {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+}
+
+.halo::before,
+.halo::after {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--ring-wave);
+  border-radius: var(--radius-full);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+}
+
+.waves::before,
+.waves::after {
+  animation: halo-wave calc(var(--duration-considered) * 6) var(--ease-standard) infinite;
+}
+
+.waves::after {
+  animation-delay: calc(var(--duration-considered) * 3);
+}
+
+.speaking::before {
+  inset: calc(-1 * var(--space-tight));
+  border: 3px solid var(--ring-speaking);
+  animation: halo-speak calc(var(--duration-considered) * 2) var(--ease-in-out) infinite;
+}
+
+.recording::before,
+.recording::after {
+  border-color: var(--danger);
+  animation: halo-wave calc(var(--duration-considered) * 4) var(--ease-standard) infinite;
+}
+
+.recording::after {
+  animation-delay: calc(var(--duration-considered) * 2);
+}
+
+@keyframes halo-wave {
+  0% { opacity: 0.9; transform: scale(1); }
+  100% { opacity: 0; transform: scale(2.1); }
+}
+
+@keyframes halo-speak {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.06); }
+}
+
+.handoff {
+  display: flex;
+  width: 100%;
+  max-width: 560px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-related) var(--space-group);
+  padding: var(--space-related) var(--space-related) var(--space-related) var(--space-inset);
+  border: var(--ring-hairline) solid var(--ring-beige-border);
+  border-radius: var(--radius-container);
+  background: var(--ring-beige);
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+.callHeader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-tight);
+}
+
+.timer {
+  font-size: var(--text-lg);
+}
+
+.soloRoster,
+.roster {
+  display: flex;
+  width: 100%;
+  max-width: 720px;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-section);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.soloTile,
+.tile {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-group);
+}
+
+.soloTile {
+  width: 100%;
+}
+
+.tile {
+  max-width: 160px;
+}
+
+.tileName {
+  display: flex;
+  max-width: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-tight);
+}
+
+.tileLabel {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--foreground);
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  line-height: var(--leading-display);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.waiting {
+  padding: var(--space-block) 0;
+}
+
+.ringingLine {
+  text-align: center;
+}
+
+.transcript {
+  width: 100%;
+  max-width: 640px;
+  min-height: 140px;
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: none;
+  mask-image: linear-gradient(to bottom, transparent 0, black 55%);
+}
+
+.transcript::-webkit-scrollbar {
+  display: none;
+}
+
+.transcriptLines {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: var(--space-group);
+  padding: var(--space-stage) 0 var(--space-related);
+}
+
+.transcriptEmpty {
+  margin-top: auto;
+  padding: var(--space-block) 0 var(--space-related);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.line {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-tight);
+  animation: line-in var(--duration-standard) var(--ease-enter) both;
+}
+
+.speaker {
+  color: var(--text-muted);
+  font-family: var(--font-pixel);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-pixel);
+  text-transform: uppercase;
+}
+
+.lineText {
+  color: var(--foreground);
+  font-size: var(--text-lg);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.interim .lineText {
+  color: var(--text-muted);
+}
+
+.systemLine {
+  color: var(--text-muted);
+  font-family: var(--font-pixel);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-pixel);
+  text-align: center;
+  text-transform: uppercase;
+  animation: line-in var(--duration-standard) var(--ease-enter) both;
+}
+
+@keyframes line-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* The incoming-call sheet. */
+.moment {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-section);
+  padding: var(--space-page) var(--space-inset) calc(var(--space-section) + env(safe-area-inset-bottom));
+  overflow-y: auto;
+  background: var(--ring-moment-background);
+  color: var(--ring-moment-foreground);
+  animation: moment-in var(--duration-standard) var(--ease-enter) both;
+}
+
+.moment .halo::before,
+.moment .halo::after {
+  border-color: var(--ring-moment-wave);
+}
+
+.momentBody {
+  display: flex;
+  width: 100%;
+  max-width: 480px;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-comfort);
+}
+
+.momentActions {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-screen);
+}
+
+.reasons {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-group);
+  margin-top: var(--space-related);
+}
+
+.reasonChips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-related);
+}
+
+.reasonField {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-related);
+}
+
+.silence {
+  margin-top: calc(-1 * var(--space-related));
+}
+
+@keyframes moment-in {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (min-width: 900px) {
+  .screen {
+    padding-top: var(--space-page);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .waves::before,
+  .waves::after,
+  .recording::before,
+  .recording::after,
+  .speaking::before {
+    animation: none;
+    opacity: 1;
+  }
+  .waves::after,
+  .recording::after {
+    opacity: 0;
+  }
+  .line,
+  .systemLine {
+    animation: none;
+  }
+  .moment {
+    animation: moment-fade var(--duration-fast) linear both;
+  }
+}
+
+@keyframes moment-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

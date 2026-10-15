@@ -1,0 +1,208 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="Ring.Views.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Ring.Controls"
+    xmlns:vm="using:Ring.ViewModels"
+    Background="Transparent"
+    FontFamily="{StaticResource RingSansFont}">
+    <ScrollViewer Padding="24,0,24,24" VerticalScrollBarVisibility="Auto">
+        <StackPanel MaxWidth="720" HorizontalAlignment="Stretch" Spacing="24">
+
+            <!-- Account -->
+            <StackPanel>
+                <TextBlock Style="{StaticResource RingSectionHeaderStyle}" Text="ACCOUNT" />
+                <Border Style="{StaticResource RingCardStyle}">
+                    <Grid ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <controls:Avatar x:Name="AccountAvatar" VerticalAlignment="Center" Size="48" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="4">
+                            <TextBlock x:Name="AccountName" Style="{StaticResource RingHeadingStyle}" />
+                            <TextBlock x:Name="AccountHandle" Style="{StaticResource RingPixelLabelStyle}" />
+                        </StackPanel>
+                        <Button
+                            Grid.Column="2"
+                            VerticalAlignment="Center"
+                            Click="OnEditProfileClick"
+                            Content="Edit profile on Silicon Accounts"
+                            Style="{StaticResource RingSecondaryButtonStyle}" />
+                    </Grid>
+                </Border>
+            </StackPanel>
+
+            <!-- This device -->
+            <StackPanel>
+                <TextBlock Style="{StaticResource RingSectionHeaderStyle}" Text="THIS DEVICE" />
+                <Border Style="{StaticResource RingCardStyle}">
+                    <StackPanel Spacing="16">
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="DeviceNameBox" Header="Name" MaxLength="80" />
+                            <Button
+                                Grid.Column="1"
+                                VerticalAlignment="Bottom"
+                                Click="OnSaveDeviceNameClick"
+                                Content="Save"
+                                Style="{StaticResource RingSecondaryButtonStyle}" />
+                        </Grid>
+                        <ToggleSwitch
+                            x:Name="RingToggle"
+                            Header="Ring on this device"
+                            OffContent="Calls don't ring on this PC"
+                            OnContent="Calls ring on this PC"
+                            Toggled="OnRingToggled" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!-- Devices -->
+            <StackPanel>
+                <TextBlock Style="{StaticResource RingSectionHeaderStyle}" Text="DEVICES" />
+                <Border Padding="4" Style="{StaticResource RingCardStyle}">
+                    <ItemsControl x:Name="DevicesList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:DeviceItem">
+                                <Grid Padding="12,10" ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <FontIcon VerticalAlignment="Center" FontSize="18" Foreground="{ThemeResource RingTextSecondaryBrush}" Glyph="{x:Bind Glyph}" />
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                                        <TextBlock Style="{StaticResource RingStrongTextStyle}" Text="{x:Bind Name}" />
+                                        <TextBlock FontSize="11" Style="{StaticResource RingPixelLabelStyle}" Text="{x:Bind Meta}" />
+                                    </StackPanel>
+                                    <Button
+                                        Grid.Column="2"
+                                        VerticalAlignment="Center"
+                                        Click="OnRevokeClick"
+                                        Content="Sign out"
+                                        Style="{StaticResource RingSecondaryButtonStyle}"
+                                        Tag="{x:Bind}"
+                                        Visibility="{x:Bind RevokeVisibility}" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Border>
+            </StackPanel>
+
+            <!-- Audio -->
+            <StackPanel>
+                <TextBlock Style="{StaticResource RingSectionHeaderStyle}" Text="AUDIO" />
+                <Border Style="{StaticResource RingCardStyle}">
+                    <StackPanel Spacing="14">
+                        <ComboBox x:Name="InputCombo" HorizontalAlignment="Stretch" Header="Microphone" SelectionChanged="OnInputChanged" />
+                        <ComboBox x:Name="OutputCombo" HorizontalAlignment="Stretch" Header="Speaker" SelectionChanged="OnOutputChanged" />
+                        <TextBlock x:Name="AudioNote" Style="{StaticResource RingSecondaryTextStyle}" Visibility="Collapsed" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!-- Voicemail -->
+            <StackPanel>
+                <TextBlock Style="{StaticResource RingSectionHeaderStyle}" Text="VOICEMAIL" />
+                <Border Style="{StaticResource RingCardStyle}">
+                    <StackPanel Spacing="16">
+                        <ToggleSwitch
+                            x:Name="VoicemailToggle"
+                            Header="Take messages"
+                            OffContent="Callers can't leave a message"
+                            OnContent="Callers hear your greeting and can leave a message"
+                            Toggled="OnVoicemailToggled" />
+                        <ComboBox x:Name="VoiceCombo" HorizontalAlignment="Stretch" Header="Voice that reads your greetings" SelectionChanged="OnVoiceChanged" />
+
+                        <StackPanel Spacing="6">
+                            <TextBox x:Name="BusyGreeting" AcceptsReturn="True" Header="When you're busy" MaxLength="300" PlaceholderText="The built-in greeting" TextWrapping="Wrap" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Click="OnSaveGreetingClick" Content="Save" Style="{StaticResource RingSecondaryButtonStyle}" Tag="busy" />
+                                <Button Click="OnResetGreetingClick" Content="Reset" Style="{StaticResource RingTextButtonStyle}" Tag="busy" />
+                            </StackPanel>
+                        </StackPanel>
+                        <StackPanel Spacing="6">
+                            <TextBox x:Name="DeclinedGreeting" AcceptsReturn="True" Header="When you decline" MaxLength="300" PlaceholderText="The built-in greeting" TextWrapping="Wrap" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Click="OnSaveGreetingClick" Content="Save" Style="{StaticResource RingSecondaryButtonStyle}" Tag="declined" />
+                                <Button Click="OnResetGreetingClick" Content="Reset" Style="{StaticResource RingTextButtonStyle}" Tag="declined" />
+                            </StackPanel>
+                        </StackPanel>
+                        <StackPanel Spacing="6">
+                            <TextBox x:Name="MissedGreeting" AcceptsReturn="True" Header="When you miss a call" MaxLength="300" PlaceholderText="The built-in greeting" TextWrapping="Wrap" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Click="OnSaveGreetingClick" Content="Save" Style="{StaticResource RingSecondaryButtonStyle}" Tag="missed" />
+                                <Button Click="OnResetGreetingClick" Content="Reset" Style="{StaticResource RingTextButtonStyle}" Tag="missed" />
+                            </StackPanel>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!-- Appearance -->
+            <StackPanel>
+                <TextBlock Style="{StaticResource RingSectionHeaderStyle}" Text="APPEARANCE" />
+                <Border Style="{StaticResource RingCardStyle}">
+                    <RadioButtons x:Name="ThemeChoice" MaxColumns="3" SelectionChanged="OnThemeChanged">
+                        <x:String>System</x:String>
+                        <x:String>Light</x:String>
+                        <x:String>Dark</x:String>
+                    </RadioButtons>
+                </Border>
+            </StackPanel>
+
+            <!-- Desktop -->
+            <StackPanel>
+                <TextBlock Style="{StaticResource RingSectionHeaderStyle}" Text="DESKTOP" />
+                <Border Style="{StaticResource RingCardStyle}">
+                    <StackPanel Spacing="16">
+                        <ToggleSwitch
+                            x:Name="LoginToggle"
+                            Header="Open at login"
+                            OffContent="Ring starts when you open it"
+                            OnContent="Ring starts in the tray when you sign in to Windows"
+                            Toggled="OnLoginToggled" />
+                        <ToggleSwitch
+                            x:Name="TrayToggle"
+                            Header="Keep running in the tray"
+                            OffContent="Closing the window quits Ring"
+                            OnContent="Closing the window keeps Ring listening for calls"
+                            Toggled="OnTrayToggled" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!-- About -->
+            <StackPanel>
+                <TextBlock Style="{StaticResource RingSectionHeaderStyle}" Text="ABOUT" />
+                <Border Style="{StaticResource RingCardStyle}">
+                    <StackPanel Spacing="8">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <controls:RingMark Width="32" Height="32" ShowTile="True" />
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock x:Name="VersionText" Style="{StaticResource RingStrongTextStyle}" />
+                                <TextBlock x:Name="ServerText" FontSize="11" Style="{StaticResource RingPixelLabelStyle}" />
+                            </StackPanel>
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource RingSecondaryTextStyle}" Text="Ring sends no telemetry." />
+                        <HyperlinkButton x:Name="SourceLink" Padding="0" Content="Source on GitHub" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <Button
+                HorizontalAlignment="Left"
+                Click="OnSignOutClick"
+                Content="Sign out"
+                Foreground="{ThemeResource RingDangerBrush}"
+                Style="{StaticResource RingSecondaryButtonStyle}" />
+        </StackPanel>
+    </ScrollViewer>
+</Page>

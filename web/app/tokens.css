@@ -1,0 +1,167 @@
+/*
+  Ring's product theme for Silicon UI. It changes token values only, never a component.
+  Base style: teamofsilicons.com (warm paper, ink, one blue accent, beige selection, hairlines).
+  The dark theme comes from the Ring mark: ink background with cream marks. Values are udd/design.md's.
+
+  Selectors match the ones in @teamofsilicons/silicon-ui/styles.css (which loads first), so these win by order.
+  <html> carries data-corners="round" and no data-accent: Ring sets its own accent here.
+*/
+
+:root {
+  --background: #fffdf9;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-muted: #f6f2ea;
+  --foreground: #1e1e1c;
+  --text-secondary: #4a4842;
+  --text-muted: #6e6b63;
+  --border: #e7e3d8;
+  --border-subtle: #efebe2;
+  --border-strong: #d9d2c4;
+
+  --accent: #1f5cb1;
+  --accent-strong: #184a94;
+  --accent-subtle: rgb(31 92 177 / 0.08);
+  --accent-foreground: #ffffff;
+  --primary: #1f5cb1;
+  --primary-foreground: #ffffff;
+
+  --control-on: #1f5cb1;
+  --control-glyph: #ffffff;
+  --control-fill: #1f5cb1;
+  --control-track: #e2dccf;
+  --control-track-hover: #d9d2c4;
+
+  --success: #1f7a4d;
+  --warning: #b66400;
+  --danger: #c8322b;
+
+  --shadow-resting: 0 1px 4px rgb(0 0 0 / 0.06);
+  --shadow-raised: 0 4px 6px -1px rgb(0 0 0 / 0.08), 0 2px 4px -2px rgb(0 0 0 / 0.06);
+  --shadow-floating: 0 12px 32px rgb(0 0 0 / 0.1), 0 2px 6px rgb(0 0 0 / 0.05);
+  --scrim: rgb(24 24 24 / 0.4);
+
+  --font-body: var(--font-bdo-grotesk), system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: var(--font-hedvig-letters-serif), Georgia, "Times New Roman", serif;
+  --tracking-body: 0em;
+  --tracking-display: 0em;
+  --leading-body: 1.5;
+  --leading-display: 1.18;
+
+  /* Ring's own tokens, for its own layouts. */
+  --font-pixel: var(--font-geist-pixel-square), ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --tracking-pixel: 0.03em;
+  --ring-ink: #181818;
+  --ring-cream: #ede8e0;
+  --ring-beige: #ede8e0;
+  --ring-beige-border: #d9d2c4;
+  --ring-accent-text: #1f5cb1;
+  --ring-accent-border: rgb(31 92 177 / 0.25);
+  --ring-hairline: 0.5px;
+  --ring-rail: #d6d0c1;
+  --ring-mark: #181818;
+  --ring-mark-faint: rgb(24 24 24 / 0.12);
+  --ring-wave: rgb(31 92 177 / 0.22);
+  --ring-speaking: rgb(31 92 177 / 0.45);
+
+  /* The incoming-call sheet is ink in both themes: the Ring mark's colours. */
+  --ring-moment-background: #181818;
+  --ring-moment-foreground: #ede8e0;
+  --ring-moment-muted: #9c978c;
+  --ring-moment-line: rgb(237 232 224 / 0.14);
+  --ring-moment-wave: rgb(237 232 224 / 0.16);
+
+  /* Filled call controls keep white glyphs readable in both themes. */
+  --ring-fill-accept: #1f7a4d;
+  --ring-fill-danger: #c8322b;
+
+  --ring-sidebar-width: 248px;
+  --ring-page-width: 760px;
+  --ring-name-size: var(--text-3xl);
+  --ring-tabbar-height: 64px;
+  --ring-call-control: 60px;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+:root[data-corners="round"] {
+  --radius-detail: 5px;
+  --radius-control: 8px;
+  --radius-container: 12px;
+  --radius-overlay: 12px;
+}
+
+:root[data-theme="dark"] {
+  --background: #181818;
+  --surface: #1e1e1c;
+  --surface-raised: #252421;
+  --surface-muted: #22211e;
+  --foreground: #ede8e0;
+  --text-secondary: #c9c3b6;
+  --text-muted: #9c978c;
+  --border: #2f2d29;
+  --border-subtle: #262522;
+  --border-strong: #3d3a35;
+
+  --accent: #5b8fd9;
+  --accent-strong: #8db2ec;
+  --accent-subtle: rgb(91 143 217 / 0.16);
+  --accent-foreground: #ffffff;
+  --primary: #3872ca;
+  --primary-foreground: #ffffff;
+
+  --control-on: #3872ca;
+  --control-glyph: #ffffff;
+  --control-thumb-on: #ffffff;
+  --control-fill: #3872ca;
+  --control-track: #3d3a35;
+  --control-track-hover: #46433d;
+
+  --success: #4cc38a;
+  --warning: #f0b54a;
+  --danger: #f2706a;
+
+  --shadow-resting: 0 1px 4px rgb(0 0 0 / 0.3);
+  --shadow-raised: 0 4px 10px -1px rgb(0 0 0 / 0.35), 0 2px 4px -2px rgb(0 0 0 / 0.3);
+  --shadow-floating: 0 16px 40px rgb(0 0 0 / 0.45), 0 2px 8px rgb(0 0 0 / 0.3);
+
+  --ring-beige: #2e2c28;
+  --ring-beige-border: #3d3a35;
+  --ring-accent-text: #8db2ec;
+  --ring-accent-border: rgb(91 143 217 / 0.35);
+  --ring-rail: #3d3a35;
+  --ring-mark: #ede8e0;
+  --ring-mark-faint: rgb(237 232 224 / 0.12);
+  --ring-wave: rgb(141 178 236 / 0.2);
+  --ring-speaking: rgb(141 178 236 / 0.5);
+}
+
+/* The incoming-call sheet: components inside it take the dark (Ring mark) values in either theme. */
+[data-ring-moment] {
+  color-scheme: dark;
+  --background: #181818;
+  --surface: #1e1e1c;
+  --surface-raised: #252421;
+  --surface-muted: #22211e;
+  --foreground: #ede8e0;
+  --text-secondary: #c9c3b6;
+  --text-muted: #9c978c;
+  --border: #2f2d29;
+  --border-subtle: #262522;
+  --border-strong: #3d3a35;
+  --accent: #5b8fd9;
+  --accent-strong: #8db2ec;
+  --accent-subtle: rgb(91 143 217 / 0.16);
+  --primary: #3872ca;
+  --success: #4cc38a;
+  --danger: #f2706a;
+  --ring-beige: #2e2c28;
+  --ring-beige-border: #3d3a35;
+  --ring-accent-text: #8db2ec;
+  --ring-mark: #ede8e0;
+  --ring-wave: rgb(237 232 224 / 0.16);
+  --ring-speaking: rgb(141 178 236 / 0.5);
+}
+
+@media (min-width: 900px) {
+  :root { --ring-name-size: 2.75rem; }
+}

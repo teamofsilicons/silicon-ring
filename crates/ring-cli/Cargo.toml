@@ -14,3 +14,15 @@ path = "src/main.rs"
 
 [dependencies]
 ring-proto.workspace = true
+ring-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+url.workspace = true
+clap = { version = "4.6", features = ["derive", "env"] }
+tokio = { version = "1", features = ["rt", "macros", "signal", "io-std", "io-util", "time", "process", "fs"] }
+sha2 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

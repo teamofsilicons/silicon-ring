@@ -1,0 +1,97 @@
+/* LOCAL EXCEPTION to Silicon UI: see call-control.tsx and web/README.md. Tokens only. */
+
+.control {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-related);
+}
+
+.button {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: var(--ring-hairline) solid var(--border-strong);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow: var(--shadow-raised);
+  cursor: pointer;
+  transition:
+    transform var(--duration-instant) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    opacity var(--duration-fast) var(--ease-standard);
+}
+
+.md {
+  width: calc(var(--ring-call-control) - var(--space-tight));
+  height: calc(var(--ring-call-control) - var(--space-tight));
+}
+
+.lg {
+  width: calc(var(--ring-call-control) + var(--space-tight));
+  height: calc(var(--ring-call-control) + var(--space-tight));
+}
+
+.button:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.button[aria-busy="true"] {
+  opacity: 0.75;
+}
+
+.neutral:hover:not(:disabled) {
+  background: var(--ring-beige);
+}
+
+.neutral[data-pressed] {
+  border-color: var(--ring-mark);
+  background: var(--ring-mark);
+  color: var(--background);
+}
+
+.accept {
+  border-color: var(--ring-fill-accept);
+  background: var(--ring-fill-accept);
+  color: var(--primary-foreground);
+}
+
+.danger {
+  border-color: var(--ring-fill-danger);
+  background: var(--ring-fill-danger);
+  color: var(--primary-foreground);
+}
+
+.accept:hover:not(:disabled),
+.danger:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.moment {
+  border-color: var(--ring-moment-line);
+  background: var(--ring-moment-line);
+  color: var(--ring-moment-foreground);
+  box-shadow: none;
+}
+
+.moment:hover:not(:disabled) {
+  background: var(--ring-moment-wave);
+}
+
+.label {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button { transition: none; }
+  .button:active:not(:disabled) { transform: none; }
+}

@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=com.teamofsilicons.Ring
+Exec=@bindir@/ring-desktop --gapplication-service

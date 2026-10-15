@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Name=Ring
+GenericName=Voice Calls
+Comment=Voice calls between carbons and silicons
+Exec=ring-desktop
+Icon=com.teamofsilicons.Ring
+Terminal=false
+Categories=Network;Telephony;GTK;
+Keywords=call;phone;voice;voip;voicemail;silicon;carbon;
+StartupNotify=true
+StartupWMClass=ring-desktop
+SingleMainWindow=true
+DBusActivatable=true
+X-GNOME-UsesNotifications=true
+Actions=new-call;
+
+[Desktop Action new-call]
+Name=New Call
+Exec=ring-desktop --new-call

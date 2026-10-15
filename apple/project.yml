@@ -1,0 +1,132 @@
+# Ring for iPhone, iPad and Mac. Generate the Xcode project with `xcodegen` in this directory.
+name: Ring
+options:
+  bundleIdPrefix: com.teamofsilicons
+  createIntermediateGroups: true
+  developmentLanguage: en
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    DEVELOPMENT_TEAM: LTBSK59BJ2
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    PRODUCT_NAME: Ring
+    PRODUCT_BUNDLE_IDENTIFIER: com.teamofsilicons.ring
+    GENERATE_INFOPLIST_FILE: NO
+    INFOPLIST_PREPROCESS: YES
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+  configs:
+    Debug:
+      INFOPLIST_PREPROCESSOR_DEFINITIONS: RING_DEBUG=1
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+
+packages:
+  LiveKit:
+    url: https://github.com/livekit/client-sdk-swift
+    exactVersion: "2.17.0"
+
+targetTemplates:
+  RingApp:
+    type: application
+    sources:
+      - path: RingKit
+      - path: Resources/Colors.xcassets
+      - path: ../assets/sounds/ringback.wav
+      - path: ../assets/sounds/ringtone.wav
+      - path: ../assets/sounds/connected.wav
+      - path: ../assets/sounds/ended.wav
+      - path: ../assets/fonts/bdo-grotesk/BDOGrotesk-Regular.ttf
+        buildPhase:
+          copyFiles:
+            destination: resources
+            subpath: Fonts
+      - path: ../assets/fonts/bdo-grotesk/BDOGrotesk-Medium.ttf
+        buildPhase:
+          copyFiles:
+            destination: resources
+            subpath: Fonts
+      - path: ../assets/fonts/bdo-grotesk/BDOGrotesk-Bold.ttf
+        buildPhase:
+          copyFiles:
+            destination: resources
+            subpath: Fonts
+      - path: ../assets/fonts/hedvig-letters-serif/HedvigLettersSerif-Regular.ttf
+        buildPhase:
+          copyFiles:
+            destination: resources
+            subpath: Fonts
+      - path: ../assets/fonts/geist-pixel/GeistPixel-Square.ttf
+        buildPhase:
+          copyFiles:
+            destination: resources
+            subpath: Fonts
+    dependencies:
+      - package: LiveKit
+        product: LiveKit
+
+targets:
+  Ring-iOS:
+    templates: [RingApp]
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: iOS
+    settings:
+      base:
+        INFOPLIST_FILE: iOS/Info.plist
+        CODE_SIGN_ENTITLEMENTS: iOS/Ring.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+        ENABLE_PREVIEWS: YES
+
+  Ring-macOS:
+    templates: [RingApp]
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: macOS
+    settings:
+      base:
+        INFOPLIST_FILE: macOS/Info.plist
+        CODE_SIGN_ENTITLEMENTS: macOS/Ring.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        COMBINE_HIDPI_IMAGES: YES
+        ENABLE_PREVIEWS: YES
+        ARCHS: "$(ARCHS_STANDARD)"
+      configs:
+        # Local Debug builds sign without a provisioning profile (this Mac is not a registered
+        # device), so they leave out the push and time-sensitive entitlements.
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: macOS/Ring-Debug.entitlements
+
+schemes:
+  Ring-iOS:
+    build:
+      targets:
+        Ring-iOS: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  Ring-macOS:
+    build:
+      targets:
+        Ring-macOS: all
+    run:
+      config: Debug
+    archive:
+      config: Release

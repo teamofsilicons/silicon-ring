@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="Ring.Views.VoicemailDetailPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Ring.Controls"
+    Background="Transparent"
+    FontFamily="{StaticResource RingSansFont}">
+    <ScrollViewer Padding="24,0,24,24" VerticalScrollBarVisibility="Auto">
+        <StackPanel MaxWidth="720" HorizontalAlignment="Stretch" Spacing="16">
+            <Border Style="{StaticResource RingCardStyle}">
+                <Grid ColumnSpacing="16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <controls:Avatar x:Name="FromAvatar" VerticalAlignment="Center" Size="48" />
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="4">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock x:Name="FromName" Style="{StaticResource RingHeadingStyle}" />
+                            <Border x:Name="SiliconBadge" Style="{StaticResource RingSiliconBadgeStyle}" Visibility="Collapsed">
+                                <TextBlock Style="{StaticResource RingSiliconBadgeTextStyle}" Text="SILICON" />
+                            </Border>
+                        </StackPanel>
+                        <TextBlock x:Name="FromHandle" Style="{StaticResource RingPixelLabelStyle}" />
+                        <TextBlock x:Name="ReasonText" Style="{StaticResource RingPixelLabelStyle}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" VerticalAlignment="Center" Orientation="Horizontal" Spacing="8">
+                        <Button Click="OnCallBackClick" Style="{StaticResource RingPrimaryButtonStyle}">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon FontSize="14" Glyph="&#xE717;" />
+                                <TextBlock Text="Call back" />
+                            </StackPanel>
+                        </Button>
+                        <Button AutomationProperties.Name="Delete" Click="OnDeleteClick" Style="{StaticResource RingSecondaryButtonStyle}" ToolTipService.ToolTip="Delete">
+                            <FontIcon FontSize="14" Glyph="&#xE74D;" />
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <Border Style="{StaticResource RingCardStyle}">
+                <StackPanel Spacing="10">
+                    <TextBlock Style="{StaticResource RingSectionHeaderStyle}" Text="MESSAGE" />
+                    <MediaPlayerElement
+                        x:Name="Player"
+                        Height="96"
+                        AreTransportControlsEnabled="True"
+                        AutoPlay="False" />
+                    <TextBlock x:Name="AudioStatus" Style="{StaticResource RingSecondaryTextStyle}" Visibility="Collapsed" />
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource RingCardStyle}">
+                <StackPanel Spacing="10">
+                    <TextBlock Style="{StaticResource RingSectionHeaderStyle}" Text="TRANSCRIPT" />
+                    <TextBlock
+                        x:Name="TranscriptText"
+                        FontSize="16"
+                        IsTextSelectionEnabled="True"
+                        LineHeight="25"
+                        Style="{StaticResource RingBodyTextStyle}" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

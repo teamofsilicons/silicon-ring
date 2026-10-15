@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Ring" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ring_window</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <style name="Theme.Ring.Call">
+        <item name="android:windowBackground">@color/ring_ink</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

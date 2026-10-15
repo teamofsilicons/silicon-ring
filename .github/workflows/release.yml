@@ -1,0 +1,431 @@
+name: Release
+
+# On a version tag (v1.0.0), build the ring CLI for six targets plus a macOS universal binary,
+# the Linux desktop app (.deb, AppImage) and the Windows app (zip, MSI), then create a DRAFT
+# GitHub release with every asset and one SHA256SUMS. A person reviews and publishes the draft.
+# The Linux CLI also ships through Silicon Apps (scripts/package-apps.py, scripts/publish-apps.py).
+# Nothing is code-signed here: the Windows app is unsigned and SmartScreen warns on first run.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build a draft release for (for example v1.0.0)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+
+jobs:
+  version:
+    name: Check the tag against the workspace version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - id: version
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          [ "v$version" = "$RELEASE_TAG" ] || { echo "tag $RELEASE_TAG does not match workspace version $version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  cli-linux:
+    name: CLI (${{ matrix.target }})
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: dtolnay/rust-toolchain@1.98
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
+      - name: Install cargo-zigbuild and zig
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install --quiet cargo-zigbuild==0.23.4 ziglang==0.16.0
+          echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
+      - name: Build
+        run: cargo zigbuild --release --locked -p silicon-ring-cli --target ${{ matrix.target }}
+      - name: Discovery commands (Silicon Apps validator contract)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          bin=target/${{ matrix.target }}/release/ring
+          home=$(mktemp -d)
+          "$bin" --version | grep -q "${{ needs.version.outputs.version }}"
+          HOME=$home SILICON_HOME=$home "$bin" --help > /dev/null
+          HOME=$home SILICON_HOME=$home "$bin" accounts --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["app_id"] == "ring"'
+          HOME=$home SILICON_HOME=$home "$bin" login status --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["authenticated"] is False'
+      - name: Archive
+        run: |
+          file target/${{ matrix.target }}/release/ring
+          python3 scripts/make-archive.py dist/ring-${{ matrix.target }}.tar.gz \
+            target/${{ matrix.target }}/release/ring=ring LICENSE=LICENSE
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  cli-macos:
+    name: CLI (macOS, both architectures)
+    needs: version
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: dtolnay/rust-toolchain@1.98
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-macos
+      - name: Build
+        run: |
+          cargo build --release --locked -p silicon-ring-cli --target aarch64-apple-darwin
+          cargo build --release --locked -p silicon-ring-cli --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create -output target/universal-apple-darwin/release/ring \
+            target/aarch64-apple-darwin/release/ring target/x86_64-apple-darwin/release/ring
+      - name: Discovery commands
+        run: |
+          bin=target/universal-apple-darwin/release/ring
+          home=$(mktemp -d)
+          "$bin" --version | grep -q "${{ needs.version.outputs.version }}"
+          HOME=$home SILICON_HOME=$home "$bin" accounts --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["app_id"] == "ring"'
+          HOME=$home SILICON_HOME=$home "$bin" login status --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["authenticated"] is False'
+      - name: Archive
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin universal-apple-darwin; do
+            python3 scripts/make-archive.py "dist/ring-$target.tar.gz" "target/$target/release/ring=ring" LICENSE=LICENSE
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-macos
+          path: dist/*
+          if-no-files-found: error
+
+  cli-windows:
+    name: CLI (${{ matrix.target }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: dtolnay/rust-toolchain@1.98
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
+      # The ring crate (rustls) compiles its aarch64 Windows assembly with clang; MSVC cannot.
+      # Same lookup as windows.yml: PATH, Visual Studio's bundled LLVM, C:\Program Files\LLVM, choco.
+      - name: Put clang on PATH
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        run: |
+          if (Get-Command clang -ErrorAction SilentlyContinue) { clang --version; exit 0 }
+          $candidates = @()
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -products * -property installationPath
+            if ($vs) { $candidates += (Join-Path $vs "VC\Tools\Llvm\ARM64\bin") }
+          }
+          $candidates += "C:\Program Files\LLVM\bin"
+          foreach ($dir in $candidates) {
+            if (Test-Path (Join-Path $dir "clang.exe")) {
+              Add-Content -Path $env:GITHUB_PATH -Value $dir
+              & (Join-Path $dir "clang.exe") --version
+              exit 0
+            }
+          }
+          if (Get-Command choco -ErrorAction SilentlyContinue) {
+            choco install llvm -y --no-progress
+            if ($LASTEXITCODE -eq 0 -and (Test-Path "C:\Program Files\LLVM\bin\clang.exe")) {
+              Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\LLVM\bin"
+              exit 0
+            }
+          }
+          throw "clang was not found; ring needs it to build for aarch64-pc-windows-msvc"
+      - name: Build
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --locked -p silicon-ring-cli --target ${{ matrix.target }}
+      - name: Discovery commands
+        run: |
+          $bin = "target/${{ matrix.target }}/release/ring.exe"
+          $env:SILICON_HOME = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP "ring-home") -Force
+          & $bin --version
+          if ((& $bin accounts --json | ConvertFrom-Json).app_id -ne "ring") { throw "accounts --json" }
+          if ((& $bin login status --json | ConvertFrom-Json).authenticated -ne $false) { throw "login status --json" }
+      - name: Archive
+        run: |
+          $stage = New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP "ring-${{ matrix.target }}")
+          Copy-Item "target/${{ matrix.target }}/release/ring.exe", LICENSE -Destination $stage
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath "dist/ring-${{ matrix.target }}.zip" -CompressionLevel Optimal
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Same build as .github/workflows/linux.yml, kept here so a release does not depend on another
+  # workflow's run.
+  linux-app:
+    name: Linux app (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/linux
+      LLVM_VERSION: "21"
+      LINUXDEPLOY_TAG: 1-alpha-20251107-1
+      LINUXDEPLOY_GTK_COMMIT: 7a3fbc31a9e5075073ff8790f26effbac5f84453
+      APPIMAGETOOL_TAG: "1.9.1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Install GTK, libadwaita and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgtk-4-dev libadwaita-1-dev libglib2.0-dev libglib2.0-bin libdbus-1-dev \
+            libpulse-dev libasound2-dev \
+            libx11-dev libxext-dev libxfixes-dev libxdamage-dev libxrandr-dev libxcomposite-dev libdrm-dev libgbm-dev \
+            dpkg-dev file patchelf desktop-file-utils appstream libgdk-pixbuf2.0-bin librsvg2-common \
+            libgtk-4-media-gstreamer gstreamer1.0-plugins-good
+      - name: Install clang ${{ env.LLVM_VERSION }}
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb https://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-${LLVM_VERSION} lld-${LLVM_VERSION}
+          sudo ln -sf /usr/bin/clang-${LLVM_VERSION} /usr/local/bin/clang
+          sudo ln -sf /usr/bin/clang++-${LLVM_VERSION} /usr/local/bin/clang++
+          sudo ln -sf /usr/bin/ld.lld-${LLVM_VERSION} /usr/local/bin/ld.lld
+          echo "CC=clang-${LLVM_VERSION}" >> "$GITHUB_ENV"
+          echo "CXX=clang++-${LLVM_VERSION}" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@1.98
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "linux -> ../target/linux"
+          key: release-linux-${{ matrix.arch }}
+      - name: Build
+        working-directory: linux
+        run: cargo build --release --locked
+      - name: Fetch AppImage tools
+        run: |
+          tools="$RUNNER_TEMP/tools"
+          mkdir -p "$tools"
+          curl -fsSLo "$tools/linuxdeploy" \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_TAG}/linuxdeploy-${{ matrix.arch }}.AppImage"
+          curl -fsSLo "$tools/linuxdeploy-plugin-gtk.sh" \
+            "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/${LINUXDEPLOY_GTK_COMMIT}/linuxdeploy-plugin-gtk.sh"
+          curl -fsSLo "$tools/appimagetool" \
+            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_TAG}/appimagetool-${{ matrix.arch }}.AppImage"
+          chmod +x "$tools"/*
+          echo "LINUXDEPLOY=$tools/linuxdeploy" >> "$GITHUB_ENV"
+          echo "LINUXDEPLOY_PLUGIN_GTK=$tools/linuxdeploy-plugin-gtk.sh" >> "$GITHUB_ENV"
+          echo "APPIMAGETOOL=$tools/appimagetool" >> "$GITHUB_ENV"
+      - name: Package .deb and AppImage
+        env:
+          REQUIRE_APPIMAGE: "1"
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: linux/package.sh --no-build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-app-${{ matrix.arch }}
+          path: |
+            linux/dist/*.deb
+            linux/dist/*.AppImage
+          if-no-files-found: error
+
+  # Same build as .github/workflows/windows.yml.
+  windows-app:
+    name: Windows app (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            rust_target: x86_64-pc-windows-msvc
+            rid: win-x64
+            platform: x64
+          - arch: arm64
+            runner: windows-11-arm
+            rust_target: aarch64-pc-windows-msvc
+            rid: win-arm64
+            platform: ARM64
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: dtolnay/rust-toolchain@1.98
+        with:
+          targets: ${{ matrix.rust_target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-ffi-${{ matrix.rust_target }}
+      # The ring crate (rustls) compiles its aarch64 Windows assembly with clang; MSVC cannot.
+      # Same lookup as windows.yml: PATH, Visual Studio's bundled LLVM, C:\Program Files\LLVM, choco.
+      - name: Put clang on PATH
+        if: matrix.arch == 'arm64'
+        run: |
+          if (Get-Command clang -ErrorAction SilentlyContinue) { clang --version; exit 0 }
+          $candidates = @()
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -products * -property installationPath
+            if ($vs) { $candidates += (Join-Path $vs "VC\Tools\Llvm\ARM64\bin") }
+          }
+          $candidates += "C:\Program Files\LLVM\bin"
+          foreach ($dir in $candidates) {
+            if (Test-Path (Join-Path $dir "clang.exe")) {
+              Add-Content -Path $env:GITHUB_PATH -Value $dir
+              & (Join-Path $dir "clang.exe") --version
+              exit 0
+            }
+          }
+          if (Get-Command choco -ErrorAction SilentlyContinue) {
+            choco install llvm -y --no-progress
+            if ($LASTEXITCODE -eq 0 -and (Test-Path "C:\Program Files\LLVM\bin\clang.exe")) {
+              Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\LLVM\bin"
+              exit 0
+            }
+          }
+          throw "clang was not found; ring needs it to build for aarch64-pc-windows-msvc"
+      - name: Build ring_ffi.dll
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --locked -p silicon-ring-ffi --target ${{ matrix.rust_target }}
+      - name: Probe the C ABI of ring_ffi.dll
+        run: >-
+          ./windows/scripts/probe-ring-ffi.ps1
+          -Dll target/${{ matrix.rust_target }}/release/ring_ffi.dll
+          -ExpectVersion "${{ needs.version.outputs.version }}"
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - name: Publish Ring (self-contained, unpackaged)
+        run: |
+          $dll = Join-Path $env:GITHUB_WORKSPACE "target\${{ matrix.rust_target }}\release\ring_ffi.dll"
+          dotnet publish windows/Ring/Ring.csproj `
+            --configuration Release `
+            --runtime ${{ matrix.rid }} `
+            --self-contained true `
+            --output out/Ring `
+            -p:Platform=${{ matrix.platform }} `
+            -p:RingFfiDll="$dll"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Zip
+        run: Compress-Archive -Path out/Ring -DestinationPath "Ring-windows-${{ matrix.arch }}.zip" -CompressionLevel Optimal
+      - name: MSI (WiX)
+        # As in windows.yml: the zip is the release artefact of record; the MSI ships when WiX succeeds.
+        continue-on-error: true
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          $publish = (Resolve-Path out/Ring).Path
+          wix build windows/installer/Ring.wxs `
+            -arch ${{ matrix.arch }} `
+            -d "PublishDir=$publish" `
+            -d "Version=${{ needs.version.outputs.version }}" `
+            -o "Ring-windows-${{ matrix.arch }}.msi"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-app-${{ matrix.arch }}
+          path: |
+            Ring-windows-${{ matrix.arch }}.zip
+            Ring-windows-${{ matrix.arch }}.msi
+          if-no-files-found: error
+
+  draft:
+    name: Draft GitHub release
+    needs: [version, cli-linux, cli-macos, cli-windows, linux-app, windows-app]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Checksums
+        working-directory: assets
+        run: |
+          ls -la
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cat > notes.md <<EOF
+          Silicon Ring $VERSION.
+
+          - **Silicons:** the \`ring\` CLI. On Linux, \`silicon-apps install ring\`; on macOS, \`curl -fsSL https://ring.teamofsilicons.com/install.sh | sh\`; on Windows, \`ring-<arch>-pc-windows-msvc.zip\`.
+          - **Carbons:** https://ring.teamofsilicons.com, the Windows app (\`Ring-windows-*.msi\` or \`.zip\`, unsigned) and the Linux app (\`.deb\` or \`.AppImage\`).
+
+          Verify downloads against \`SHA256SUMS\`. Ring sends no telemetry.
+          EOF
+          gh release create "$RELEASE_TAG" assets/* \
+            --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "Silicon Ring $VERSION" --notes-file notes.md

@@ -1,0 +1,44 @@
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-group);
+  margin-bottom: var(--space-section);
+}
+
+.title {
+  color: var(--foreground);
+  font-size: var(--text-2xl);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-related);
+}
+
+.wideOnly {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .title {
+    font-size: var(--text-3xl);
+  }
+
+  .wideOnly {
+    display: inline-flex;
+  }
+}
+
+.prompt {
+  margin-bottom: var(--space-section);
+}
+
+.promptBody {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-group);
+}

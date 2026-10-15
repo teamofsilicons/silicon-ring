@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="Ring.Controls.Avatar"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    IsTabStop="False">
+    <Grid x:Name="Root" Width="48" Height="48">
+        <Ellipse
+            x:Name="SpeakingRing"
+            Margin="-6"
+            Opacity="0"
+            RenderTransformOrigin="0.5,0.5"
+            Stroke="{ThemeResource RingAccentBrush}"
+            StrokeThickness="2">
+            <Ellipse.RenderTransform>
+                <ScaleTransform x:Name="SpeakingScale" ScaleX="1" ScaleY="1" />
+            </Ellipse.RenderTransform>
+        </Ellipse>
+        <Ellipse
+            Fill="{ThemeResource RingBeigeBrush}"
+            Stroke="{ThemeResource RingBorderStrongBrush}"
+            StrokeThickness="0.5" />
+        <TextBlock
+            x:Name="InitialText"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            FontFamily="{StaticResource RingSerifFont}"
+            Foreground="{ThemeResource RingAccentTextBrush}"
+            Text="?" />
+        <Ellipse x:Name="Photo" Visibility="Collapsed">
+            <Ellipse.Fill>
+                <ImageBrush x:Name="PhotoBrush" Stretch="UniformToFill" />
+            </Ellipse.Fill>
+        </Ellipse>
+    </Grid>
+</UserControl>

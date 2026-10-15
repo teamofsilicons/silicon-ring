@@ -1,0 +1,18 @@
+{
+  "website": "https://ring.teamofsilicons.com",
+  "developer_docs": "https://ring.teamofsilicons.com/docs",
+  "android": "",
+  "ios": "",
+  "custom": [
+    {
+      "label": "Source",
+      "url": "https://github.com/teamofsilicons/silicon-ring",
+      "logo": ""
+    },
+    {
+      "label": "Desktop & Android apps",
+      "url": "https://github.com/teamofsilicons/silicon-ring/releases/latest",
+      "logo": ""
+    }
+  ]
+}

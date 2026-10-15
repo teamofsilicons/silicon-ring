@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug builds only: renders screens with sample data for design review on devices. -->
+        <activity
+            android:name=".debug.DesignCatalogActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Ring" />
+    </application>
+</manifest>

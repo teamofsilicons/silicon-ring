@@ -1,0 +1,48 @@
+[Unit]
+Description=Silicon Ring media worker (representatives, recorder, voicemail, STT)
+Documentation=https://github.com/teamofsilicons/silicon-ring/blob/main/docs/operations.md
+Wants=network-online.target ring-server.service livekit.service
+After=network-online.target ring-server.service livekit.service
+StartLimitIntervalSec=120
+StartLimitBurst=20
+
+[Service]
+Type=simple
+User=ring
+Group=ring
+WorkingDirectory=/var/lib/ring
+EnvironmentFile=/etc/ring/media.env
+ExecStart=/opt/ring/current/bin/ring-media
+Restart=always
+RestartSec=2
+# Lets a recorder or voicemail session finish its upload before the process is stopped.
+TimeoutStopSec=60
+UMask=0077
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ring
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+# libwebrtc enumerates network interfaces over netlink.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

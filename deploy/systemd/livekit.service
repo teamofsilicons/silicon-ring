@@ -1,0 +1,45 @@
+[Unit]
+Description=LiveKit SFU for Silicon Ring
+Documentation=https://docs.livekit.io/home/self-hosting/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=livekit
+Group=livekit
+WorkingDirectory=/var/lib/livekit
+ExecStart=/opt/ring/current/bin/livekit-server --config /etc/livekit/livekit.yaml
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+UMask=0077
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/livekit
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

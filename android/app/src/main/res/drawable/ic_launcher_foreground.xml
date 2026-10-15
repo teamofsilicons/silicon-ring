@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- assets/icon/foreground.svg: the Ring mark scaled into the adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="200" android:viewportHeight="200">
+    <path android:fillColor="#EDE8E0"
+        android:pathData="M87.925,100a12.075,12.075 0 1,0 24.15,0a12.075,12.075 0 1,0 -24.15,0z" />
+    <path android:strokeColor="#EDE8E0" android:strokeWidth="3.15"
+        android:pathData="M66.4,100a33.6,33.6 0 1,0 67.2,0a33.6,33.6 0 1,0 -67.2,0z" />
+    <path android:strokeColor="#EDE8E0" android:strokeWidth="2.1"
+        android:pathData="M53.275,100a46.725,45.675 0 1,0 93.45,0a46.725,45.675 0 1,0 -93.45,0z" />
+    <path android:strokeColor="#EDE8E0" android:strokeWidth="1.05"
+        android:pathData="M42.25,100a57.75,57.75 0 1,0 115.5,0a57.75,57.75 0 1,0 -115.5,0z" />
+</vector>
