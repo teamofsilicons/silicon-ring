@@ -683,34 +683,59 @@ impl CallView {
         });
     }
 
-    fn reveal(widget: &gtk::Box) -> gtk::Revealer {
+    /// Wraps a line so it slides in, or shows at once when `animate` is false.
+    fn reveal(widget: &gtk::Box, animate: bool) -> gtk::Revealer {
         let revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideUp)
-            .transition_duration(220)
+            .transition_duration(if animate { 220 } else { 0 })
             .child(widget)
             .build();
-        let r = revealer.clone();
-        glib::idle_add_local_once(move || r.set_reveal_child(true));
+        if animate {
+            let r = revealer.clone();
+            glib::idle_add_local_once(move || r.set_reveal_child(true));
+        } else {
+            revealer.set_reveal_child(true);
+        }
         revealer
     }
 
+    /// A live entry: it slides in, and the view follows it when it was at the end.
     pub fn add_entry(&self, entry: &TranscriptEntry) {
+        let stick = self.near_bottom();
+        if self.insert_entry(entry, true) && stick {
+            self.scroll_to_end();
+        }
+    }
+
+    /// Entries loaded at once (joining a call in progress): no slide-in, then the end in view.
+    pub fn add_backlog(&self, entries: &[TranscriptEntry]) {
+        let stick = self.near_bottom();
+        let mut added = false;
+        for entry in entries {
+            added |= self.insert_entry(entry, false);
+        }
+        if added && stick {
+            self.scroll_to_end();
+        }
+    }
+
+    /// Places an entry by `seq`; false when it was already shown or has nothing to show.
+    fn insert_entry(&self, entry: &TranscriptEntry, animate: bool) -> bool {
         let me = self.0.state.borrow().me.clone();
         if self.0.state.borrow().lines.contains_key(&entry.seq) {
-            return;
+            return false;
         }
         let Some((speaker, text)) = describe_entry(entry, &me) else {
-            return;
+            return false;
         };
         if entry.kind == EntryKind::Speech && text.trim().is_empty() {
-            return;
+            return false;
         }
-        let stick = self.near_bottom();
         if entry.kind == EntryKind::Speech {
             self.finish_partial(entry);
         }
         let (line, _) = entry_widget(speaker.as_deref(), &text, false);
-        let revealer = Self::reveal(&line);
+        let revealer = Self::reveal(&line, animate);
         {
             let mut state = self.0.state.borrow_mut();
             let previous = state
@@ -743,9 +768,7 @@ impl CallView {
                 }
             }
         }
-        if stick {
-            self.scroll_to_end();
-        }
+        true
     }
 
     /// Removes the interim line a final speech entry replaces: the one with its `segment_id`,
@@ -822,7 +845,7 @@ impl CallView {
                     speaker.label().to_string()
                 };
                 let (line, label) = entry_widget(Some(&name), text, true);
-                let revealer = Self::reveal(&line);
+                let revealer = Self::reveal(&line, true);
                 self.0.transcript.append(&revealer);
                 self.0.state.borrow_mut().partials.push(Partial {
                     segment_id,

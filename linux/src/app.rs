@@ -938,8 +938,14 @@ impl App {
         });
     }
 
-    fn device_changed(&self, device: Device) {
-        if device.current || device.device_id == self.my_device_id() {
+    fn device_changed(&self, mut device: Device) {
+        // `device.updated` reaches every device of the account with `current: false`, so
+        // whether it is this one is decided here.
+        let mine = self.my_device_id();
+        if !mine.is_empty() {
+            device.current = device.device_id == mine;
+        }
+        if device.current {
             if let Some(me) = self.0.me.borrow_mut().as_mut() {
                 me.device = device.clone();
             }
@@ -1306,18 +1312,34 @@ impl App {
     }
 
     fn load_transcript(&self, ringid: &str) {
+        const PAGE: u32 = 200;
+        const KEEP: usize = 120;
         let client = self.client();
         let app = self.clone();
         let ringid = ringid.to_string();
         glib::spawn_future_local(async move {
             let id = ringid.clone();
-            if let Ok(page) =
-                runtime::run(async move { client.transcript(&id, 0, Some(200)).await }).await
-            {
-                if app.active_ringid().as_deref() == Some(ringid.as_str()) {
-                    for entry in &page.items {
-                        app.window().call.add_entry(entry);
+            // Pages run oldest first; a call joined late (a rejoin after a restart, a handoff)
+            // only shows its latest lines.
+            let latest = runtime::run(async move {
+                let mut latest = std::collections::VecDeque::new();
+                let mut after = 0;
+                for _ in 0..50 {
+                    let page = client.transcript(&id, after, Some(PAGE)).await?;
+                    let more = page.items.len() >= PAGE as usize && page.next_after_seq > after;
+                    latest.extend(page.items);
+                    latest.drain(..latest.len().saturating_sub(KEEP));
+                    if !more {
+                        break;
                     }
+                    after = page.next_after_seq;
+                }
+                Ok::<_, ring_core::Error>(latest)
+            })
+            .await;
+            if let Ok(mut entries) = latest {
+                if app.active_ringid().as_deref() == Some(ringid.as_str()) {
+                    app.window().call.add_backlog(entries.make_contiguous());
                 }
             }
         });
