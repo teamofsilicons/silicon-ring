@@ -1,6 +1,8 @@
 package com.teamofsilicons.ring.data
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.JsonObject
@@ -214,33 +216,42 @@ class RingApi(
         builder.header("Accept", "application/json")
         builder.header("User-Agent", "Ring-Android/$appVersion")
         if (authenticated) sessions.current?.let { builder.header("Authorization", "Bearer ${it.token}") }
-        val response = try {
-            http.newCall(builder.build()).await()
-        } catch (e: IOException) {
-            throw ApiException(0, ApiException.NETWORK, e.message ?: "Network error", retryable = true)
+        // The response body is read on the IO dispatcher: callers resume on the main thread, and
+        // reading a slow body there throws NetworkOnMainThreadException.
+        val (status, ok, text) = withContext(Dispatchers.IO) {
+            val response = try {
+                http.newCall(builder.build()).await()
+            } catch (e: IOException) {
+                throw ApiException(0, ApiException.NETWORK, e.message ?: "Network error", retryable = true)
+            }
+            response.use {
+                val body = try {
+                    it.body?.string().orEmpty()
+                } catch (e: IOException) {
+                    throw ApiException(0, ApiException.NETWORK, e.message ?: "Network error", retryable = true)
+                }
+                Triple(it.code, it.isSuccessful, body)
+            }
         }
-        response.use {
-            val text = it.body?.string().orEmpty()
-            if (!it.isSuccessful) {
-                val error = runCatching { RingJson.decodeFromString(ApiErrorBody.serializer(), text).error }.getOrNull()
-                val failure = ApiException(
-                    status = it.code,
-                    code = error?.code ?: "http_${it.code}",
-                    message = error?.message ?: "Ring returned HTTP ${it.code}.",
-                    hint = error?.hint,
-                    retryable = error?.retryable ?: (it.code >= 500),
-                    details = error?.details ?: JsonObject(emptyMap()),
-                )
-                if (authenticated && failure.isAuthFailure) onUnauthorized(failure)
-                throw failure
-            }
-            @Suppress("UNCHECKED_CAST")
-            if (out == Unit.serializer() || text.isBlank()) return Unit as R
-            return try {
-                RingJson.decodeFromString(out, text)
-            } catch (e: Exception) {
-                throw ApiException(it.code, "decode", "Ring sent a response this app could not read.")
-            }
+        if (!ok) {
+            val error = runCatching { RingJson.decodeFromString(ApiErrorBody.serializer(), text).error }.getOrNull()
+            val failure = ApiException(
+                status = status,
+                code = error?.code ?: "http_$status",
+                message = error?.message ?: "Ring returned HTTP $status.",
+                hint = error?.hint,
+                retryable = error?.retryable ?: (status >= 500),
+                details = error?.details ?: JsonObject(emptyMap()),
+            )
+            if (authenticated && failure.isAuthFailure) onUnauthorized(failure)
+            throw failure
+        }
+        @Suppress("UNCHECKED_CAST")
+        if (out == Unit.serializer() || text.isBlank()) return Unit as R
+        return try {
+            RingJson.decodeFromString(out, text)
+        } catch (e: Exception) {
+            throw ApiException(status, "decode", "Ring sent a response this app could not read.")
         }
     }
 }

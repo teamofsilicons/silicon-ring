@@ -54,6 +54,9 @@ extension AppModel {
         if currentDevice?.ringEnabled == false { return }
         rings[ring.invitationID] = ring
         scheduleExpiry(for: ring)
+        #if DEBUG
+        DevHooks.ringPresented(ring, model: self)
+        #endif
         let handledBySystem = callSystem?.ring(ring) ?? false
         if !handledBySystem {
             inAppRingIDs.append(ring.invitationID)
@@ -66,6 +69,9 @@ extension AppModel {
         guard rings[ring.invitationID] == nil else { return }
         rings[ring.invitationID] = ring
         scheduleExpiry(for: ring)
+        #if DEBUG
+        DevHooks.ringPresented(ring, model: self)
+        #endif
     }
 
     /// The system call UI took over a ring the app was showing itself (a VoIP push that had to be
@@ -333,6 +339,9 @@ extension AppModel {
         } else {
             liveCalls[call.ringid] = nil
         }
+        #if DEBUG
+        DevHooks.callChanged(model: self)
+        #endif
         if let index = recents.firstIndex(where: { $0.ringid == call.ringid }) {
             recents[index] = call
         } else if call.state == .ended {

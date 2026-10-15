@@ -6,5 +6,13 @@
             android:name=".debug.DesignCatalogActivity"
             android:exported="true"
             android:theme="@style/Theme.Ring" />
+        <!-- Debug builds only: installs a development session over adb (see DevReceiver). -->
+        <receiver
+            android:name=".debug.DevReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.teamofsilicons.ring.DEV_SESSION" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

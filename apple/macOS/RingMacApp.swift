@@ -5,6 +5,12 @@ import SwiftUI
 struct RingMacApp: App {
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
 
+    init() {
+        #if DEBUG
+        DevHooks.applyLaunchArguments()
+        #endif
+    }
+
     var body: some Scene {
         Window("Ring", id: MainWindow.id) {
             RootView()

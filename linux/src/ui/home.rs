@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::glib;
 use ring_proto::{Call, DeviceRef};
 
 use crate::app::App;
@@ -117,8 +116,11 @@ impl HomePage {
 
         let offline = adw::Banner::new("Reconnecting to Ring…");
         let elsewhere = adw::Banner::new("");
+        // Titles carry other people's names, so they are plain text, never markup.
+        elsewhere.set_use_markup(false);
         elsewhere.set_button_label(Some("Switch to this computer"));
         let return_call = adw::Banner::new("");
+        return_call.set_use_markup(false);
         return_call.set_button_label(Some("Return to call"));
         return_call.connect_button_clicked(|_| App::get().show_call());
 
@@ -229,12 +231,11 @@ impl HomePage {
                     .name
                     .clone()
                     .unwrap_or_else(|| widgets::platform_name(device.platform).to_string());
-                // Banner titles are Pango markup; names come from other people.
-                self.elsewhere.set_title(&glib::markup_escape_text(&format!(
+                self.elsewhere.set_title(&format!(
                     "On a call with {} on {}",
                     names.join(", "),
                     where_
-                )));
+                ));
                 self.elsewhere_ringid.replace(Some(call.ringid.clone()));
                 self.elsewhere.set_revealed(true);
             }
@@ -253,10 +254,8 @@ impl HomePage {
                     .iter()
                     .map(|a| a.label().to_string())
                     .collect();
-                self.return_call.set_title(&glib::markup_escape_text(&format!(
-                    "On a call with {}",
-                    names.join(", ")
-                )));
+                self.return_call
+                    .set_title(&format!("On a call with {}", names.join(", ")));
                 self.return_call.set_revealed(true);
             }
             None => self.return_call.set_revealed(false),

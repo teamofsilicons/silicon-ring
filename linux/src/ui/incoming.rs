@@ -83,8 +83,8 @@ impl IncomingWindow {
         let with_label = widgets::pixel(&with_text(call, &caller.uuid, me));
         with_label.add_css_class("muted");
         with_label.set_halign(gtk::Align::Center);
-        with_label.set_wrap(true);
-        with_label.set_justify(gtk::Justification::Center);
+        // No max-width-chars: GTK estimates this pixel face's glyphs far too narrow.
+        with_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         column.append(&with_label);
 
         // Decline reasons, revealed by the first press of Decline.

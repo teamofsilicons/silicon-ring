@@ -7,6 +7,12 @@ struct RingApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        #if DEBUG
+        DevHooks.applyLaunchArguments()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -20,6 +26,9 @@ struct RingApp: App {
             switch phase {
             case .active:
                 model.resume()
+                #if DEBUG
+                if DevHooks.keepAwake { UIApplication.shared.isIdleTimerDisabled = true }
+                #endif
             case .background:
                 // A call ringing in-app keeps ringing through CallKit once the app leaves the screen.
                 model.handOffInAppRingsToSystem()

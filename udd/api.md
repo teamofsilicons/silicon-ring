@@ -513,7 +513,7 @@ On (re)connect, clients reconcile with `GET /v1/calls?state=ringing,active,voice
 
 ## Push payloads
 
-Every channel carries the same JSON object. APNs adds `aps`; FCM sends every top-level value as a string data field.
+Every channel carries the same JSON object. APNs adds `aps`. FCM sends every top-level value as a string data field, leaves out nulls, and renames `from` to `caller` because FCM reserves `from`.
 
 ```json
 {"type":"call.incoming","ringid":"ring_…","invitation_id":"inv_…","call_uuid":"…","from":{"uuid","id","display_name","pfp_url"},

@@ -422,7 +422,9 @@ impl SettingsPage {
             .collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         self.quietly(|| self.voice.set_model(Some(&gtk::StringList::new(&names))));
-        if let Some(settings) = self.settings.borrow().clone() {
+        // Release the borrow first: set_settings stores the settings again.
+        let settings = self.settings.borrow().clone();
+        if let Some(settings) = settings {
             self.set_settings(&settings);
         }
     }

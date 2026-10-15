@@ -274,7 +274,7 @@ impl CallView {
         let add_box = control(&add, "Add");
 
         let hangup = round_button("call-stop-symbolic", "Hang up");
-        hangup.add_css_class("destructive-action");
+        hangup.add_css_class("hangup");
         hangup.add_css_class("big");
         hangup.connect_clicked(|_| App::get().hang_up());
         let hangup_box = control(&hangup, "End");
@@ -419,6 +419,15 @@ impl CallView {
             if large { "hero" } else { "medium" },
         ));
         self.0.people.append(&column);
+        // A homogeneous FlowBox is as wide as its column count, so it only centres the tiles
+        // when that count matches them.
+        let mut count = 0u32;
+        let mut child = self.0.people.first_child();
+        while let Some(widget) = child {
+            count += 1;
+            child = widget.next_sibling();
+        }
+        self.0.people.set_max_children_per_line(count.clamp(1, 4));
         self.0
             .state
             .borrow_mut()

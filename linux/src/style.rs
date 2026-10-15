@@ -206,8 +206,9 @@ window, dialog, popover, tooltip {{ font-family: "{ui}", "Adwaita Sans", "Cantar
 .badge.silicon {{ background-color: @ring_accent_subtle; color: @ring_accent_text; border-color: @ring_accent_border; }}
 .badge.on-ring {{ background-color: alpha(@ring_success, 0.10); color: @ring_success; border-color: alpha(@ring_success, 0.30); }}
 
-/* Avatar fallback: the initial in Hedvig, accent-coloured, on beige */
-avatar.ring-avatar {{
+/* Avatar fallback: the initial in Hedvig, accent-coloured, on beige. AdwAvatar draws on an
+   inner `avatar` node, so the class on the widget selects its child. */
+.ring-avatar > avatar {{
   background-image: none; background-color: @ring_beige; color: @ring_accent_text;
   font-family: "{display}", "Hedvig Letters Serif", serif;
   box-shadow: inset 0 0 0 1px @ring_border_strong;
@@ -239,6 +240,10 @@ avatar.ring-avatar {{
 .call-control.accept {{ background-color: @ring_success; color: #FFFFFF; }}
 .call-control.accept:hover {{ background-color: shade(@ring_success, 1.08); }}
 .call-control:checked {{ background-color: @ring_ink; color: @ring_background; }}
+menubutton.call-control > button {{ min-width: 56px; min-height: 56px; padding: 0; border-radius: 9999px; }}
+/* libadwaita's destructive-action only tints; hang up is a filled danger circle */
+.call-control.hangup {{ background-color: @ring_danger; color: #FFFFFF; }}
+.call-control.hangup:hover {{ background-color: shade(@ring_danger, 1.08); }}
 .control-label {{ font-size: 12px; color: @ring_text_muted; }}
 
 /* Transcript: lines move up and fade toward the top */
@@ -246,7 +251,10 @@ avatar.ring-avatar {{
 .transcript-line .text {{ font-size: 17px; }}
 .transcript-line.partial .text {{ color: @ring_text_muted; }}
 .transcript-line.event {{ font-family: "{pixel}", monospace; font-size: 11px; color: @ring_text_muted; }}
-.transcript-fade {{ background-image: linear-gradient(to bottom, @window_bg_color 0%, alpha(@window_bg_color, 0) 100%); }}
+.transcript-fade {{ background-image: linear-gradient(to bottom, @ring_background 0%, alpha(@ring_background, 0) 100%); }}
+
+/* Banners (handoff, return to call, reconnecting) are beige */
+banner > revealer > widget, banner > revealer > widget:backdrop {{ background-color: @ring_beige; color: @ring_foreground; }}
 
 /* Call details timeline: a hairline rail with dots */
 .timeline-rail {{ min-width: 1px; background-color: @ring_border_strong; }}
@@ -259,7 +267,7 @@ avatar.ring-avatar {{
 /* The incoming call is a "moment" screen in the Ring mark's colours, in both themes */
 .moment {{ background-color: #181818; color: #EDE8E0; }}
 .moment .muted {{ color: #9C978C; }}
-.moment avatar.ring-avatar {{ background-color: #2E2C28; color: #8DB2EC; box-shadow: inset 0 0 0 1px #3D3A35; }}
+.moment .ring-avatar > avatar {{ background-color: #2E2C28; color: #8DB2EC; box-shadow: inset 0 0 0 1px #3D3A35; }}
 .moment .avatar-ring.ringing {{ animation: moment-expand 3s ease-out infinite; }}
 @keyframes moment-expand {{
   0%   {{ box-shadow: 0 0 0 0 rgba(237,232,224,0.20), 0 0 0 0 rgba(237,232,224,0.10); }}

@@ -40,6 +40,7 @@
 		66BDB776D7BB07A9CA8503DE /* CallMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CEA2BDFFE859B8E15D88C12 /* CallMedia.swift */; };
 		69540176133657AE8C1EC16B /* Formatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B9A7F03C8B00D53E48EFA1 /* Formatting.swift */; };
 		6E93A0D9AB0D4072C9FFA494 /* ended.wav in Resources */ = {isa = PBXBuildFile; fileRef = 06CC19CEC1C7821D921F8F10 /* ended.wav */; };
+		749AE1C805B057138E54C649 /* DevHooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75015251521BE7B94FD5EE84 /* DevHooks.swift */; };
 		755CF1ADFDCEBA6CF9CE1BF1 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FBD3A0B6ED2E517A0F50BB9 /* Theme.swift */; };
 		77B45897DDBE96C4A6B865CB /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C31251185CE7722326B9D14 /* RootView.swift */; };
 		789B3813D12E6B7541C4B859 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0E184BB529EFF8CB911A99 /* SessionStore.swift */; };
@@ -60,6 +61,7 @@
 		A830EE62247EFE3FAB56055B /* CallScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6DE62C385D4794718E864E5 /* CallScreen.swift */; };
 		AB17E22D4F2F2ECAEBDD8BB1 /* MacAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EFDEB6253FACF55B08A2C8D /* MacAppDelegate.swift */; };
 		AC7C1EF14C4BE82F210CB8A4 /* BDOGrotesk-Regular.ttf in CopyFiles */ = {isa = PBXBuildFile; fileRef = EB0FA2218B76C1B373A0CD63 /* BDOGrotesk-Regular.ttf */; };
+		B01AD2632AAE9D2D3E25477B /* DevHooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75015251521BE7B94FD5EE84 /* DevHooks.swift */; };
 		B01E0F6A70D7914CDB55EC1E /* AppInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22E6A2BCF1EEE89FF8BAB7A6 /* AppInfo.swift */; };
 		B3EE64F62888D2B3F626EEB1 /* CallScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6DE62C385D4794718E864E5 /* CallScreen.swift */; };
 		B6733A00B9C962C96AB1FAFE /* GeistPixel-Square.ttf in CopyFiles */ = {isa = PBXBuildFile; fileRef = 4100807BA89C634C25AD46E0 /* GeistPixel-Square.ttf */; };
@@ -150,6 +152,7 @@
 		6EFDEB6253FACF55B08A2C8D /* MacAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacAppDelegate.swift; sourceTree = "<group>"; };
 		7328AF1DC01017CE131BFEDD /* ringtone.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = ringtone.wav; sourceTree = "<group>"; };
 		74953904432DB08FCF775742 /* AudioRouteButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRouteButton.swift; sourceTree = "<group>"; };
+		75015251521BE7B94FD5EE84 /* DevHooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevHooks.swift; sourceTree = "<group>"; };
 		7C3A0ED84AA4E6B78AF41932 /* connected.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = connected.wav; sourceTree = "<group>"; };
 		7FBCCD89034603DF2F446EE5 /* Provisioning.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Provisioning.swift; sourceTree = "<group>"; };
 		806A3226BB896292C193F723 /* VoicemailViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicemailViews.swift; sourceTree = "<group>"; };
@@ -405,6 +408,7 @@
 			isa = PBXGroup;
 			children = (
 				22E6A2BCF1EEE89FF8BAB7A6 /* AppInfo.swift */,
+				75015251521BE7B94FD5EE84 /* DevHooks.swift */,
 				E5B9A7F03C8B00D53E48EFA1 /* Formatting.swift */,
 				7FBCCD89034603DF2F446EE5 /* Provisioning.swift */,
 				9CB84A8B5D9AD0BE88661B1B /* Tones.swift */,
@@ -553,6 +557,7 @@
 				4E6C707165D97574D750CAE5 /* CallSession.swift in Sources */,
 				914F2F9FF9404C28C6B392D1 /* CallSystem.swift in Sources */,
 				E72563C1E1F8514B8D4B4274 /* Components.swift in Sources */,
+				B01AD2632AAE9D2D3E25477B /* DevHooks.swift in Sources */,
 				97ECCB85755CDACD3CE6CFCA /* DialerView.swift in Sources */,
 				D99FFDF9CB35E88899C26157 /* Events.swift in Sources */,
 				69540176133657AE8C1EC16B /* Formatting.swift in Sources */,
@@ -593,6 +598,7 @@
 				8A523F7F65F45AECD48E9C00 /* CallSession.swift in Sources */,
 				A0E1554BDF14140D53BF672A /* CallSystem.swift in Sources */,
 				3D94B9549ECD9ACEF24B070F /* Components.swift in Sources */,
+				749AE1C805B057138E54C649 /* DevHooks.swift in Sources */,
 				071CE789B128F78A35CADD18 /* DialerView.swift in Sources */,
 				CAA4ED73ACCDD5AE953CEFD9 /* Events.swift in Sources */,
 				BD6218C0C2B1A7EA6E0350F5 /* Formatting.swift in Sources */,

@@ -80,7 +80,7 @@ thread_local! {
 
 /// A circular avatar: the account's photo when it has one, otherwise its initial.
 pub fn avatar(account: &Account, size: i32) -> adw::Avatar {
-    let avatar = adw::Avatar::new(size, Some(account.label()), true);
+    let avatar = adw::Avatar::new(size, Some(&initial_source(account)), true);
     avatar.add_css_class("ring-avatar");
     if let Some(url) = account
         .pfp_url
@@ -90,6 +90,22 @@ pub fn avatar(account: &Account, size: i32) -> adw::Avatar {
         load_photo(&avatar, url);
     }
     avatar
+}
+
+/// The word AdwAvatar takes its initial from: one letter, as design.md asks, from the first word
+/// of the display name, or the handle of an id (`c:alice` → `alice`).
+fn initial_source(account: &Account) -> String {
+    let name = account
+        .display_name
+        .as_deref()
+        .and_then(|n| n.split_whitespace().next())
+        .unwrap_or_else(|| {
+            account
+                .id
+                .split_once(':')
+                .map_or(account.id.as_str(), |(_, handle)| handle)
+        });
+    name.chars().filter(|c| c.is_alphanumeric()).collect()
 }
 
 fn load_photo(avatar: &adw::Avatar, url: &str) {

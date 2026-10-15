@@ -496,21 +496,19 @@ fn payload_value(payload: &PushPayload) -> Value {
     serde_json::to_value(payload).unwrap_or(Value::Null)
 }
 
-/// FCM data values must all be strings.
+/// FCM data values must all be strings, and FCM rejects the whole message (400 INVALID_ARGUMENT)
+/// when a key is reserved (`from`, `message_type`, `google.*`, `gcm.*`), so the caller travels as
+/// `caller`. Null values are left out rather than sent as the text "null".
 fn fcm_data(payload: &Value) -> Map<String, Value> {
     payload
         .as_object()
         .map(|o| {
             o.iter()
+                .filter(|(_, v)| !v.is_null())
                 .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        Value::String(
-                            v.as_str()
-                                .map(String::from)
-                                .unwrap_or_else(|| v.to_string()),
-                        ),
-                    )
+                    let key = if k == "from" { "caller".to_string() } else { k.clone() };
+                    let value = v.as_str().map(String::from).unwrap_or_else(|| v.to_string());
+                    (key, Value::String(value))
                 })
                 .collect()
         })

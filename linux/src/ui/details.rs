@@ -101,7 +101,7 @@ pub fn present(call: &Call) {
         "muted"
     });
     summary.set_halign(gtk::Align::Center);
-    summary.set_wrap(true);
+    summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
     content.append(&summary);
 
     // Decline reasons are kept in the call log.
@@ -224,8 +224,9 @@ pub fn present(call: &Call) {
             match runtime::run(async move { c.transcript(&id, after, Some(200)).await }).await {
                 Ok(page) => {
                     let done = page.items.is_empty() || page.next_after_seq <= after;
+                    let seen = after;
                     after = page.next_after_seq;
-                    entries.extend(page.items);
+                    entries.extend(page.items.into_iter().filter(|e| e.seq > seen));
                     if done || entries.len() >= 5000 {
                         break;
                     }

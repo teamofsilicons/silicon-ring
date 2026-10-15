@@ -378,13 +378,31 @@ pub fn open_detail(voicemail: Voicemail) {
     ));
     meta.add_css_class("muted");
     meta.set_halign(gtk::Align::Center);
-    meta.set_wrap(true);
+    // GTK estimates this pixel face's width low, so a wrapping label would break early.
+    meta.set_ellipsize(gtk::pango::EllipsizeMode::End);
     content.append(&meta);
 
     let player = Player::new();
     content.append(player.widget());
     match (voicemail.audio_status, voicemail.audio_url.clone()) {
         (AudioStatus::Ready, Some(url)) => player.load(&voicemail.voicemail_id, url, None, false),
+        // Listings carry no audio link; fetch the voicemail for a fresh presigned one.
+        (AudioStatus::Ready, None) => {
+            player.set_status("Loading…");
+            let client = app.client();
+            let id = voicemail.voicemail_id.clone();
+            let player = player.clone();
+            glib::spawn_future_local(async move {
+                let target = id.clone();
+                match runtime::run(async move { client.voicemail(&target).await }).await {
+                    Ok(fresh) => match fresh.audio_url {
+                        Some(url) => player.load(&id, url, None, false),
+                        None => player.set_status("The audio is still processing"),
+                    },
+                    Err(err) => player.set_status(&widgets::error_text(&err)),
+                }
+            });
+        }
         (AudioStatus::Failed, _) => player.set_status("The audio could not be saved"),
         _ => player.set_status("The audio is still processing"),
     }
@@ -480,6 +498,8 @@ pub fn open_detail(voicemail: Voicemail) {
     });
     OPEN.with(|o| o.borrow_mut().insert(id.clone(), dialog.clone()));
     dialog.present(Some(&app.window().window));
+    // Otherwise the selectable transcript takes the focus and opens fully selected.
+    dialog.set_focus(Some(&call_back));
     if !voicemail.read {
         app.mark_voicemail_read(&id);
     }

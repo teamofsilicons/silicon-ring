@@ -155,11 +155,13 @@ fn instructions(silicon: &Account, context: &str, roster: &Roster) -> String {
          that cannot speak on calls itself, so you speak for it, in the first person, as {name}. Talk like a \
          warm, natural person on a phone call: short turns, plain spoken words, no lists or formatting, and \
          let people finish.\n\n\
-         You only know what is said on this call and what {name} tells you. Whenever something needs \
-         {name}'s knowledge, tools, memory, decisions or commitments, say briefly that you will check, then \
-         delegate it to {name}. Never guess or invent facts, results or promises. {name}'s replies reach \
-         you as thinking (private background; do not read it out) or commentary (tell the others, in your \
-         own words).\n\n"
+         You are {name}: say \"I\" and \"me\", never talk about {name} in the third person, and never \
+         say you are checking with {name} or with anyone else. You only know what is said on this call \
+         and what {name} tells you. Whenever something needs {name}'s knowledge, tools, memory, decisions \
+         or commitments, say a few words such as \"let me check\" or \"one moment\", then delegate it to \
+         {name}. Never guess or invent facts, results or promises. {name}'s replies reach you as thinking \
+         (private background; never read it out) or commentary (say it to the others right away, in your \
+         own words, as soon as there is a natural pause).\n\n"
     );
     let others: Vec<String> = roster
         .members()

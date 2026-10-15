@@ -52,7 +52,7 @@ class RingMessagingService : FirebaseMessagingService() {
             "call.incoming" -> {
                 val ringid = data["ringid"] ?: return
                 val invitationId = data["invitation_id"] ?: return
-                val from = person(data["from"]) ?: return
+                val from = person(data["caller"] ?: data["from"]) ?: return
                 val alreadyOn = participants(data["participants"])
                 graph.calls.onIncomingPush(ringid, invitationId, from, alreadyOn, parseInstant(data["expires_at"]))
             }
@@ -62,13 +62,13 @@ class RingMessagingService : FirebaseMessagingService() {
             }
             "call.missed" -> {
                 val ringid = data["ringid"] ?: return
-                val from = person(data["from"]) ?: return
+                val from = person(data["caller"] ?: data["from"]) ?: return
                 CallNotifications.missed(this, ringid, from)
                 graph.repo.refreshAll()
             }
             "voicemail.received" -> {
                 val id = data["voicemail_id"] ?: return
-                val from = person(data["from"]) ?: return
+                val from = person(data["caller"] ?: data["from"]) ?: return
                 // FCM carries every value as a string, so a JSON null arrives as the text "null".
                 CallNotifications.voicemail(this, id, from, data["transcript"]?.takeUnless { it == "null" })
                 graph.repo.refreshAll()
