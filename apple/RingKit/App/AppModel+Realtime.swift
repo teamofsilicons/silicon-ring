@@ -80,6 +80,17 @@ extension AppModel {
             stopRing(ring, cause: .remoteEnded)
         }
 
+        // The server says this device carries a live call the app has no session for: the app was
+        // restarted or crashed mid-call. Rejoin it rather than stranding the call on a dead device.
+        if activeCall == nil, let myDeviceID {
+            for call in page.items where call.state == .active {
+                if let me = call.participant(uuid: myUUID), me.state == .joined, me.device?.deviceID == myDeviceID {
+                    switchHere(call)
+                    break
+                }
+            }
+        }
+
         if let session = activeCall, session.isLive, live[session.ringid] == nil {
             if let call = try? await api.call(session.ringid) {
                 callChanged(call)

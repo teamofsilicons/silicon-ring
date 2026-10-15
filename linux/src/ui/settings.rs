@@ -36,6 +36,7 @@ pub struct SettingsPage {
     ring_here: adw::SwitchRow,
     devices: adw::PreferencesGroup,
     device_rows: Rc<RefCell<HashMap<String, adw::ActionRow>>>,
+    device_list: Rc<RefCell<Vec<Device>>>,
     voicemail_enabled: adw::SwitchRow,
     voice: adw::ComboRow,
     voices: Rc<RefCell<Vec<Voice>>>,
@@ -312,6 +313,7 @@ impl SettingsPage {
             ring_here,
             devices,
             device_rows: Rc::default(),
+            device_list: Rc::default(),
             voicemail_enabled,
             voice: voice.clone(),
             voices: Rc::default(),
@@ -390,27 +392,45 @@ impl SettingsPage {
     }
 
     pub fn set_devices(&self, devices: &[Device]) {
-        for (_, row) in self.device_rows.borrow_mut().drain() {
-            self.devices.remove(&row);
-        }
-        for device in devices {
-            self.upsert_device(device);
-        }
+        self.device_list.replace(devices.to_vec());
+        self.rebuild_devices();
     }
 
     pub fn upsert_device(&self, device: &Device) {
-        let row = device_row(device);
-        let mut rows = self.device_rows.borrow_mut();
-        if let Some(old) = rows.remove(&device.device_id) {
-            self.devices.remove(&old);
+        {
+            let mut list = self.device_list.borrow_mut();
+            match list.iter_mut().find(|d| d.device_id == device.device_id) {
+                Some(existing) => *existing = device.clone(),
+                None => list.push(device.clone()),
+            }
         }
-        self.devices.add(&row);
-        rows.insert(device.device_id.clone(), row);
+        self.rebuild_devices();
     }
 
     pub fn remove_device(&self, device_id: &str) {
-        if let Some(row) = self.device_rows.borrow_mut().remove(device_id) {
+        self.device_list
+            .borrow_mut()
+            .retain(|d| d.device_id != device_id);
+        self.rebuild_devices();
+    }
+
+    /// This device first, then the others, most recently seen first, so rows keep their place
+    /// when one of them changes.
+    fn rebuild_devices(&self) {
+        for (_, row) in self.device_rows.borrow_mut().drain() {
             self.devices.remove(&row);
+        }
+        let mut list = self.device_list.borrow().clone();
+        list.sort_by(|a, b| {
+            b.current
+                .cmp(&a.current)
+                .then_with(|| b.last_seen_at.cmp(&a.last_seen_at))
+        });
+        let mut rows = self.device_rows.borrow_mut();
+        for device in &list {
+            let row = device_row(device);
+            self.devices.add(&row);
+            rows.insert(device.device_id.clone(), row);
         }
     }
 

@@ -101,7 +101,6 @@ pub fn present(call: &Call) {
         "muted"
     });
     summary.set_halign(gtk::Align::Center);
-    summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
     content.append(&summary);
 
     // Decline reasons are kept in the call log.

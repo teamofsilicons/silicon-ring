@@ -12,7 +12,7 @@ use crate::ui::recents::RecentsPage;
 use crate::ui::settings::SettingsPage;
 use crate::ui::voicemail::VoicemailPage;
 use crate::ui::widgets;
-use crate::ui::window::{primary_menu_button, ring_mark};
+use crate::ui::window::primary_menu_button;
 
 const SECTIONS: [(&str, &str, &str); 3] = [
     ("recents", "Recents", "document-open-recent-symbolic"),
@@ -69,7 +69,10 @@ impl HomePage {
         }
 
         let brand = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        brand.append(&ring_mark(20));
+        // The symbolic mark follows the text colour, so it stays legible on ink in dark mode.
+        let mark = gtk::Image::from_icon_name(&format!("{}-symbolic", crate::APP_ID));
+        mark.set_pixel_size(20);
+        brand.append(&mark);
         let wordmark = gtk::Label::new(Some("RING"));
         wordmark.add_css_class("wordmark");
         brand.append(&wordmark);

@@ -49,7 +49,7 @@ struct ActiveCall {
 /// What a rejoin found when it looked at the call again.
 enum Rejoin {
     Media(ring_proto::CallWithMedia),
-    MovedTo(String),
+    MovedTo(Call, String),
     Over(Call),
 }
 
@@ -1637,7 +1637,7 @@ impl App {
                     return Ok(Rejoin::Over(call));
                 }
                 if let Some(device_id) = elsewhere {
-                    return Ok(Rejoin::MovedTo(device_id));
+                    return Ok(Rejoin::MovedTo(call, device_id));
                 }
                 client.media(&id).await.map(Rejoin::Media)
             })
@@ -1659,7 +1659,13 @@ impl App {
                     }
                     app.call_changed(answer.call);
                 }
-                Ok(Rejoin::MovedTo(device_id)) => app.handoff(&ringid, &device_id),
+                Ok(Rejoin::MovedTo(call, device_id)) => {
+                    // The fresh call names the device it moved to.
+                    if let Some(active) = app.0.active.borrow_mut().as_mut() {
+                        active.call = call;
+                    }
+                    app.handoff(&ringid, &device_id);
+                }
                 Ok(Rejoin::Over(call)) => app.end_local_call(Some(call), true),
                 Err(err) => {
                     if matches!(err.code(), codes::CALL_ENDED | codes::NOT_PARTICIPANT) {

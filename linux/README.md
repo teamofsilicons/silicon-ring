@@ -18,12 +18,14 @@ This directory is its own Cargo workspace (not a member of the root workspace).
 - **Always listening.** While signed in the app holds itself open, so closing the window keeps
   the realtime connection (and ringing) alive. "Open at login" writes
   `~/.config/autostart/com.teamofsilicons.Ring.desktop` (`ring-desktop --background`), or asks the
-  Background portal under Flatpak. Both are switches in Settings.
+  Background portal under Flatpak. The first sign-in turns it on, as the other desktop apps do;
+  both are switches in Settings, and a later choice there is kept.
 - **Incoming calls** open an urgent ringing window (the ink "moment" screen; on X11 the urgency
   hint is set) with Accept, Decline (first press reveals reasons and a text box, second press
   declines without one) and Silence, play `ringtone.wav`, and post a notification with Answer and
   Decline: through the XDG Notification portal (`call.incoming` category, urgent priority, call
   button purposes) with `gio::Notification` as the fallback. Both use the same app actions.
+  Accept is not the default button, so a stray Enter typed into another window cannot answer.
 - **Calls**: the dialer looks people up live (`GET /v1/accounts/{ref}`) and lists recent people;
   the outgoing screen plays `ringback.wav`; the call screen shows a timer, participants with a
   speaking pulse (from LiveKit active speakers matched to `media_identity`), the live transcript
@@ -135,3 +137,6 @@ icons, and `/usr/share/com.teamofsilicons.Ring/{fonts,sounds}`.
   Answer and Decline buttons work either way.
 - **AppImage sounds.** The AppImage bundles GTK4, libadwaita and the GStreamer core libraries but
   not GStreamer's plugins, so ringtones play through the host's plugins when they are installed.
+- **AppImage host libraries.** Like every linuxdeploy AppImage it leaves out the libraries on the
+  AppImage exclude list (fontconfig, HarfBuzz, FreeType, X11, EGL, …), which every desktop
+  already has; a bare container without them cannot start it.

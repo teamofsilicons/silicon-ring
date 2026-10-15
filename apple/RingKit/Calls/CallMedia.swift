@@ -21,6 +21,22 @@ final class CallMedia: NSObject {
 
     private var room: Room?
     private var generation = 0
+    /// iOS: the microphone is published only once CallKit has activated the audio session;
+    /// enabling it earlier makes LiveKit's engine fail (-3010) and the call drops.
+    private var micPending: Bool?
+
+    /// The instance carrying the current call, told when the audio session becomes active.
+    private static weak var current: CallMedia?
+    #if os(iOS)
+    private static var audioReady = false
+    #else
+    private static let audioReady = true
+    #endif
+
+    override init() {
+        super.init()
+        CallMedia.current = self
+    }
 
     /// iOS hands the audio session to CallKit: LiveKit must not configure it, and its engine
     /// stays off until CallKit activates the session.
@@ -39,9 +55,12 @@ final class CallMedia: NSObject {
             // Without microphone access LiveKit refuses to enable input; still play the call.
             try? AudioManager.shared.setEngineAvailability(AudioEngineAvailability(isInputAvailable: false, isOutputAvailable: true))
         }
+        audioReady = true
+        if let current { Task { await current.publishPendingMicrophone() } }
     }
 
     static func audioSessionDeactivated() {
+        audioReady = false
         try? AudioManager.shared.setEngineAvailability(.none)
     }
     #endif
@@ -56,10 +75,14 @@ final class CallMedia: NSObject {
         state = .connecting
         do {
             try await room.connect(url: grant.url, token: grant.token)
-            // Publish exactly one microphone track; a muted participant keeps it published but muted.
-            try await room.localParticipant.setMicrophone(enabled: true)
-            if muted { try await room.localParticipant.setMicrophone(enabled: false) }
             if self.room === room { state = .connected }
+            if Self.audioReady {
+                try await publishMicrophone(room, muted: muted)
+            } else {
+                // Remote audio plays as soon as the session is active; the microphone follows.
+                micPending = muted
+                DevLog.log("microphone waits for the audio session")
+            }
         } catch {
             if self.room === room {
                 self.room = nil
@@ -70,12 +93,34 @@ final class CallMedia: NSObject {
         }
     }
 
+    /// Publishes exactly one microphone track; a muted participant keeps it published but muted.
+    private func publishMicrophone(_ room: Room, muted: Bool) async throws {
+        try await room.localParticipant.setMicrophone(enabled: true)
+        if muted { try await room.localParticipant.setMicrophone(enabled: false) }
+    }
+
+    private func publishPendingMicrophone() async {
+        guard let room, let muted = micPending else { return }
+        micPending = nil
+        do {
+            try await publishMicrophone(room, muted: muted)
+            DevLog.log("microphone published after audio session activation")
+        } catch {
+            DevLog.log("microphone publish failed: \(error)")
+        }
+    }
+
     func setMuted(_ muted: Bool) async {
+        if micPending != nil {
+            micPending = muted
+            return
+        }
         guard let room else { return }
         _ = try? await room.localParticipant.setMicrophone(enabled: !muted)
     }
 
     func disconnect() async {
+        micPending = nil
         guard let room else { return }
         self.room = nil
         generation += 1

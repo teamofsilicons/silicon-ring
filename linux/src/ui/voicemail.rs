@@ -378,8 +378,6 @@ pub fn open_detail(voicemail: Voicemail) {
     ));
     meta.add_css_class("muted");
     meta.set_halign(gtk::Align::Center);
-    // GTK estimates this pixel face's width low, so a wrapping label would break early.
-    meta.set_ellipsize(gtk::pango::EllipsizeMode::End);
     content.append(&meta);
 
     let player = Player::new();

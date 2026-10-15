@@ -73,6 +73,7 @@ final class CallKitBridge: NSObject {
         let uuid = ring.callUUID
         ringing.insert(uuid)
         provider.reportNewIncomingCall(with: uuid, update: update(for: ring)) { error in
+            DevLog.log("reported incoming \(uuid) error=\(error.map { String(describing: $0) } ?? "none")")
             if error != nil {
                 // Do Not Disturb, a blocked caller, or a duplicate: CallKit will not show this call.
                 Task { @MainActor in CallKitBridge.shared.ringing.remove(uuid) }
@@ -111,7 +112,11 @@ final class CallKitBridge: NSObject {
 extension CallKitBridge: CallSystem {
     func ring(_ ring: IncomingRing) -> Bool {
         // In the foreground the app shows its own incoming screen.
+        #if DEBUG
+        if UIApplication.shared.applicationState == .active, !DevHooks.forceCallKit { return false }
+        #else
         if UIApplication.shared.applicationState == .active { return false }
+        #endif
         if !isKnown(ring.callUUID) { report(ring) {} }
         return true
     }
@@ -128,7 +133,8 @@ extension CallKitBridge: CallSystem {
     func answer(_ ring: IncomingRing) {
         let action = CXAnswerCallAction(call: ring.callUUID)
         controller.request(CXTransaction(action: action)) { error in
-            guard error != nil else { return }
+            guard let error else { return }
+            DevLog.log("CallKit refused the answer request: \(error)")
             Task { @MainActor in
                 let bridge = CallKitBridge.shared
                 bridge.ringing.remove(ring.callUUID)
@@ -217,6 +223,7 @@ extension CallKitBridge: @preconcurrency CXProviderDelegate {
 
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         let uuid = action.callUUID
+        DevLog.log("CXAnswer \(uuid) known=\(model?.ring(forCallUUID: uuid) != nil)")
         guard let model, let ring = model.ring(forCallUUID: uuid) else {
             action.fail()
             ringing.remove(uuid)
@@ -259,6 +266,7 @@ extension CallKitBridge: @preconcurrency CXProviderDelegate {
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        DevLog.log("CXEnd \(action.callUUID)")
         let uuid = action.callUUID
         defer { action.fulfill() }
         guard let model else { return }
@@ -286,16 +294,19 @@ extension CallKitBridge: @preconcurrency CXProviderDelegate {
     }
 
     func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
+        DevLog.log("CallKit timed out performing \(type(of: action))")
         action.fail()
     }
 
     func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+        DevLog.log("audio session activated")
         CallMedia.audioSessionActivated()
         model?.audioActive = true
         model?.updateRingback()
     }
 
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+        DevLog.log("audio session deactivated")
         CallMedia.audioSessionDeactivated()
         model?.audioActive = false
         Tones.shared.stopRingback()
@@ -325,6 +336,7 @@ extension CallKitBridge: @preconcurrency PKPushRegistryDelegate {
     /// not with a call already active, not for a very late push).
     @available(iOS 26.4, *)
     func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingVoIPPushWith payload: PKPushPayload, metadata: PKVoIPPushMetadata, withCompletionHandler completion: @escaping () -> Void) {
+        DevLog.log("voip push type=\(payload.dictionaryPayload["type"] ?? "?") mustReport=\(metadata.mustReport)")
         handleVoIPPush(payload.dictionaryPayload, mustReport: metadata.mustReport, completion: completion)
     }
 

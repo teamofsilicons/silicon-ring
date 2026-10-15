@@ -107,6 +107,7 @@ extension AppModel {
     }
 
     func answer(_ ring: IncomingRing) {
+        DevLog.log("answer requested \(ring.ringid) ownedBySystem=\(callSystem?.ownsRing(ring) ?? false)")
         if let system = callSystem, system.ownsRing(ring) {
             system.answer(ring)
             return
@@ -122,6 +123,7 @@ extension AppModel {
     /// Accepts on the server and joins the room. Returns whether this device now carries the call.
     @discardableResult
     func performAnswer(_ ring: IncomingRing) async -> Bool {
+        DevLog.log("answer \(ring.ringid) inv=\(ring.invitationID)")
         guard let myUUID else { return false }
         rings[ring.invitationID] = nil
         cancelExpiry(ring.invitationID)
@@ -191,6 +193,7 @@ extension AppModel {
     }
 
     func performHangUp(_ session: CallSession, cause: CallEndCause = .remoteEnded) async {
+        DevLog.log("hang up \(session.ringid) cause=\(cause)")
         guard session.isLive else { return }
         // A no-op when the system UI itself performed the hang-up.
         callSystem?.ended(session, cause: cause)
@@ -284,14 +287,17 @@ extension AppModel {
         if AVAudioApplication.shared.recordPermission == .denied {
             show("Ring can't use the microphone, so the call can't hear you. Allow it in Settings.", style: .error)
         }
+        DevLog.log("join \(session.ringid) audioActive=\(audioActive) mic=\(AVAudioApplication.shared.recordPermission.rawValue)")
         do {
             try await media.connect(grant, muted: session.muted)
+            DevLog.log("joined \(session.ringid)")
             guard activeCall === session, session.isLive else {
                 await media.disconnect()
                 return
             }
             await loadTranscript(session)
         } catch {
+            DevLog.log("join failed \(session.ringid): \(error)")
             guard activeCall === session, session.isLive else { return }
             show("Ring couldn't connect the call audio.", style: .error)
             await performHangUp(session, cause: .failed)
@@ -305,6 +311,7 @@ extension AppModel {
 
     /// LiveKit gave up on the room; rejoin within the server's grace period if the call is still on.
     func mediaLost() {
+        DevLog.log("media lost \(activeCall?.ringid ?? "-")")
         guard let session = activeCall, session.isLive, session.phase != .ended else { return }
         Task {
             // The room also drops when the call ends or moves to another device (the server removes
@@ -407,6 +414,7 @@ extension AppModel {
 
     /// Tears down a call that ended remotely.
     func finish(_ session: CallSession, cause: CallEndCause) {
+        DevLog.log("finish \(session.ringid) cause=\(cause)")
         Tones.shared.stopRingback()
         Tones.shared.play(.ended)
         Task { await media.disconnect() }

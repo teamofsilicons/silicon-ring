@@ -83,8 +83,6 @@ impl IncomingWindow {
         let with_label = widgets::pixel(&with_text(call, &caller.uuid, me));
         with_label.add_css_class("muted");
         with_label.set_halign(gtk::Align::Center);
-        // No max-width-chars: GTK estimates this pixel face's glyphs far too narrow.
-        with_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         column.append(&with_label);
 
         // Decline reasons, revealed by the first press of Decline.
@@ -220,7 +218,8 @@ impl IncomingWindow {
             glib::Propagation::Proceed
         });
         window.add_controller(shortcuts);
-        accept.grab_focus();
+        // Accept is deliberately not the default widget: this window can take the focus while
+        // someone is typing elsewhere, and a stray Enter must not open their microphone.
         this
     }
 

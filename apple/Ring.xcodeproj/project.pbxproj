@@ -28,11 +28,13 @@
 		3CCB831610C768A1A1A3E075 /* RealtimeConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC8265CF789A840B01F46ED /* RealtimeConnection.swift */; };
 		3CD5956D7FD21E096619B597 /* ringtone.wav in Resources */ = {isa = PBXBuildFile; fileRef = 7328AF1DC01017CE131BFEDD /* ringtone.wav */; };
 		3D94B9549ECD9ACEF24B070F /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57C82B954BC94B07B9E82910 /* Components.swift */; };
+		3F633E4D99A687FED16F0EB1 /* DevLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C1E8BE26559134C6F720AA6 /* DevLog.swift */; };
 		3FACB9091E36121066317B12 /* ringback.wav in Resources */ = {isa = PBXBuildFile; fileRef = 98401F51B4114051CCAEF59C /* ringback.wav */; };
 		4587E1073D977D965AC5155C /* RecentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D31B1C20977CE57E585A7DB5 /* RecentsView.swift */; };
 		4E6C707165D97574D750CAE5 /* CallSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 007364CA765AB152E35C2312 /* CallSession.swift */; };
 		507F9364AFF7380459DEA88E /* MacViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86D87F63E7B405D6EA2CB34E /* MacViews.swift */; };
 		5088F0B60B98FF16BB81055A /* AudioPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 408E0850E752347ABC9E1496 /* AudioPlayerView.swift */; };
+		51BA5D85CCF24D1D65DE781D /* DevLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C1E8BE26559134C6F720AA6 /* DevLog.swift */; };
 		5266BE569E2936E60B6B6B84 /* ringtone.wav in Resources */ = {isa = PBXBuildFile; fileRef = 7328AF1DC01017CE131BFEDD /* ringtone.wav */; };
 		54963C574197265622DF07E3 /* JSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91FFB21EBFC59454ADBDCB97 /* JSON.swift */; };
 		59D16D70BE3CF9BA43A09C65 /* connected.wav in Resources */ = {isa = PBXBuildFile; fileRef = 7C3A0ED84AA4E6B78AF41932 /* connected.wav */; };
@@ -161,6 +163,7 @@
 		82FD949A7925969A2F51ECFF /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		83C329610AFA54DF56ACEC87 /* AppModel+Calls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModel+Calls.swift"; sourceTree = "<group>"; };
 		86D87F63E7B405D6EA2CB34E /* MacViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacViews.swift; sourceTree = "<group>"; };
+		8C1E8BE26559134C6F720AA6 /* DevLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevLog.swift; sourceTree = "<group>"; };
 		91FFB21EBFC59454ADBDCB97 /* JSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSON.swift; sourceTree = "<group>"; };
 		98401F51B4114051CCAEF59C /* ringback.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = ringback.wav; sourceTree = "<group>"; };
 		9BBA1E3777BB2C757288F48B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -409,6 +412,7 @@
 			children = (
 				22E6A2BCF1EEE89FF8BAB7A6 /* AppInfo.swift */,
 				75015251521BE7B94FD5EE84 /* DevHooks.swift */,
+				8C1E8BE26559134C6F720AA6 /* DevLog.swift */,
 				E5B9A7F03C8B00D53E48EFA1 /* Formatting.swift */,
 				7FBCCD89034603DF2F446EE5 /* Provisioning.swift */,
 				9CB84A8B5D9AD0BE88661B1B /* Tones.swift */,
@@ -558,6 +562,7 @@
 				914F2F9FF9404C28C6B392D1 /* CallSystem.swift in Sources */,
 				E72563C1E1F8514B8D4B4274 /* Components.swift in Sources */,
 				B01AD2632AAE9D2D3E25477B /* DevHooks.swift in Sources */,
+				3F633E4D99A687FED16F0EB1 /* DevLog.swift in Sources */,
 				97ECCB85755CDACD3CE6CFCA /* DialerView.swift in Sources */,
 				D99FFDF9CB35E88899C26157 /* Events.swift in Sources */,
 				69540176133657AE8C1EC16B /* Formatting.swift in Sources */,
@@ -599,6 +604,7 @@
 				A0E1554BDF14140D53BF672A /* CallSystem.swift in Sources */,
 				3D94B9549ECD9ACEF24B070F /* Components.swift in Sources */,
 				749AE1C805B057138E54C649 /* DevHooks.swift in Sources */,
+				51BA5D85CCF24D1D65DE781D /* DevLog.swift in Sources */,
 				071CE789B128F78A35CADD18 /* DialerView.swift in Sources */,
 				CAA4ED73ACCDD5AE953CEFD9 /* Events.swift in Sources */,
 				BD6218C0C2B1A7EA6E0350F5 /* Formatting.swift in Sources */,
