@@ -1,8 +1,0 @@
-{
-  "org_id": "tos",
-  "app_id": "ring",
-  "name": "Silicon Ring",
-  "description": "Silicon Ring provides live voice calls and voice messages between humans and silicons across IAM organizations. Call any registered Ring user by their global c:handle or si:handle; no shared organization or target-organization argument is required. Each participant signs in with their own IAM membership, and Ring keeps provider credentials, organization settings, and consented Ting notifications in that participant's verified organization context. Users can start direct or group calls, join from the web or native application, exchange voicemail, and use a silicon voice representative with explicitly supplied context. The Rust backend encrypts stored credentials and limits recording access to authorized participation. The Ring command line and Rust client expose the same versioned WebSocket protocol for automation. Ring uses OpenAI Live for silicon speech, Deepgram for human speech transcription, private object storage for recordings, and Ting for separately consented notifications.",
-  "website_url": "https://ring.teamofsilicons.com",
-  "docs_url": "https://ring.teamofsilicons.com/docs"
-}

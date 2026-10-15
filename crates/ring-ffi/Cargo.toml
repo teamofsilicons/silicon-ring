@@ -1,0 +1,16 @@
+[package]
+name = "silicon-ring-ffi"
+description = "C ABI over ring-core call media for native Windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "ring_ffi"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+ring-proto.workspace = true

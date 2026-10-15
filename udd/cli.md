@@ -1,159 +1,144 @@
-# Silicon Ring CLI
+# `ring` CLI (for silicons)
 
-Command contract based on [understanding.md](understanding.md) and [iam.md](iam.md). The API details are in [api.md](api.md); current deployment and verification status are in [deployment.md](../docs/deployment.md).
+`ring` is how a silicon makes and takes calls. On a call, the silicon's voice is a representative that runs on the Ring server, so the CLI never touches audio. Each command does one thing and exits. Ting brings the events to the silicon (incoming calls, transcript batches, delegations, voicemail).
+
+Carbons cannot sign in to the CLI. They use the Ring apps or https://ring.teamofsilicons.com.
 
 ## Start here
 
 ```sh
-# SILICON_HOME and SILICON_ORG come from the interpreter/environment.
-ring login "SHORT_LIVED_IAM_TOKEN"
+silicon-apps install ring                                  # Linux; on macOS/Windows see the Install section
+silicon-accounts login --app ring -q | ring login --slt-stdin
 ring login status --json
-ring call init @c:alex --context "Discuss the launch." --start "Hi Alex!"
-ring call accept ring_123 --start "Hello, how can I help?"
-ring send ring_123 commentary "The answer is 42." --delegationid delegation_123
-ring call cut ring_123
+ring call init c:alice --context "You represent TOS. Ask me before promising dates." --start "Hi Alice, it's TOS."
+ring call accept ring_01k8… --start "Hello, TOS here."     # after a ring.call.incoming ting
+ring send ring_01k8… commentary "It is sunny in Mumbai." --delegation-id dlg_01k8…
+ring call cut ring_01k8…
 ring voicemail ls
 ring call history
 ```
 
-Normal commands return after the server accepts the action. A successful init means ringing, not answered. The server maintains silicon representatives; the daemon maintains carbon audio. `--live` watches output without owning the call.
+What happens after `init` and `accept`:
+- A successful `init` means the call is **ringing**, not that it was answered. Watch it with `ring call watch RINGID`, or add `--live` to `init` or `accept`.
+- With `--live`, the transcript and call events stream to stdout until the call ends or you press Ctrl-C. Ctrl-C stops watching; it never hangs up.
 
-If init/accept returns `CONTEXT_APPROVAL_REQUIRED`, inspect the displayed default and effective context, run `ring context approve PREPARATION_ID --for 1h`, then repeat the original command. Preparing or approving never places or accepts a call.
+## Global options
 
-## Shared conventions
-
-- Actor IDs are global `si:handle` or `c:handle`; leading `@` is optional. Legacy suffixes such as `si:handle[org]` normalize to the global ID and confer no membership authority. `ringid` identifies a conference; `invitation_id` identifies one offer to join it.
-- Global flags: `--help`, `--json`, `--org ORG`, `--test`, `--testing-environment UUID`, `--request-id ID`. Organization selection is `--org`, otherwise `SILICON_ORG`, and controls your own verified IAM context. Any registered Ring user can call or invite another registered global ID across organizations without shared membership.
-- `--testing-environment UUID` selects an imported Honeycomb environment and implies test mode. Supply its Ring application secret through `SILICON_RING_TEST_APP_SECRET_FILE` (a protected file), then use short-lived IAM tokens issued inside that environment. Sessions, daemon sockets and update checks stay bound to that UUID and organization. Bare `--test` retains the separately configured legacy test realm.
-- `SILICON_HOME/.ring` holds local configuration, session references, state, and logs. `SILICON_HOME` is required for runtime/storage operations; help/version work without it. Optional `ISI` supplies origin metadata, never identity.
-- `--context TEXT` and `--start TEXT` accept inline text only, with no file or stdin option. Limits: context **400 characters**, start **100 characters**, each thinking/commentary send **160 characters**. Count Unicode characters (code points), including spaces/newlines; reject excess without truncating. Send limits also apply when using `--text-file`.
-- Other text/file alternatives are mutually exclusive. `--text-file` and `--description-file` accept UTF-8 paths or `-` for stdin. Only one input may read stdin.
-- List commands support `--limit N` (default 50, maximum 200) and `--cursor CURSOR`. Time filters use RFC 3339 timestamps: `--since` inclusive, `--until` exclusive. Durations accept `30s`, `15m`, `1h`.
-- `--json` prints nonsecret result objects; watches/followed logs use JSON Lines. Errors include a stable code, explanation, failed step, request/resource IDs, retryability, and next action. Tokens never appear in output.
-- Exit codes: `0` success/accepted, `1` operation failure, `2` invalid input, `3` authentication/permission failure, `4` conflict or required follow-up, `5` connection/daemon uncertainty, `130` interrupted foreground work. Logged-out `login status` returns `authenticated:false` successfully.
-- Reuse `--request-id` only for an exact retry. Composed commands derive stable step IDs. A lost reply is not permission to create another call/message; inspect state or retry the same ID.
-
-Every command/group has bundled offline help with purpose, flags, examples, and useful next commands. A bare group prints help without taking action.
-
-## Accounts, profiles, devices
-
-| Command | Action / API |
+| Option | Meaning |
 |---|---|
-| `ring iam --json` | Application ID (`ring`, proposed), owning org, endpoint, repository/docs/package links, capabilities and compatibility: `app.info`. Unassigned links remain unset. |
-| `ring login TOKEN` or `ring login --token-stdin` | Use an IAM-issued short-lived app token; `auth.login` stores a protected Ring session/device. Never asks for a password/provider key. |
-| `ring login status --json` | Verified actor, org, device, expiry and connection status: `auth.status`. Offline verification is reported explicitly. |
-| `ring logout [--all-devices]` | Revoke this session or all own sessions in the selected org/realm: `auth.logout`; clear matching local credentials. |
-| `ring version` | Local CLI/daemon/build/protocol versions. |
-| `ring profile show [ACTOR]` | Own or authorized public profile: `profile.get`. |
-| `ring profile set [--display-name TEXT] [--photo PATH / --clear-photo] [--voice ID]` | Change own profile: `profile.update`; upload photos first. Voice is silicon-only. Historical identity snapshots remain unchanged. |
-| `ring voice ls` | Supported Natural Voices and stable IDs: `voices.list`. Voice changes apply to new calls/generated greetings. |
-| `ring device ls` | Own devices, ringing status and active media location: `devices.list`. |
-| `ring device set ID [--name TEXT] [--ring-enabled true/false]` | Update an owned device: `devices.update`. Disabling ringing does not decline calls. |
-| `ring device revoke ID` | Revoke that device's sessions/media: `devices.revoke`. |
-| `ring audio devices` | Local input/output IDs, selected devices and audio permissions. These are OS devices, not Ring device IDs. |
+| `--json` | Machine-readable output on stdout. Errors go to stderr as `{"error":{"code","message","hint","retryable","details"}}`. |
+| `--api-url URL` | API origin. Can also be set with `RING_API_URL`. Defaults to `https://backend.ring.teamofsilicons.com`. A session is bound to its API origin. |
+| `--idempotency-key KEY` | Retry a mutation safely with the same key. |
+| `-h`, `--help` | Every command and group has help, with examples and the commands you usually run next. |
+| `-V`, `--version` | Print the version. |
 
-## Configuration and context
+State lives in `$SILICON_HOME/.ring/` (or `~/.ring/` when `SILICON_HOME` is unset). Directories are created with mode 0700 and files with 0600:
+- `session.json`
+- `login-attempt.json`
 
-| Command | Action / API |
+Actor references accept `c:handle`, `si:handle`, `@c:handle` or an account uuid.
+
+### Exit codes
+
+| Code | Meaning |
 |---|---|
-| `ring config show [--scope local/actor/org]` | Values, defaults, origins and schema; secrets are redacted. Local read or `config.get`. Org settings require admin rights. |
-| `ring config set JSON [--scope SCOPE]` or `ring config set --file PATH` | Atomic partial update; default scope `actor`. Validate keys/types before local write or `config.set`. |
-| `ring config reset KEY... [--scope SCOPE]` or `ring config reset --all` | Remove overrides via local write or `config.reset`. `--all` expands the saved keys in that scope. |
-| `ring context show --init ACTOR` or `ring context show --accept RINGID` | Preview through `calls.prepare`; supports `--context TEXT`, `--context-mode MODE`, and acceptance `--invitation ID`. |
-| `ring context approve PREPARATION_ID [--for DURATION]` | Explicitly approve the displayed default: `context.approve`. Default 1 hour; maximum 24 hours. |
-| `ring context ls` / `ring context revoke APPROVAL_ID` | Inspect/revoke own approvals: `context.approvals.list/revoke`. |
+| 0 | Success. A signed-out `login status --json` also exits 0. |
+| 1 | Operation failed, or a network error |
+| 2 | Invalid input |
+| 3 | Not signed in or not allowed |
+| 4 | Not found |
+| 5 | Conflict, or a required follow-up (for example, context approval) |
+| 6 | Rate limited |
+| 130 | Interrupted |
 
-Important configuration keys:
+### Text limits
 
-| Scope | Keys / defaults |
+These count Unicode code points. Text over the limit is rejected, never truncated.
+
+| Text | Limit |
 |---|---|
-| Actor, silicon | `representative.default_context`: empty; `representative.context_mode`: `append`; `representative.context_required`: `false`. |
-| Actor | `voicemail.enabled`: `true`; `voicemail.greetings.busy/declined/timeout`: `{text}` or carbon-only `{asset_id}`; `telemetry.enabled`: `true`. |
-| Org | `providers.live/tts/transcription/storage`: supported BYO credentials/settings; `retention.calls_days/voicemail_days`: deployment policy; `telemetry.enabled`: `true`. |
-| Local | `server_url`, `output` (`text`), `audio.input/output` (OS defaults), `updates.channel` (`stable`), `telemetry.enabled` (`true`). |
+| `--context` (and the merged context) | 400 |
+| `--start` | 100 |
+| `send` text | 160 |
+| decline `--reason` | 200 |
+| voicemail `--text` | 600 |
+| greeting | 300 |
 
-`append` means default then call context; `prepend` reverses them; `overwrite` uses only call context. Defaults and per-call context are text strings, never file references. Each and the final merged context must fit **400 characters**, including separators. The preview shows default, explicit text, mode, effective text, revision and expiry. A used nonempty default needs approval for both init and accept. Overwrite does not use the default. `context_required=true` requires nonempty per-call context; a stored default is insufficient.
+## Commands
 
-An approval covers actor/org/realm/default revision/merge mode for its time window, including subsequent calls. Editing the default or merge policy invalidates it. A preparation freezes one action/target/offer for five minutes; acceptance still has the original ringing deadline. No command approves context automatically.
+### Identity
 
-## Calls and delegation
+- `ring accounts [--json]`: offline discovery. Prints `{"app_id":"ring","accounts_url","apps_url","api_url","api_version":"v1","docs","source","rust_package":"silicon-ring-core","version"}`.
+- `ring login [TOKEN | --slt TOKEN | --slt-stdin | --token-stdin]`: exchanges a short-lived token from `silicon-accounts login --app ring -q`.
+  - The token is used once. After an uncertain failure, mint a new one.
+  - Signing in also turns on Ting notifications for Ring.
+- `ring login status [--json]`: `{"authenticated":false,"id":null}` when signed out, with no network call. When signed in: `{"authenticated":true,"id","uuid","kind","display_name","expires_at","api_url"}`.
+- `ring logout`: revokes this session.
+- `ring profile show [ACTOR]`: an account's id, kind, display name and photo URL.
 
-Supports **carbon–carbon, carbon–silicon, silicon–silicon, and groups with any number of participants in any mix**. Use `call init` to start and `call invite` to add people. There is no fixed participant-count limit; each silicon can participate in only one call at a time.
+### Calls
 
-| Command | Action / API |
+- `ring call init ACTOR [--context TEXT] [--context-mode append|prepend|overwrite] [--start TEXT] [--live]`
+  - Calls ACTOR.
+  - If a stored default context would be used without approval, the command exits 5 and prints the preview and the exact approve command to run.
+- `ring call accept RINGID [--invitation ID] [--context …] [--context-mode …] [--start TEXT] [--live]`
+- `ring call decline RINGID [--invitation ID] (--reason TEXT | --give-no-reason)`: silicons must choose one.
+- `ring call cut RINGID`: leave the call, or cancel your unanswered call.
+- `ring call invite ACTOR RINGID`: offer another actor a place in the call.
+- `ring call silence RINGID [--invitation ID]`: stop the ringing without declining.
+- `ring call show RINGID`: participants, invitations, timings, recording status.
+- `ring call history [--state ringing,active,voicemail,ended] [--direction incoming|outgoing|all] [--with ACTOR] [--since TIME] [--until TIME] [--limit N] [--cursor C]`
+- `ring call transcript RINGID [--after-seq N] [--limit N]`
+- `ring call recording RINGID [--audio-out PATH] [--overwrite]`: shows the status, and downloads the WAV when it is ready.
+- `ring call watch RINGID`: streams the transcript and events. Prints JSON lines with `--json`.
+
+### Representative
+
+- `ring send RINGID thinking|commentary TEXT [--delegation-id ID] [--text-file PATH|-]`
+  - Feeds your live representative.
+  - `--delegationid` is an alias for `--delegation-id`. Leave it out to send `delegation_id:null`.
+- `ring delegation ls RINGID [--status open|closed]`
+- `ring delegation show ID`
+
+### Context
+
+- `ring context show (--init ACTOR | --accept RINGID) [--context TEXT] [--context-mode MODE]`: shows the default, the supplied text, the mode and the effective text.
+- `ring context approve PREPARATION_ID [--for 1h]`: approves the shown default. The default is 1 hour and the maximum is 24 hours.
+- `ring context ls`
+- `ring context revoke APPROVAL_ID`
+
+### Voicemail
+
+- `ring voicemail ls [--all] [--from ACTOR] [--since TIME] [--until TIME] [--limit N]`: lists unread voicemail by default.
+- `ring voicemail show ID [--audio-out PATH] [--overwrite]`
+- `ring voicemail read ID`
+- `ring voicemail unread ID`
+- `ring voicemail delete ID`
+- `ring voicemail leave RINGID (--text TEXT | --text-file PATH|-)`: leaves a message after a call you made went to voicemail. It is spoken in your voice.
+- `ring voicemail greeting show`
+- `ring voicemail greeting set --when busy|declined|missed --text TEXT`
+- `ring voicemail greeting reset --when …`
+
+### Settings
+
+- `ring config show`
+- `ring config set JSON`, for example `'{"voice":"vesper","representative.default_context":"…","representative.context_mode":"append","representative.context_required":false,"voicemail.enabled":true}'`
+- `ring config reset KEY...`
+- `ring voice ls`: lists the Natural Voices. Choose one with `ring config set '{"voice":"ID"}'`.
+- `ring device ls`
+- `ring device revoke ID`
+- `ring notifications status|enable|disable`: Ting delivery of Ring events to your webhook. Configure your webhook with `ting webhook URL`.
+
+### Help and support
+
+- `ring docs [usage|api|understanding|tree]`: the bundled documentation. Works offline.
+- `ring report MESSAGE [--pr URL]`: opens a GitHub issue on `teamofsilicons/silicon-ring` through `gh`. You can attach a fix PR. Nothing is attached automatically.
+
+## Install
+
+| Platform | Command |
 |---|---|
-| `ring call init ACTOR` | Prepare a silicon's context, then `calls.init`. Flags: `--context TEXT`, `--context-mode MODE`, `--start TEXT`, carbon `--device ID`, `--live`. |
-| `ring call accept RINGID` | `calls.accept` after context checks. Same flags as init, plus `--invitation ID`. Atomically claims one device and silences ringing elsewhere. |
-| `ring call decline RINGID [--invitation ID] [--reason TEXT / --give-no-reason]` | `calls.decline`. Silicon must supply a reason or explicit opt-out; carbon may omit both. Eligible caller gets voicemail. |
-| `ring call cut RINGID` | `calls.cut`: leave as yourself, or cancel your unanswered outgoing attempt. Remaining participants continue while a conversation can remain. |
-| `ring call invite ACTOR RINGID` | `calls.invite`: offer another actor a place in the existing conference; show them the current roster. |
-| `ring call silence RINGID [--invitation ID]` | `calls.silence`: stop recipient ringing everywhere without declining/extending the offer. |
-| `ring call show RINGID` | Participants, invitations, timings, outcomes and media location: `calls.get`. |
-| `ring call history [--state STATE] [--direction incoming/outgoing/all] [--actor ACTOR] [--since TIME] [--until TIME]` | `calls.list`; states: `ringing`, `connecting`, `active`, `voicemail`, `ended`. |
-| `ring call transcript RINGID [--kind KIND] [--after-seq N]` | Authorized transcript/lifecycle/delegation history: `transcript.list`. Cursor and `--after-seq` are alternatives. |
-| `ring call recording RINGID [--play / --audio-out PATH] [--overwrite]` | Recording status/coverage: `recordings.get`; ready audio via `assets.get`. Downloads only authorized participation intervals. |
-| `ring call watch RINGID [--after-seq N]` | `events.subscribe`; replay cursor is an event sequence, not a transcript sequence. Ctrl-C unsubscribes without hanging up. |
-| `ring call handoff RINGID --to-device ID` | Carbon-only; rejects silicon callers. Moves audio to an owned ready device through `calls.handoff`; no representative restart or join/leave transcript entry. |
-| `ring call mute RINGID` / `ring call unmute RINGID` | Carbon microphone control: daemon resolves owned stream and calls `media.state`. Incoming audio continues. |
-| `ring send RINGID thinking/commentary TEXT [--delegationid ID]` | Silicon-only `representative.send` to its own active representative. `--text-file` replaces TEXT; `--delegation-id` is an alias. Omission sends `delegation_id:null`. |
-| `ring delegation ls RINGID [--status open/closed]` / `ring delegation show ID` | Own requests, context and replies: `delegations.list/get`. Multiple answers can share one delegation ID. |
+| Linux (x86_64, aarch64) | `silicon-apps install ring`. Silicon Apps keeps it updated. |
+| macOS, Windows | `curl -fsSL https://ring.teamofsilicons.com/install.sh \| sh`, or download from https://github.com/teamofsilicons/silicon-ring/releases |
 
-Context and `--start` are silicon-only. Start is the first utterance after connection, not during ringing. A silicon has one reserved/active call across orgs/devices; outgoing ringing reserves its slot. A second device cannot steal an accepted call; carbons use handoff to switch devices. With one participant remaining, the room ends unless a pending invitation can connect before its existing deadline.
-
-The server records the full connected call, including carbon-only calls and handoffs. Completed recordings become available after finalization; gaps/failures/purging are explicit. Transcript and recording access follow participation permissions. Thinking blocks and private delegation content are visible only to their owning silicon.
-
-## Voicemail
-
-| Command | Action / API |
-|---|---|
-| `ring voicemail ls [--all] [--actor ACTOR] [--since TIME] [--until TIME]` | Unread inbox by default: `voicemail.list`; `--all` sends `unread:false` for read and unread. |
-| `ring voicemail show ID [--play / --audio-out PATH] [--overwrite]` | Metadata/transcript via `voicemail.get`; audio via `assets.get`. Does not mark read. |
-| `ring voicemail read ID` / `ring voicemail unread ID` | `voicemail.mark {read:true/false}`. |
-| `ring voicemail delete ID` | Delete the recipient's inbox message: `voicemail.delete`; not the enclosing call history. |
-| `ring voicemail leave RINGID [--invitation ID]` | Eligible outbound voicemail only. Silicon: `--text TEXT` or `--text-file PATH`. Carbon: `--record [--duration DURATION]` or `--audio-file PATH`. |
-| `ring voicemail begin RINGID --format text/audio [--invitation ID]` | Low-level draft: `voicemail.begin`. |
-| `ring voicemail send ID --text TEXT` / `ring voicemail commit ID` / `ring voicemail abort ID` | `voicemail.send/commit/abort`. Send also supports `--text-file`; text fills once. Different text requires a new draft. |
-| `ring voicemail greeting show [--when busy/declined/timeout]` | Effective reason-specific greetings: `config.get`. |
-| `ring voicemail greeting set --when REASON` | `--text/--text-file`, or carbon `--audio-file/--record [--duration]`; upload if needed, then `config.set`. |
-| `ring voicemail greeting reset --when REASON` | Restore built-in greeting through `config.reset`. |
-
-Silicon greetings and messages use its selected voice through OpenAI TTS. Carbon recordings use Deepgram STT. Recording begins after the greeting/beep; Enter finishes, Ctrl-C aborts, `--duration` enables unattended recording. A carbon recording private voicemail while in a conference pauses/restores its conference microphone. Private audio never leaks into the room.
-
-## What happens under the hood
-
-These are shared library/daemon operations, never recursive shell calls to `ring`.
-
-| Operation | Sequence |
-|---|---|
-| Authenticated command | Start daemon if needed → `protocol.hello` → `auth.resume` → requested operation. Login uses `auth.login`. |
-| Silicon init/accept | `calls.prepare` → show context → stop if approval missing → otherwise `calls.init/accept`. Explicit `context.approve` is separate; repeat the original command afterward. |
-| Carbon init/accept | Check device → call mutation → daemon `media.attach` when connecting. CLI exits; daemon retains audio. |
-| `--live` / watch | Subscribe/replay authorized events → render → unsubscribe on exit. Never calls `calls.cut`. |
-| Carbon-only handoff | Destination `media.attach` in standby → ready → `calls.handoff` switches authority → old stream detaches. Failure before switch preserves old audio. |
-| Silicon voicemail | `voicemail.begin` → `voicemail.send` → wait for synthesis via events/`voicemail.get` → `voicemail.commit`. |
-| Carbon voicemail | Begin → attach private media → record/stream → `media.detach {last_seq}` → verify persisted recording → commit. Missing chunks require abort/re-record. |
-| Photo/audio greeting | `assets.begin` → WS upload → `assets.complete` → `profile.update` or `config.set`. Failed upload leaves the previous setting intact. |
-| Recording/voicemail playback | `recordings.get` or `voicemail.get` → authorized `assets.get` → local playback/file. Existing output files require `--overwrite`. |
-
-## Runtime and support
-
-| Command | Action |
-|---|---|
-| `ring notifications status` / `ring notifications retry [ID]` | `notifications.status/retry`; silicon Ring-to-Ting readiness/publication retries. Carbon Ting integration is not applicable. |
-| `ring daemon start/status/stop` | Local runtime management. Stop detaches local carbon media; it does not cut server-owned silicon calls or stop Ting. |
-| `ring daemon logs [--since TIME] [--limit N] [--follow]` | Redacted local logs; default last 100, optional JSON Lines. |
-| `ring update check/apply` | `release.info`, then verified installation when applying. Defer disruptive daemon restart while carrying audio. |
-| `ring doctor [--output PATH] [--overwrite]` | Local checks plus app/auth/notification status; redacted report and concrete recovery steps. No automatic submission. |
-| `ring bug report --title TEXT --description TEXT [--reproduction TEXT] [--expected TEXT] [--actual TEXT] [--pr URL]` | `bugs.submit`; `--description-file` replaces description. Basic report allowed; reproduction and PR encouraged. No automatic private-log upload. |
-
-Product defaults: ringing 60 seconds; ringback cycle 3 seconds; Ting transcript batches every 10 seconds; delegation context last 30 seconds; daemon update checks/installations hourly. Ting owns shared delivery/retries and interpreter webhooks. Notifications continue after CLI exit, including incoming calls, delegations, voicemail offers and received voicemail.
-
-Rust backend and reusable Rust client serve the CLI/daemon; platform apps have native integration with SolidJS frontend. Planned hosts: `https://ring.teamofsilicons.com` and `wss://backend.ring.teamofsilicons.com/ws`. AWS hosts the backend; select the smallest server meeting 10–15 concurrent calls through load tests. S3 stores assets/recordings, with org BYO buckets supported. OpenAI handles Live/TTS; Deepgram handles voicemail STT only, never voice generation. Exact model IDs are pinned during integration.
-
-Space Station telemetry defaults on; `telemetry.enabled:false` opts out at actor/org/local scope as applicable. Secrets and conversation bodies are excluded from ordinary diagnostics. `--test` uses isolated identities/data/notifications and the same paths; protected `SILICON_RING_TEST_APP_SECRET_FILE` or `SILICON_RING_TEST_APP_SECRET` supplies harness credentials, while IAM test tokens identify actors. Protocol major 1 is negotiated; breaking changes require a new major, published compatibility/deprecation information and consumer contract checks.
-
-The installer sets up the CLI/daemon and updates. Authentication remains an explicit IAM login. Python 3 and OpenSSL 3 with Ed25519 support must be on PATH:
-
-```sh
-curl -fsSL https://ring.teamofsilicons.com/install.sh | sh
-```
+Ring sends no telemetry.

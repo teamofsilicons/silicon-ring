@@ -1,3 +1,0 @@
-[default]
-description = "Allow Ring to configure its native call service and operate its own audio stream"
-permissions = ["allow-configure", "allow-control"]

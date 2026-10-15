@@ -1,0 +1,17 @@
+[package]
+name = "silicon-ring-proto"
+description = "Wire types for the Silicon Ring API (v1)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "ring_proto"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true

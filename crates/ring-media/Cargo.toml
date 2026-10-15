@@ -1,0 +1,16 @@
+[package]
+name = "silicon-ring-media"
+description = "Silicon Ring media worker (LiveKit representatives, recorder, voicemail, STT)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "ring-media"
+path = "src/main.rs"
+
+[dependencies]
+ring-proto.workspace = true
