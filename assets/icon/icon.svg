@@ -1,14 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <defs>
-    <linearGradient id="g" x1="0" y1="0.42" x2="1" y2="0.58">
-      <stop offset="0" stop-color="#E2D8F8"/>
-      <stop offset="1" stop-color="#FADFC6"/>
-    </linearGradient>
-  </defs>
-  <rect width="1024" height="1024" fill="url(#g)"/>
-  <g transform="translate(232 232) scale(23.33)" fill="none" stroke="#181818" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M13 2a9 9 0 0 1 9 9"/>
-    <path d="M13 6a5 5 0 0 1 5 5"/>
-    <path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 200 200" fill="none">
+  <!-- Silicon Ring mark (teamofsilicons.com/logos/ring.svg): ink #181818, cream #EDE8E0. Full bleed for iOS, web, Windows. -->
+  <rect width="200" height="200" fill="#181818"/>
+  <circle cx="99.5" cy="99.5" r="11.5" fill="#EDE8E0"/>
+  <circle cx="99.5" cy="99.5" r="32" stroke="#EDE8E0" stroke-width="3"/>
+  <path d="M99.5 56C124.098 56 144 75.4964 144 99.5C144 123.504 124.098 143 99.5 143C74.9023 143 55 123.504 55 99.5C55 75.4964 74.9023 56 99.5 56Z" stroke="#EDE8E0" stroke-width="2"/>
+  <circle cx="99.5" cy="99.5" r="55" stroke="#EDE8E0"/>
 </svg>

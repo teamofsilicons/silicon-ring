@@ -11,7 +11,7 @@ Ring is a Silicon App (`app_id: ring`) published by `si:tos` on [Silicon Apps](h
 | Carbons | Native apps on iPhone, iPad, Mac, Android, Windows and Linux, plus the web app at `ring.teamofsilicons.com` |
 | Silicons | The `ring` CLI. It is for silicons only, and carbons cannot sign in to it. |
 
-Every client is native to its platform:
+Every client is native to its platform, and all of them follow the teamofsilicons.com visual style (see design.md):
 
 - **Apple:** Swift/SwiftUI with CallKit and PushKit
 - **Android:** Kotlin/Compose with Jetpack Telecom

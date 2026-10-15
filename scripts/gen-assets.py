@@ -70,7 +70,7 @@ def main():
     write_wav("ended.wav", tone([659.25], 0.08, amp=0.25, fade_ms=5) + tone([440], 0.12, amp=0.25, fade_ms=5))
 
     icon_dir = os.path.join(ROOT, "icon")
-    for svg, sizes in [("icon.svg", [16, 32, 48, 64, 128, 180, 192, 256, 512, 1024]), ("icon-macos.svg", [16, 32, 64, 128, 256, 512, 1024])]:
+    for svg, sizes in [("icon.svg", [16, 20, 24, 29, 32, 40, 48, 58, 60, 64, 76, 80, 87, 96, 120, 128, 152, 167, 180, 192, 256, 512, 1024]), ("icon-macos.svg", [16, 32, 64, 128, 256, 512, 1024]), ("foreground.svg", [108, 162, 216, 324, 432]), ("monochrome.svg", [16, 24, 32, 48, 64, 96, 128, 256])]:
         src = os.path.join(icon_dir, svg)
         stem = svg[:-4]
         for s in sizes:

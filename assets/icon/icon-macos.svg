@@ -1,17 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <!-- macOS app icon: the Ring mark on the standard 824 pt rounded square with a soft shadow. -->
   <defs>
-    <linearGradient id="g" x1="0" y1="0.42" x2="1" y2="0.58">
-      <stop offset="0" stop-color="#E2D8F8"/>
-      <stop offset="1" stop-color="#FADFC6"/>
-    </linearGradient>
     <filter id="s" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.22"/>
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/>
     </filter>
   </defs>
-  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#g)" filter="url(#s)"/>
-  <g transform="translate(292 292) scale(18.33)" fill="none" stroke="#181818" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M13 2a9 9 0 0 1 9 9"/>
-    <path d="M13 6a5 5 0 0 1 5 5"/>
-    <path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="#181818" filter="url(#s)"/>
+  <g transform="translate(100 100) scale(4.12)">
+  <circle cx="99.5" cy="99.5" r="11.5" fill="#EDE8E0"/>
+  <circle cx="99.5" cy="99.5" r="32" stroke="#EDE8E0" stroke-width="3"/>
+  <path d="M99.5 56C124.098 56 144 75.4964 144 99.5C144 123.504 124.098 143 99.5 143C74.9023 143 55 123.504 55 99.5C55 75.4964 74.9023 56 99.5 56Z" stroke="#EDE8E0" stroke-width="2"/>
+  <circle cx="99.5" cy="99.5" r="55" stroke="#EDE8E0"/>
   </g>
 </svg>
