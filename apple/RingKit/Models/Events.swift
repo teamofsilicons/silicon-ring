@@ -11,8 +11,10 @@ enum RealtimeEvent: Sendable {
     case ready(account: Account, deviceID: String)
     case callIncoming(call: Call, invitation: Invitation)
     case callUpdated(Call)
-    case ringingStopped(ringid: String, invitationID: String, reason: RingingStoppedReason)
-    case handoff(ringid: String, deviceID: String)
+    /// `from` is the caller, when the server sends it.
+    case ringingStopped(ringid: String, invitationID: String, reason: RingingStoppedReason, from: Account?)
+    /// `device` is the device that now carries the call, when the server sends it.
+    case handoff(ringid: String, deviceID: String, device: DeviceRef?)
     case callEnded(Call)
     case transcriptEntry(ringid: String, entry: TranscriptEntry)
     case transcriptPartial(ringid: String, speaker: Account, segmentID: String, text: String)
@@ -40,10 +42,10 @@ enum RealtimeEvent: Sendable {
             return .callUpdated(try body(CallEnvelope.self).call)
         case "call.ringing_stopped":
             let d = try body(RingingStopped.self)
-            return .ringingStopped(ringid: d.ringid, invitationID: d.invitationID, reason: d.reason)
+            return .ringingStopped(ringid: d.ringid, invitationID: d.invitationID, reason: d.reason, from: d.from)
         case "call.handoff":
             let d = try body(Handoff.self)
-            return .handoff(ringid: d.ringid, deviceID: d.deviceID)
+            return .handoff(ringid: d.ringid, deviceID: d.deviceID, device: d.device)
         case "call.ended":
             return .callEnded(try body(CallEnvelope.self).call)
         case "transcript.entry":
@@ -81,17 +83,40 @@ enum RealtimeEvent: Sendable {
         var invitation: Invitation
     }
 
+    // Fields added to an event later are optional and decoded leniently, so an older or newer
+    // server never costs the app the event itself.
+
     private struct RingingStopped: Decodable {
         var ringid: String
         var invitationID: String
         var reason: RingingStoppedReason
-        enum CodingKeys: String, CodingKey { case ringid, reason; case invitationID = "invitation_id" }
+        var from: Account?
+        enum CodingKeys: String, CodingKey { case ringid, reason, from; case invitationID = "invitation_id" }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            ringid = try c.decode(String.self, forKey: .ringid)
+            invitationID = try c.decode(String.self, forKey: .invitationID)
+            reason = try c.decode(RingingStoppedReason.self, forKey: .reason)
+            from = try? c.decodeIfPresent(Account.self, forKey: .from)
+        }
     }
 
     private struct Handoff: Decodable {
         var ringid: String
         var deviceID: String
-        enum CodingKeys: String, CodingKey { case ringid; case deviceID = "device_id" }
+        var device: DeviceRef?
+        enum CodingKeys: String, CodingKey { case ringid, device; case deviceID = "device_id" }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            ringid = try c.decode(String.self, forKey: .ringid)
+            device = try? c.decodeIfPresent(DeviceRef.self, forKey: .device)
+            guard let id = try c.decodeIfPresent(String.self, forKey: .deviceID) ?? device?.deviceID else {
+                throw DecodingError.keyNotFound(CodingKeys.deviceID, .init(codingPath: c.codingPath, debugDescription: "call.handoff names no device"))
+            }
+            deviceID = id
+        }
     }
 
     private struct Entry: Decodable {
@@ -116,11 +141,13 @@ enum RealtimeEvent: Sendable {
 struct PushPerson: Codable, Sendable, Hashable {
     var uuid: String
     var id: String
+    /// Newer servers send it; older ones leave it to the id's prefix.
+    var kind: AccountKind?
     var displayName: String?
     var pfpURL: String?
 
     enum CodingKeys: String, CodingKey {
-        case uuid, id
+        case uuid, id, kind
         case displayName = "display_name"
         case pfpURL = "pfp_url"
     }
@@ -131,17 +158,39 @@ struct PushPerson: Codable, Sendable, Hashable {
     }
 
     var account: Account {
-        Account(uuid: uuid, id: id, kind: id.hasPrefix("si:") ? .silicon : .carbon, displayName: displayName, pfpURL: pfpURL)
+        Account(uuid: uuid, id: id, kind: AccountKind.resolve(kind, id: id), displayName: displayName, pfpURL: pfpURL)
     }
 }
 
 struct PushParticipant: Codable, Sendable, Hashable {
     var id: String
+    /// `uuid` and `kind` arrive from newer servers.
+    var uuid: String?
+    var kind: AccountKind?
     var displayName: String?
 
     enum CodingKeys: String, CodingKey {
-        case id
+        case id, uuid, kind
         case displayName = "display_name"
+    }
+
+    var label: String {
+        if let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty { return name }
+        return id
+    }
+
+    /// Whether this is the given person, by uuid when both sides have one.
+    func isSame(as person: PushPerson) -> Bool {
+        if let uuid { return uuid == person.uuid }
+        return id == person.id
+    }
+}
+
+extension AccountKind {
+    /// The kind a payload states, or else the one its id implies.
+    static func resolve(_ stated: AccountKind?, id: String) -> AccountKind {
+        if let stated, stated != .unknown { return stated }
+        return id.hasPrefix("si:") ? .silicon : .carbon
     }
 }
 
@@ -160,10 +209,12 @@ enum PushPayload: Sendable {
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(withJSONObject: object),
               let raw = try? RingJSON.decoder().decode(Raw.self, from: data) else { return nil }
+        // FCM renames `from` to `caller`; accept either, whichever channel delivered this.
+        let from = raw.from ?? raw.caller
         switch raw.type {
         case "call.incoming":
             guard let ringid = raw.ringid, let invitationID = raw.invitationID,
-                  let uuid = raw.callUUID.flatMap(UUID.init(uuidString:)), let from = raw.from else { return nil }
+                  let uuid = raw.callUUID.flatMap(UUID.init(uuidString:)), let from else { return nil }
             return .callIncoming(ringid: ringid, invitationID: invitationID, callUUID: uuid, from: from,
                                  participants: raw.participants ?? [], expiresAt: raw.expiresAt.flatMap(RingJSON.parseDate))
         case "call.cancelled":
@@ -173,10 +224,10 @@ enum PushPayload: Sendable {
                                   reason: raw.reason.flatMap(RingingStoppedReason.init(rawValue:)) ?? .unknown)
         case "call.missed":
             guard let ringid = raw.ringid else { return nil }
-            return .callMissed(ringid: ringid, from: raw.from)
+            return .callMissed(ringid: ringid, from: from)
         case "voicemail.received":
             guard let id = raw.voicemailID else { return nil }
-            return .voicemailReceived(voicemailID: id, from: raw.from, transcript: raw.transcript)
+            return .voicemailReceived(voicemailID: id, from: from, transcript: raw.transcript)
         default:
             return nil
         }
@@ -193,6 +244,7 @@ enum PushPayload: Sendable {
         var invitationID: String?
         var callUUID: String?
         var from: PushPerson?
+        var caller: PushPerson?
         var participants: [PushParticipant]?
         var expiresAt: String?
         var reason: String?
@@ -200,7 +252,7 @@ enum PushPayload: Sendable {
         var transcript: String?
 
         enum CodingKeys: String, CodingKey {
-            case type, ringid, from, participants, reason, transcript
+            case type, ringid, from, caller, participants, reason, transcript
             case invitationID = "invitation_id"
             case callUUID = "call_uuid"
             case expiresAt = "expires_at"

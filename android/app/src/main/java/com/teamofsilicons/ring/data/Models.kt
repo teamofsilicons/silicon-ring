@@ -77,7 +77,22 @@ data class Meta(
 )
 
 @Serializable
-data class DeviceRef(val deviceId: String, val name: String? = null, val platform: String? = null)
+data class DeviceRef(val deviceId: String, val name: String? = null, val platform: String? = null) {
+    /** How to name this device in a sentence: its name, else a platform word ("Mac"), else null. */
+    val label: String? get() = name?.trim()?.takeIf { it.isNotEmpty() } ?: platformWord(platform)
+}
+
+/** A device platform as a word for sentences like "Moved to Mac"; null when unknown. */
+fun platformWord(platform: String?): String? = when (platform) {
+    "ios" -> "iPhone"
+    "ipados" -> "iPad"
+    "macos" -> "Mac"
+    "android" -> "Android"
+    "windows" -> "Windows"
+    "linux" -> "Linux"
+    "web" -> "the web"
+    else -> null
+}
 
 @Serializable
 data class RepresentativeInfo(val status: String, val voice: String? = null)
@@ -231,6 +246,9 @@ data class TranscriptEntry(
 ) {
     fun dataString(key: String): String? = (data[key] as? JsonPrimitive)?.contentOrNull
     fun dataElement(key: String): JsonElement? = data[key]
+
+    /** For speech: the id of the `transcript.partial` segment this entry finalises, when sent. */
+    val segmentId: String? get() = dataString("segment_id")?.takeIf { it.isNotEmpty() }
 }
 
 @Serializable

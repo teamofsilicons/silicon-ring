@@ -1,6 +1,6 @@
 //! `ring send` and `ring delegation …`: talking to your representative.
 
-use ring_proto::{MessageKind, MessageStatus, SendMessage, limits};
+use ring_proto::{DelegationStatus, MessageKind, MessageStatus, SendMessage, limits};
 
 use super::{Ctx, check_text, id, read_text_file, with_retry_key};
 use crate::cli::{DelegationCommand, SendArgs};
@@ -88,12 +88,15 @@ pub async fn delegation(ctx: &Ctx, command: DelegationCommand) -> CliResult<()> 
             let delegation_id = id("delegation id", &delegation_id)?;
             let delegation = signed.client.delegation(&delegation_id).await?;
             output::emit(ctx.json, &delegation, || {
-                format!(
-                    "{}\nAnswer: ring send {} commentary \"…\" --delegation-id {}",
-                    output::delegation(&delegation, true),
-                    delegation.ringid,
-                    delegation.delegation_id
-                )
+                let mut text = output::delegation(&delegation, true);
+                // A delegation closes when its call ends; only an open one can be answered.
+                if delegation.status == DelegationStatus::Open {
+                    text.push_str(&format!(
+                        "\nAnswer: ring send {} commentary \"…\" --delegation-id {}",
+                        delegation.ringid, delegation.delegation_id
+                    ));
+                }
+                text
             });
         }
     }

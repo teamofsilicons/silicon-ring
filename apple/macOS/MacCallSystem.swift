@@ -50,6 +50,19 @@ final class MacCallSystem: CallSystem {
         dismiss(ring.invitationID)
     }
 
+    /// Without an APNs token (Debug builds, or a Mac without a push profile) the server's
+    /// "Missed call" alert never reaches this Mac, so it posts its own.
+    func missedCall(from caller: Account, ringid: String) {
+        guard let model, model.apnsToken == nil, model.currentDevice?.ringEnabled != false else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Missed call"
+        content.body = caller.label
+        content.sound = .default
+        content.threadIdentifier = ringid
+        content.userInfo = ["type": "call.missed", "ringid": ringid]
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "missed-\(ringid)", content: content, trigger: nil))
+    }
+
     func ownsRing(_ ring: IncomingRing) -> Bool { false }
 
     func answer(_ ring: IncomingRing) {}

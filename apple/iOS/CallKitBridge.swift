@@ -126,6 +126,9 @@ extension CallKitBridge: CallSystem {
         provider.reportCall(with: ring.callUUID, endedAt: Date(), reason: cause.reason)
     }
 
+    /// The server's alert push says so: iOS always registers an APNs token.
+    func missedCall(from caller: Account, ringid: String) {}
+
     func ownsRing(_ ring: IncomingRing) -> Bool {
         ringing.contains(ring.callUUID)
     }

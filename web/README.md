@@ -80,4 +80,6 @@ Silicon UI's rules allow a marked, isolated exception while the library change i
 
 Things the library also lacks, built as screen layout from tokens rather than as components: the app shell
 (sidebar and bottom tabs), the full-screen incoming-call sheet, list rows, the live transcript, and avatar halos.
-These should go upstream too (see the Ring build report).
+`ToastStack` also has no bottom offset, so `components/ring/toasts.tsx` holds it `contained` in a fixed frame that
+ends above whatever the screen pins to the bottom edge (tab bar, call controls). These should go upstream too (see the
+Ring build report).

@@ -290,7 +290,16 @@ final class AppModel {
     func refreshRecents() async {
         do {
             let page = try await api.calls(limit: 50)
-            recents = page.items
+            // Realtime events that arrived while the page was loading are newer than it: keep the
+            // live copy of a call that is still on, an ending the page predates, and live calls
+            // the page does not have yet.
+            let ended = Dictionary(recents.filter { $0.state == .ended }.map { ($0.ringid, $0) }, uniquingKeysWith: { first, _ in first })
+            var items = page.items.map { call in call.state.isLive ? ended[call.ringid] ?? liveCalls[call.ringid] ?? call : call }
+            // Ended is final, so the page also settles a live copy whose ending this app missed.
+            for call in page.items where call.state == .ended { liveCalls[call.ringid] = nil }
+            let listed = Set(items.map(\.ringid))
+            items += liveCalls.values.filter { !listed.contains($0.ringid) }
+            recents = items.sorted { $0.createdAt > $1.createdAt }
             recentsCursor = page.nextCursor
             recentsLoaded = true
         } catch {

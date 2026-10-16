@@ -174,7 +174,8 @@ struct MenuBarContent: View {
                 }
             } else if let other = model.callOnOtherDevice {
                 Divider()
-                Button("Switch call to this Mac") { model.switchHere(other.call) }
+                Text("On a call with \(other.call.others(me: model.myUUID).first?.label ?? "someone") on \(model.deviceLabel(other.device))")
+                Button("Switch to this Mac") { model.switchHere(other.call) }
             }
             Divider()
             Button("Open Ring") { MainWindow.show() }

@@ -157,6 +157,7 @@ export interface TranscriptEntry {
   kind: EntryKind;
   actor: Account | null;
   text: string | null;
+  /** For `speech`, `segment_id` names the transcript.partial events the entry finalises (absent from older servers). */
   data: Record<string, unknown>;
 }
 
@@ -216,8 +217,9 @@ export type RealtimeEvent = { at?: string } & (
   | { type: 'ready'; data: { account: Account; device_id: string } }
   | { type: 'call.incoming'; data: { call: Call; invitation: Invitation } }
   | { type: 'call.updated'; data: { call: Call } }
-  | { type: 'call.ringing_stopped'; data: { ringid: string; invitation_id: string; reason: RingingStoppedReason } }
-  | { type: 'call.handoff'; data: { ringid: string; device_id: string } }
+  // `from` (the caller) and the handoff's `device` are absent from older servers.
+  | { type: 'call.ringing_stopped'; data: { ringid: string; invitation_id: string; reason: RingingStoppedReason; from?: Account | null } }
+  | { type: 'call.handoff'; data: { ringid: string; device_id: string; device?: DeviceRef | null } }
   | { type: 'call.ended'; data: { call: Call } }
   | { type: 'transcript.entry'; data: { ringid: string; entry: TranscriptEntry } }
   | { type: 'transcript.partial'; data: { ringid: string; speaker: Account; segment_id: string; text: string } }

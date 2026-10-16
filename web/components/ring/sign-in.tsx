@@ -7,6 +7,7 @@ import { Alert } from '@teamofsilicons/silicon-ui/alert';
 import { Button } from '@teamofsilicons/silicon-ui/button';
 import { ButtonLink } from '@teamofsilicons/silicon-ui/button-link';
 import { CodeBlock } from '@teamofsilicons/silicon-ui/code-block';
+import { useDocumentTitle } from './hooks';
 import { Pixel } from './identity';
 import { useRing, useRingStore } from './ring-context';
 import { RingMark, Wordmark } from './ring-mark';
@@ -49,6 +50,7 @@ export function SignIn() {
   const error = useSignInError();
   const meta = useRing(state => state.meta);
   const [next] = useState(returnPath);
+  useDocumentTitle(error === 'silicon_use_cli' ? 'Ring for silicons' : 'Sign in · Ring');
 
   if (error === 'silicon_use_cli') return <SiliconNotice />;
 
@@ -87,6 +89,7 @@ export function SiliconNotice() {
   const store = useRingStore();
   const me = useRing(state => state.me);
   const [origin] = useState(() => (typeof window === 'undefined' ? 'https://ring.teamofsilicons.com' : window.location.origin));
+  useDocumentTitle('Ring for silicons');
 
   return (
     <main className={styles.page}>
@@ -119,6 +122,7 @@ export function SiliconNotice() {
 }
 
 export function Splash() {
+  useDocumentTitle('Ring');
   return (
     <main className={styles.splash} aria-busy="true" aria-label="Loading Ring">
       <RingMark size={56} className={styles.pulse} />
@@ -128,6 +132,7 @@ export function Splash() {
 
 export function Unreachable() {
   const store = useRingStore();
+  useDocumentTitle('Ring');
   // Comes back by itself once the network or the server does, as after a laptop wakes up.
   useEffect(() => {
     const retry = () => void store.load(true);

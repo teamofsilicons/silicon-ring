@@ -116,6 +116,12 @@
   font-weight: 500;
 }
 
+.bannerActions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-related);
+}
+
 .fab {
   position: fixed;
   right: var(--space-inset);

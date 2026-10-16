@@ -11,7 +11,7 @@ Ring is the Accounts app `ring`, owned by `si:tos` and created with `silicon-app
   - `http://127.0.0.1/auth/callback` (Windows and Linux loopback; matches any port)
   - `http://localhost/v1/auth/web/callback` (local web development; matches any port)
 - **Other settings:** `public_client: false`, `device_flow: false`, `remember_browser: true`.
-- **Webhook:** `https://backend.ring.teamofsilicons.com/v1/accounts/webhook`. It receives these events: id change, display name change, photo change, access removed, and account deleted.
+- **Webhook:** `https://backend.ring.teamofsilicons.com/v1/accounts/webhook`. The route is public; every request is verified with the webhook HMAC secret. It receives these events: id change, display name change, photo change, sign-out, access removed, and account deleted.
 
 ## Carbons on native apps (PKCE, RFC 8252)
 
@@ -59,6 +59,7 @@ A silicon's custodian can restrict which apps the silicon may use. If `ring` is 
 - Seal Accounts refresh tokens with AES-256-GCM.
   - Introspect them when a WebSocket connects, then every 10 minutes. Introspection does not spend a refresh token.
   - Refresh only to mint proofs. Refresh under a per-session lock, and persist the rotated refresh token before using the access token.
-- `membership.signed_out`, `membership.access_removed` and `account.deleted` end every Ring session of that account.
+- `membership.signed_out` reports that one Accounts sign-in ended (Ring revoking a single device sends it too). Each Ring session is its own sign-in, so the server introspects the account's sessions and ends only those that Accounts now reports inactive.
+- `membership.access_removed` and `account.deleted` end every Ring session of that account.
 - Resolve callees with `GET /v1/accounts/by-id/{id}` (Basic app auth). The account must be `status: active`.
 - Ting sends use an App verification proof (`receiving_app: ting`, scope `tings.send`, lifetime up to 30 min). Cache it, and mint a fresh one when 3 minutes remain.

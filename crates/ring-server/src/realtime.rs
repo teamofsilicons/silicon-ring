@@ -10,7 +10,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use ring_proto::{Event, EventFrame, Time};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::accounts::{self, Liveness};
 use crate::app::AppState;
@@ -36,6 +36,8 @@ pub struct Hub {
     channels: Mutex<HashMap<String, broadcast::Sender<Arc<Outbound>>>>,
     /// device id -> (account uuid, open sockets)
     online: Mutex<HashMap<String, (String, usize)>>,
+    /// Set when the server begins shutting down: every socket closes with 1013 (reconnect).
+    stopping: watch::Sender<bool>,
 }
 
 pub fn frame(event: &Event) -> Arc<str> {
@@ -107,6 +109,22 @@ impl Hub {
                     close: true,
                 },
             );
+        }
+    }
+
+    /// Closes every open socket with 1013 so clients reconnect once the server is back, waiting
+    /// up to `grace` for them to close.
+    pub async fn shut_down(&self, grace: Duration) {
+        self.stopping.send_replace(true);
+        let deadline = Instant::now() + grace;
+        while Instant::now() < deadline
+            && !self
+                .online
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty()
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -214,6 +232,7 @@ async fn serve(app: AppState, socket: WebSocket, account: ring_proto::Account, d
     let mut introspect = tokio::time::interval(INTROSPECT_EVERY);
     introspect.tick().await;
     let mut last_inbound = Instant::now();
+    let mut stopping = app.hub.stopping.subscribe();
 
     while alive {
         tokio::select! {
@@ -254,6 +273,10 @@ async fn serve(app: AppState, socket: WebSocket, account: ring_proto::Account, d
                     break;
                 }
                 alive = sink.send(Message::Ping(Default::default())).await.is_ok();
+            },
+            _ = async { drop(stopping.wait_for(|stopping| *stopping).await) } => {
+                let _ = sink.send(Message::Close(Some(CloseFrame { code: 1013, reason: "server restarting".into() }))).await;
+                break;
             },
             _ = introspect.tick() => {
                 if !check_live(&app, &device_id, &uuid).await {

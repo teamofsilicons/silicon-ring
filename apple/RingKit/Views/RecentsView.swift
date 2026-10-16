@@ -8,7 +8,8 @@ struct RecentsView: View {
             VStack(alignment: .leading, spacing: 20) {
                 PageTitle(text: "Recents")
                     .padding(.top, 8)
-                if !model.recentsLoaded {
+                // A live call shows even before the first page arrives.
+                if !model.recentsLoaded && model.recents.isEmpty {
                     ProgressView()
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 48)

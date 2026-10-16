@@ -11,8 +11,10 @@ This document is the contract between `ring-server` and every client. `crates/ri
 - **Authentication:** `Authorization: Bearer rst_<64 hex>` (native apps and the CLI), or the `ring_session` cookie (web).
   - Cookie-authenticated `POST`, `PATCH`, `PUT` and `DELETE` requests must carry `X-Ring-Client: web`. Otherwise the server returns `403 csrf`.
 - **Idempotency:** `POST /v1/calls`, `/invite`, `/messages` and `/voicemail` accept an `Idempotency-Key` header (8–200 printable ASCII).
-  - A retry with the same key and the same body, within 24 h, returns the original response.
+  - A retry with the same key and the same body, within 24 h, returns the original response with the header `Idempotent-Replayed: true`.
   - The same key with a different body returns `409 idempotency_conflict`.
+  - While the first request with a key is still running, a retry gets `409 conflict` with `retryable: true`.
+  - Failed responses (non-2xx) are not remembered, so the same key can be retried.
 - **Pagination:** `?limit=` (default 50, max 200) and `?cursor=`. Responses are `{"items":[…],"next_cursor":"…"|null}`.
 
 ### Errors
@@ -66,6 +68,7 @@ Each signed-in session is one device.
  "push":[{"kind":"apns_voip","environment":"production"}]}
 ```
 - `platform` is one of `ios`, `ipados`, `macos`, `android`, `windows`, `linux`, `web`, `cli`.
+- A silicon's devices are always `cli`. Only silicons may use `cli`.
 - `push[].kind` is one of `apns_voip`, `apns`, `fcm`, `webpush`.
 - Push tokens are never returned.
 
@@ -134,7 +137,7 @@ Connect with any LiveKit SDK using `url` and `token`. Publish exactly one microp
 | `declined` | `{"reason":…}` |
 | `missed` | `{}` |
 | `busy` | `{}` |
-| `speech` | — |
+| `speech` | `{"segment_id"}` (see below) |
 | `delegation` (private) | `{"delegation_id","request"}` |
 | `thinking` (private) | `{"delegation_id"}` |
 | `commentary` (private) | `{"delegation_id"}` |
@@ -143,6 +146,8 @@ Connect with any LiveKit SDK using `url` and `token`. Publish exactly one microp
 | `note` | — |
 
 The private kinds are visible only to the silicon that owns them.
+
+A `speech` entry's `data.segment_id` is the same id as the `transcript.partial` events it finalises. Clients replace the interim line that has this `segment_id` with the entry. If `segment_id` is absent, they replace the newest interim line of the same speaker.
 
 ### Delegation
 ```json
@@ -206,6 +211,7 @@ Response `200 Session`:
 ```
 - The server exchanges the SLT with Accounts and requires `kind == "silicon"`. A carbon is refused with `403 carbon_use_app`, and that Accounts sign-in is revoked.
 - An SLT is single-use. After an uncertain failure, mint a new one rather than resending the old one.
+- Errors: a reused SLT returns `409 conflict`. If Accounts refuses the SLT, the response is `401 unauthenticated`. If Accounts cannot be reached, it is `503 dependency_unavailable`.
 - On success the server also registers the silicon's Ting subscription. This is best effort; check it with `GET /v1/notifications`.
 
 ### `POST /v1/auth/carbon`: native apps (carbons only)
@@ -225,14 +231,27 @@ Allowed `redirect_uri` values:
 - `com.teamofsilicons.ring:/auth/callback` (Apple, Android)
 - `http://127.0.0.1:<any port>/auth/callback` (Windows, Linux)
 
-A silicon is refused with `403 silicon_use_cli`.
+Errors:
+- A silicon is refused with `403 silicon_use_cli`, and that Accounts sign-in is revoked.
+- A reused code returns `409 conflict`.
+- If Accounts refuses the code (expired, wrong verifier or redirect), the response is `401 unauthenticated`.
+- If Accounts cannot be reached, it is `503 dependency_unavailable`.
 
 ### Web sign-in (carbons)
 
 1. `GET /v1/auth/web/start?next=/` sets the `ring_login` cookie (state plus the server-side PKCE verifier, 10 min) and returns `302` to Accounts.
 2. Accounts redirects to `GET /v1/auth/web/callback?code=…&state=…`. The server exchanges the code, sets `ring_session` (`HttpOnly; Secure; SameSite=Lax; Path=/`), and returns `302` to `next`.
 
-On errors the server redirects to `/?signin_error=<code>`.
+Both redirects are `302 Found`. On errors the callback instead redirects (`302`) to `{web_url}/?signin_error=<code>`:
+
+| `signin_error` | Meaning |
+|---|---|
+| `login_expired` | The `ring_login` cookie is missing, unreadable or older than 10 min. Start again. |
+| `state_mismatch` | `state` does not match the cookie. |
+| `access_denied` | The person cancelled at Accounts. |
+| `signin_failed` | Any other failure, including a reused or refused code. |
+| `silicon_use_cli` | A silicon signed in. Silicons use the ring CLI. |
+| `dependency_unavailable` | Silicon Accounts could not be reached. |
 
 ### Session endpoints
 
@@ -251,6 +270,7 @@ Updates the calling device. Every field is optional:
 - `push` replaces this device's push tokens. Send `[]` to clear them.
 - `environment` is `sandbox` or `production`, as given by the app's embedded provisioning profile.
 - A `webpush` token is the JSON string of the browser's `PushSubscription` (`{"endpoint","keys":{"p256dh","auth"}}`).
+- Silicons are notified through Ting, not push. A silicon device may only send `"push":[]`, and only `"platform":"cli"`; anything else returns `400 invalid_input`. Carbons may not use `cli`.
 
 Returns the `Device`.
 
@@ -295,6 +315,7 @@ Response `201`:
 {"call":{Call},"invitation":{Invitation},"media":{MediaGrant}|null}
 ```
 - `media` is present for carbon callers, who should join right away and play the ringback until `state` becomes `active` or `voicemail`.
+- A silicon caller's representative starts while the call rings, so its `representative.status` is `starting` or `live` before anyone answers. It speaks the `start` text once the callee is there to hear it. If nobody answers, it ends.
 
 Errors:
 - `409 already_in_call`: the caller is a silicon that is already on another call.
@@ -407,7 +428,7 @@ Response `201`:
 `status` is `delivered` or `queued`.
 
 Errors:
-- `409 conflict` when your representative is not live.
+- `409 conflict` when your representative is not live, or nobody has answered the call yet (a silicon caller's representative is already live while the call rings).
 - `404` for an unknown delegation.
 
 ### Delegations (silicons)
@@ -495,33 +516,56 @@ Every server frame looks like this:
 | `ready` | `{"account","device_id"}` | on connect |
 | `call.incoming` | `{"call","invitation"}` | every device of the invitee |
 | `call.updated` | `{"call"}` | all devices of participants and invitees, on any change |
-| `call.ringing_stopped` | `{"ringid","invitation_id","reason"}`; `reason`: `accepted_elsewhere`, `declined`, `silenced`, `cancelled`, `missed` | the invitee's devices |
-| `call.handoff` | `{"ringid","device_id"}` (new active device) | the account's devices; the old device must disconnect its media |
+| `call.ringing_stopped` | `{"ringid","invitation_id","reason","from":Account}`; `reason`: `accepted_elsewhere`, `declined`, `silenced`, `cancelled`, `missed`. `from` is the invitation's caller, so a missed-call notice needs no cached call. | the invitee's devices |
+| `call.handoff` | `{"ringid","device_id","device":{"device_id","name","platform"}}`: the new active device | the account's devices; the old device must disconnect its media |
 | `call.ended` | `{"call"}` | participants and invitees |
 | `transcript.entry` | `{"ringid","entry"}` | joined participants (private entries only to their owner) |
 | `transcript.partial` | `{"ringid","speaker":Account,"segment_id","text"}` | joined participants (interim speech, not stored) |
 | `delegation.created` | `{"delegation"}` | the owning silicon |
 | `voicemail.received` | `{"voicemail"}` | the recipient |
 | `voicemail.updated` | `{"voicemail"}` | the recipient and the sender |
-| `device.updated` | `{"device"}` | the account |
+| `device.updated` | `{"device"}`, always with `current:false` | every device of the account |
 | `session.revoked` | `{}` | that device, which then closes |
+
+Notes on events:
+- `call.handoff`: show "Moved to <device.name>" on the old device, and "On a call with X on <device.name> · Switch to this <device>" on the others. Fall back to a platform word only when `name` is `null`. Older servers send no `device`.
+- `call.ringing_stopped`: older servers send no `from`.
+- `device.updated` goes to every device of the account, so `current` is always `false` in it. Each client decides "current" itself by comparing `device_id` with its own (from `ready` or `GET /v1/me`).
 
 Client frames:
 - `{"type":"ping"}` → `{"type":"pong"}`
+
+Close codes:
+
+| Code | Meaning | What the client does |
+|---|---|---|
+| `4401` | The session was revoked or signed out (a `session.revoked` frame comes first). | Sign out locally; do not reconnect with this token. |
+| `1013` | The server is restarting, or this socket fell behind on events. | Reconnect with backoff, then reconcile. |
+| `1001` | Idle: no client frame for 90 s. | Reconnect, and send pings at least every 60 s. |
+
+If the session has already ended when the socket opens, the upgrade fails with `401 session_expired` instead.
 
 On (re)connect, clients reconcile with `GET /v1/calls?state=ringing,active,voicemail`.
 
 ## Push payloads
 
-Every channel carries the same JSON object. APNs adds `aps`. FCM sends every top-level value as a string data field, leaves out nulls, and renames `from` to `caller` because FCM reserves `from`.
+Every channel carries the same JSON object. APNs adds `aps`.
+
+FCM data differs in three ways:
+- Every top-level value is a string. Objects and arrays (`caller`, `participants`) are JSON text.
+- Top-level `null` values are left out (for example `transcript`), never sent as the text `"null"`.
+- `from` is renamed to `caller`, because FCM reserves `from`. Read `caller`, and fall back to `from`.
 
 ```json
-{"type":"call.incoming","ringid":"ring_…","invitation_id":"inv_…","call_uuid":"…","from":{"uuid","id","display_name","pfp_url"},
- "participants":[{"id","display_name"}],"expires_at":"…"}
+{"type":"call.incoming","ringid":"ring_…","invitation_id":"inv_…","call_uuid":"…","from":{"uuid","id","kind","display_name","pfp_url"},
+ "participants":[{"uuid","id","kind","display_name"}],"expires_at":"…"}
 {"type":"call.cancelled","ringid":"ring_…","invitation_id":"inv_…","call_uuid":"…","reason":"accepted_elsewhere"}
 {"type":"call.missed","ringid":"ring_…","from":{…}}
 {"type":"voicemail.received","voicemail_id":"vm_…","from":{…},"transcript":"…"}
 ```
+- `from` is the caller (the inviter, for an invitation to a call in progress). `kind` is `carbon` or `silicon`.
+- `participants` are the people already on the call.
+- Older servers send no `kind` in `from`, and no `uuid` or `kind` in `participants`.
 
 How each channel carries them:
 
@@ -552,31 +596,48 @@ Ring sends notifications from app `ring` to silicons who enabled notifications. 
 | `ring.representative.failed` | `{ringid, error}` |
 | `ring.recording.updated` | `{ringid, status}` |
 
+## Webhooks
+
+- **`POST /v1/accounts/webhook`:** Silicon Accounts webhooks. This route is public, and every request is verified with HMAC (`X-Accounts-Timestamp`, `X-Accounts-Signature: v1=<hex>`). A bad signature returns `401`, and a webhook for another app returns `403`. Each event is handled once, by its event id; the response is `204`.
+
 ## Internal (loopback only, not for clients)
 
-- **`POST /v1/accounts/webhook`:** Silicon Accounts webhooks, signed with HMAC (`X-Accounts-Timestamp`, `X-Accounts-Signature: v1=<hex>`).
 - **`POST /internal/livekit/webhook`:** LiveKit webhooks, a JWT signed with the LiveKit API key.
 - **`GET /internal/media`:** the WebSocket for ring-media, authenticated with `Authorization: Bearer $RING_MEDIA_SECRET`. Messages are `{"type":…, …}`.
+  - ring-media's first message is `hello`. The server then re-issues the state of every ringing, active and voicemail call, then sends anything queued while ring-media was away.
+
+`RosterMember` is `{uuid, id, display_name, kind, identity}`. `identity` is the LiveKit identity carrying that member's audio (the authoritative device for carbons, `rep:{uuid}` for silicons), or `null`.
 
 ring-server → ring-media:
 
 | Message | Fields |
 |---|---|
-| `representative.start` | `ringid, silicon{uuid,id,display_name}, voice, context, start, roster[{uuid,id,display_name,kind}]` |
+| `representative.start` | `ringid, silicon:Account, voice, context, start, roster:[RosterMember], token` |
 | `representative.stop` | `ringid, silicon_uuid` |
 | `representative.message` | `ringid, silicon_uuid, message_id, kind, text, delegation_id` |
-| `roster.changed` | `ringid, roster[], joined?:Account, left?:Account` |
+| `roster.changed` | `ringid, roster:[RosterMember], joined?:Account, left?:Account` |
 | `authority.changed` | `ringid, account_uuid, identity` |
-| `recorder.start` | `ringid` |
+| `recorder.start` | `ringid, token, roster:[RosterMember], s3_key` |
 | `recorder.stop` | `ringid` |
-| `voicemail.start` | `ringid, voicemail_id, caller_identity, greeting_text, voice, max_seconds` |
-| `voicemail.synthesize` | `voicemail_id, text, voice` |
+| `voicemail.start` | `ringid, voicemail_id, caller_identity, greeting_text, voice, max_seconds, token, s3_key` |
+| `voicemail.stop` | `voicemail_id` |
+| `greeting.prepare` | `voice, text` |
+| `voicemail.synthesize` | `voicemail_id, text, voice, s3_key` |
 | `call.closed` | `ringid` |
+
+- `token` is a LiveKit join token for the server participant: `rep:{uuid}`, `ring:recorder` or `ring:voicemail`.
+- `s3_key` is where ring-media uploads the recording or voicemail audio.
+- `representative.start` is sent when a call becomes active. For a **silicon caller** it is sent as soon as the call rings (unless the callee is busy), so GPT-Live is connected when the callee answers. ring-media holds the `start` text until another participant's audio appears. On answer, `roster.changed` with `joined` tells it who answered. If the call ends or goes to voicemail unanswered, the server sends `representative.stop`.
+- `voicemail.stop` ends a recording voicemail early (the caller hung up).
+- `greeting.prepare` asks ring-media to synthesise a greeting and cache it, so a caller never waits for synthesis. Nothing is reported back. The server sends each voice and text once per run (and not while ring-media is disconnected):
+  - when a carbon's call starts ringing to a callee with voicemail enabled, for the callee's three effective greetings (busy, declined, missed) in the callee's voice;
+  - when an account changes its voice, greetings or voicemail setting.
 
 ring-media → ring-server:
 
 | Message | Fields |
 |---|---|
+| `hello` | `version, active_rings` (rooms it is still serving) |
 | `speech.partial` | `ringid, account_uuid, segment_id, text` |
 | `speech.final` | `ringid, account_uuid, segment_id, text, offset_ms` |
 | `delegation.created` | `ringid, silicon_uuid, delegation_id, request` |

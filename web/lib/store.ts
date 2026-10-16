@@ -6,7 +6,7 @@ import {
 } from './push';
 import { RealtimeConnection, type RealtimeStatus } from './realtime';
 import { sounds, type LoopSound } from './sounds';
-import type { Account, Call, CallState, DeviceUpdate, Invitation, MediaGrant, Me, Meta, RealtimeEvent, TranscriptEntry } from './types';
+import type { Account, Call, CallState, DeviceRef, DeviceUpdate, Invitation, MediaGrant, Me, Meta, RealtimeEvent, TranscriptEntry } from './types';
 
 export const APP_VERSION = process.env.NEXT_PUBLIC_RING_VERSION ?? '1.0.0';
 
@@ -34,6 +34,15 @@ export interface MediaState {
   micError: string | null;
 }
 
+/**
+ * A call the server still has on this browser while this tab carries no audio for it, as after a reload: it is being
+ * rejoined on its own (`joining`), or waits for a click on Rejoin call (`offered`).
+ */
+export interface Resume {
+  ringid: string;
+  state: 'joining' | 'offered';
+}
+
 export interface Notice {
   type: 'success' | 'info' | 'warning' | 'error';
   title: string;
@@ -50,6 +59,7 @@ export interface RingState {
   media: MediaState | null;
   /** Calls this tab carried until they moved to another of the account's devices, with that device's name. */
   movedTo: Record<string, string>;
+  resume: Resume | null;
   /** Invitations this tab stopped showing (answered, declined or silenced here, or stopped elsewhere). */
   dismissed: Record<string, true>;
   unreadVoicemail: number;
@@ -99,6 +109,7 @@ function initialState(): RingState {
     transcripts: {},
     media: null,
     movedTo: {},
+    resume: null,
     dismissed: {},
     unreadVoicemail: 0,
     revision: { calls: 0, voicemails: 0, devices: 0 },
@@ -133,6 +144,22 @@ async function mediaHeldByAnotherTab() {
   } catch {
     return false;
   }
+}
+
+/** Whether this site may use the microphone without asking, so a call can be rejoined without a click. */
+async function microphoneGranted() {
+  try {
+    const status = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+    return status.state === 'granted';
+  } catch {
+    // Browsers that can't say (or don't know the name) ask on use, which needs the person's click anyway.
+    return false;
+  }
+}
+
+function speechSegment(entry: TranscriptEntry) {
+  const id = entry.kind === 'speech' ? entry.data?.segment_id : undefined;
+  return typeof id === 'string' && id ? id : null;
 }
 
 /**
@@ -304,10 +331,14 @@ export class RingStore {
         if (rangHere && reason === 'accepted_elsewhere' && this.state.media?.ringid !== ringid) {
           this.notice({ type: 'info', title: 'Answered on another device' });
         }
+        if (rangHere && reason === 'missed') {
+          const caller = event.data.from ?? this.state.calls[ringid]?.invitations.find(invitation => invitation.invitation_id === invitation_id)?.from;
+          this.notifyMissed(ringid, caller ?? null);
+        }
         break;
       }
       case 'call.handoff':
-        this.handleHandoff(event.data.ringid, event.data.device_id);
+        this.handleHandoff(event.data.ringid, event.data.device_id, event.data.device ?? null);
         break;
       case 'transcript.entry':
         this.addEntries(event.data.ringid, [event.data.entry]);
@@ -375,28 +406,51 @@ export class RingStore {
     }
   }
 
+  /** Whether the server has this browser as the device carrying my side of a live call. */
+  private carriedHere(call: Call | undefined) {
+    const me = this.state.me;
+    if (!me || !call || !LIVE_STATES.has(call.state)) return false;
+    const mine = myParticipant(call, me.account.uuid);
+    return mine?.state === 'joined' && mine.device?.device_id === me.device.device_id;
+  }
+
   /**
-   * After a reload, picks the call back up when this browser is still its device (within the server's grace period).
-   * Every tab of a browser is the same device, so a tab never takes the call from another tab that is carrying it.
+   * After a reload, picks the call back up when this browser is still its device (the server keeps it for 30 s). With
+   * the microphone already allowed that happens on its own; otherwise the screens offer Rejoin call, because the
+   * permission prompt and the call's sound both need the person's click. Every tab of a browser is the same device, so
+   * a tab never takes the call from another tab that is carrying it.
    */
   private async autoRejoin() {
-    const { me, media } = this.state;
-    if (!me || media) return;
-    for (const call of Object.values(this.state.calls)) {
-      if (call.state !== 'active' && call.state !== 'voicemail') continue;
-      const mine = myParticipant(call, me.account.uuid);
-      if (mine?.state === 'joined' && mine.device?.device_id === me.device.device_id) {
-        if (await mediaHeldByAnotherTab()) return;
-        if (!this.state.media) void this.rejoin(call.ringid);
-        return;
-      }
+    if (this.state.media) return;
+    const call = Object.values(this.state.calls).find(candidate => this.carriedHere(candidate));
+    if (!call || this.state.resume?.ringid === call.ringid) return;
+    const ringid = call.ringid;
+    if (await mediaHeldByAnotherTab()) return;
+    const granted = await microphoneGranted();
+    // Another reconcile, or a click on Rejoin call, may have picked it up meanwhile.
+    if (this.state.media || this.state.resume?.ringid === ringid || this.rejoining.has(ringid)) return;
+    if (!this.carriedHere(this.state.calls[ringid])) return;
+    if (!granted) {
+      this.set({ resume: { ringid, state: 'offered' } });
+      return;
     }
+    this.set({ resume: { ringid, state: 'joining' } });
+    await this.rejoin(ringid);
+    this.settleResume(ringid);
+  }
+
+  /** After a rejoin attempt: done once this tab has the call, otherwise offered again while the call is still on this browser. */
+  private settleResume(ringid: string) {
+    if (this.state.resume?.ringid !== ringid) return;
+    const offered = !this.state.media && this.carriedHere(this.state.calls[ringid]);
+    this.set({ resume: offered ? { ringid, state: 'offered' } : null });
   }
 
   private upsertCall(call: Call) {
     const previous = this.state.calls[call.ringid];
     if (previous && CALL_STAGE[call.state] < CALL_STAGE[previous.state]) return;
     this.set(state => ({ calls: { ...state.calls, [call.ringid]: call } }));
+    if (this.state.resume?.ringid === call.ringid && !this.carriedHere(call)) this.set({ resume: null });
     const media = this.state.media;
     if (media?.ringid === call.ringid) {
       const mine = myParticipant(call, this.state.me?.account.uuid);
@@ -408,14 +462,15 @@ export class RingStore {
     }
   }
 
-  private handleHandoff(ringid: string, deviceId: string) {
+  private handleHandoff(ringid: string, deviceId: string, device: DeviceRef | null) {
     const me = this.state.me;
     if (!me || deviceId === me.device.device_id) return;
     const targetIn = (call: Call | undefined) => {
-      const device = call ? myParticipant(call, me.account.uuid)?.device : null;
-      return device && device.device_id === deviceId ? device : null;
+      const ref = call ? myParticipant(call, me.account.uuid)?.device : null;
+      return ref && ref.device_id === deviceId ? ref : null;
     };
-    const target = targetIn(this.state.calls[ringid]);
+    // Newer servers name the device in the event; older ones only in the call update, which can come after it.
+    const target = (device?.device_id === deviceId ? device : null) ?? targetIn(this.state.calls[ringid]);
     const moved = this.state.media?.ringid === ringid;
     if (moved) {
       this.endMedia(false);
@@ -439,8 +494,9 @@ export class RingStore {
     if (!incomingRings(this.state).some(ring => ring.invitation.invitation_id === invitation.invitation_id)) return;
     if (document.visibilityState !== 'hidden' || this.state.pushActive) return;
     const others = call.participants.filter(p => p.state === 'joined' && p.account.uuid !== invitation.from.uuid).map(p => label(p.account));
+    const lead = invitation.from.kind === 'silicon' ? 'Silicon calling you' : 'Calling you';
     void showPageNotification(label(invitation.from), {
-      body: others.length ? `Calling you with ${others.join(', ')} · ${invitation.from.id}` : `Calling you · ${invitation.from.id}`,
+      body: others.length ? `${lead} with ${others.join(', ')} · ${invitation.from.id}` : `${lead} · ${invitation.from.id}`,
       tag: call.ringid,
       icon: invitation.from.pfp_url ?? '/icons/icon-192.png',
       badge: '/icons/badge-96.png',
@@ -451,32 +507,66 @@ export class RingStore {
     });
   }
 
+  /** A call that rang here and wasn't answered: a toast on the open page, a notification when the tab is hidden. */
+  private notifyMissed(ringid: string, caller: Account | null) {
+    const title = `Missed call from ${label(caller)}`;
+    if (document.visibilityState !== 'hidden') {
+      this.notice({ type: 'info', title });
+      return;
+    }
+    // With Web Push the service worker shows the server's missed-call push instead.
+    if (this.state.pushActive) return;
+    void showPageNotification(title, {
+      body: caller?.id ?? '',
+      // Its own tag, so closing the ringing notification (tagged with the ringid) never closes this one.
+      tag: `${ringid}:missed`,
+      icon: caller?.pfp_url ?? '/icons/icon-192.png',
+      badge: '/icons/badge-96.png',
+      data: { kind: 'missed', url: `/history?id=${encodeURIComponent(ringid)}` },
+    });
+  }
+
   // ------------------------------------------------------------------------------------------------ transcripts
 
+  /**
+   * Final speech replaces its interim line: the one with the entry's segment_id, along with that speaker's older
+   * interim lines (a speaker's segments finish in order, so those lost their final). A newer segment that is
+   * already being spoken stays. Without a segment_id (older servers) the speaker's interim lines all go.
+   */
   private addEntries(ringid: string, entries: TranscriptEntry[]) {
     this.set(state => {
       const current = state.transcripts[ringid] ?? { entries: [], partials: [], synced: false };
       const bySeq = new Map(current.entries.map(entry => [entry.seq, entry]));
       for (const entry of entries) bySeq.set(entry.seq, entry);
-      const speakers = new Set(entries.filter(entry => entry.kind === 'speech' && entry.actor).map(entry => entry.actor!.uuid));
+      let partials = current.partials;
+      for (const entry of entries) {
+        const speaker = entry.kind === 'speech' ? entry.actor?.uuid : undefined;
+        if (!speaker) continue;
+        const segment = speechSegment(entry);
+        const index = segment ? partials.findIndex(line => line.segmentId === segment) : -1;
+        if (segment && index < 0) continue;
+        partials = partials.filter((line, i) => i !== index && (line.speaker.uuid !== speaker || (index >= 0 && i > index)));
+      }
       return {
         transcripts: {
           ...state.transcripts,
-          [ringid]: {
-            ...current,
-            entries: [...bySeq.values()].sort((a, b) => a.seq - b.seq),
-            partials: current.partials.filter(partial => !speakers.has(partial.speaker.uuid)),
-          },
+          [ringid]: { ...current, entries: [...bySeq.values()].sort((a, b) => a.seq - b.seq), partials },
         },
       };
     });
   }
 
+  /** Interim speech, one line per segment: an update keeps the line's place, a new segment goes last. */
   private addPartial(ringid: string, partial: PartialLine) {
     this.set(state => {
       const current = state.transcripts[ringid] ?? { entries: [], partials: [], synced: false };
-      const others = current.partials.filter(line => line.segmentId !== partial.segmentId && line.speaker.uuid !== partial.speaker.uuid);
-      const partials = partial.text.trim() ? [...others, partial] : others;
+      // A partial that arrives after its own final would bring the line back as interim.
+      if (current.entries.slice(-50).some(entry => speechSegment(entry) === partial.segmentId)) return {};
+      const index = current.partials.findIndex(line => line.segmentId === partial.segmentId);
+      let partials: PartialLine[];
+      if (!partial.text.trim()) partials = current.partials.filter(line => line.segmentId !== partial.segmentId);
+      else if (index >= 0) partials = current.partials.map((line, i) => (i === index ? partial : line));
+      else partials = [...current.partials, partial];
       return { transcripts: { ...state.transcripts, [ringid]: { ...current, partials } } };
     });
   }
@@ -526,7 +616,7 @@ export class RingStore {
     this.set(state => {
       const movedTo = { ...state.movedTo };
       delete movedTo[ringid];
-      return { movedTo, media: { ringid, status: 'connecting', muted, speaking: [], audioBlocked: false, micError: null } };
+      return { movedTo, resume: null, media: { ringid, status: 'connecting', muted, speaking: [], audioBlocked: false, micError: null } };
     });
     try {
       await this.mediaEngine().connect(grant, muted);
@@ -650,6 +740,16 @@ export class RingStore {
       this.rejoining.delete(ringid);
     }
     void this.syncTranscript(ringid);
+  }
+
+  /** Rejoin call: takes back a call this browser carried before the page reloaded. Run it from a click. */
+  async resumeCall(ringid: string) {
+    this.set({ resume: { ringid, state: 'joining' } });
+    try {
+      await this.switchHere(ringid);
+    } finally {
+      this.settleResume(ringid);
+    }
   }
 
   async setMuted(muted: boolean) {

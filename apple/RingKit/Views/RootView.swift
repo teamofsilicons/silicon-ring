@@ -370,7 +370,7 @@ struct CallBanners: View {
 struct HandoffBanner: View {
     var call: Call
     var device: DeviceRef
-    /// "Moved to Mac", right after the call left this device.
+    /// "Moved to Pixel 8", right after the call left this device.
     var moved: String?
     @Environment(AppModel.self) private var model
 
@@ -380,7 +380,8 @@ struct HandoffBanner: View {
             Image(systemName: device.platform?.symbol ?? "iphone")
                 .font(.system(size: 15, weight: .light))
                 .foregroundStyle(Palette.textSecondary)
-            Text(moved ?? "On a call with \(other) on \(device.platform?.label ?? device.label)")
+            // "On a call with TOS on Pixel 8 · Switch to this iPhone"
+            Text(moved ?? "On a call with \(other) on \(model.deviceLabel(device))")
                 .font(RingFont.ui(14))
                 .foregroundStyle(Palette.foreground)
                 .lineLimit(2)

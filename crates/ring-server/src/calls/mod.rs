@@ -293,20 +293,23 @@ pub fn render_invitation(data: &CallData, inv: &InvitationRow) -> Invitation {
     }
 }
 
+/// A device as named on a call (participants, `call.handoff`).
+pub fn device_ref(conn: &Connection, device_id: &str) -> rusqlite::Result<DeviceRef> {
+    let row = crate::sessions::by_device(conn, device_id)?;
+    Ok(DeviceRef {
+        device_id: device_id.to_string(),
+        name: row.as_ref().and_then(|r| r.name.clone()),
+        platform: row.as_ref().and_then(|r| r.platform),
+    })
+}
+
 /// Renders the call as seen by `viewer` (only `direction` depends on the viewer).
 pub fn render(conn: &Connection, data: &CallData, viewer: &str) -> rusqlite::Result<Call> {
     let mut participants = Vec::with_capacity(data.participants.len());
     for p in &data.participants {
         let account = data.account(&p.account_uuid);
         let device = match &p.device_id {
-            Some(device_id) => {
-                let row = crate::sessions::by_device(conn, device_id)?;
-                Some(DeviceRef {
-                    device_id: device_id.clone(),
-                    name: row.as_ref().and_then(|r| r.name.clone()),
-                    platform: row.as_ref().and_then(|r| r.platform),
-                })
-            }
+            Some(device_id) => Some(device_ref(conn, device_id)?),
             None => None,
         };
         let representative = (account.kind == AccountKind::Silicon).then(|| RepresentativeInfo {
@@ -465,6 +468,7 @@ impl Effects {
                 ringid: ringid.to_string(),
                 invitation_id: inv.invitation_id.clone(),
                 reason: *reason,
+                from: Some(data.account(&inv.from_uuid)),
             };
             app.hub.send_account(&inv.to_uuid, &event);
             if !data.is_silicon(&inv.to_uuid) {

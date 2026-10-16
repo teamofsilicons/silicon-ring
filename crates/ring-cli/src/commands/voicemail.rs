@@ -6,7 +6,7 @@ use ring_proto::{
 };
 use serde_json::json;
 
-use super::{Ctx, actor, check_text, id, read_text_file, with_retry_key};
+use super::{Ctx, actor, check_text, id, next_page_command, read_text_file, with_retry_key};
 use crate::cli::{GreetingCommand, Group, VoicemailCommand};
 use crate::error::{CliError, CliResult};
 use crate::output;
@@ -42,10 +42,7 @@ pub async fn run(ctx: &Ctx, command: VoicemailCommand) -> CliResult<()> {
                 }
                 let mut lines: Vec<String> = page.items.iter().map(output::voicemail_row).collect();
                 if let Some(cursor) = &page.next_cursor {
-                    lines.push(format!(
-                        "More: ring voicemail ls{} --cursor {cursor}",
-                        if all { " --all" } else { "" }
-                    ));
+                    lines.push(format!("More: {}", next_page_command("--cursor", cursor)));
                 }
                 lines.join("\n")
             });
@@ -82,12 +79,13 @@ pub async fn run(ctx: &Ctx, command: VoicemailCommand) -> CliResult<()> {
             }
             let mut value = serde_json::to_value(&voicemail).expect("voicemail serializes");
             value["saved_to"] = json!(saved);
+            let me = &signed.session.account.uuid;
             output::emit(ctx.json, &value, || {
-                let mut text = output::voicemail_details(&voicemail);
+                let mut text = output::voicemail_details(&voicemail, me);
                 if let Some(path) = &saved {
                     text.push_str(&format!("\nSaved the audio to {path}."));
                 }
-                if !voicemail.read {
+                if !voicemail.read && voicemail.to.uuid == *me {
                     text.push_str(&format!(
                         "\nMark it read: ring voicemail read {voicemail_id}"
                     ));
@@ -195,7 +193,7 @@ async fn greeting(ctx: &Ctx, command: GreetingCommand) -> CliResult<()> {
                 greetings
                     .get(reason)
                     .map(|t| format!("\"{t}\""))
-                    .unwrap_or_else(|| "(built-in default)".into())
+                    .unwrap_or_else(|| "(default)".into())
             };
             let mut text = format!(
                 "busy      {}\ndeclined  {}\nmissed    {}",

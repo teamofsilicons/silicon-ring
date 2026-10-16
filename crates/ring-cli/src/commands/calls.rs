@@ -3,11 +3,14 @@
 use ring_core::CallFilter;
 use ring_proto::{
     AcceptCall, CallState, ContextAction, ContextPreview, ContextPreviewRequest, CreateCall,
-    DeclineCall, EndReason, InvitationState, RecordingStatus, limits,
+    DeclineCall, EndReason, EntryKind, InvitationState, RecordingStatus, limits,
 };
 use serde_json::json;
 
-use super::{Ctx, SignedIn, actor, check_text, id, watch, with_retry_key};
+use super::{
+    Ctx, SignedIn, actor, check_text, id, next_page_command, original_command, watch,
+    with_retry_key,
+};
 use crate::cli::{CallCommand, ContextArgs, DirectionArg};
 use crate::error::{CliError, CliResult};
 use crate::output;
@@ -134,23 +137,25 @@ async fn init(
 
     let ringid = created.call.ringid.clone();
     let callee = output::who(&created.invitation.to);
-    let busy = created.invitation.state == InvitationState::Busy
-        || created.call.state == CallState::Voicemail;
+    let busy = created.invitation.state == InvitationState::Busy;
     if live && ctx.json {
         output::event_line("call.created", &created);
     } else {
-        output::emit(ctx.json, &created, || {
-            if busy {
-                format!(
-                    "{callee} is busy, so {ringid} went to voicemail.\n\
-                     Leave a message: ring voicemail leave {ringid} --text \"…\""
-                )
-            } else {
-                format!(
-                    "Ringing {callee}: {ringid}\nIt rings for up to 60 s; Ting tells you when it is answered.\n\
-                     Watch:  ring call watch {ringid}\nCancel: ring call cut {ringid}"
-                )
-            }
+        output::emit(ctx.json, &created, || match created.call.state {
+            CallState::Voicemail => format!(
+                "{callee} is {}, so {ringid} went to voicemail.\n\
+                 Leave a message: ring voicemail leave {ringid} --text \"…\"",
+                if busy { "busy" } else { "unavailable" }
+            ),
+            CallState::Ended => format!(
+                "{callee} is {} and takes no voicemail, so {ringid} ended.",
+                if busy { "busy" } else { "unavailable" }
+            ),
+            _ => format!(
+                "Ringing {callee}: {ringid}\nIt rings for up to {} s; Ting tells you when it is answered.\n\
+                 Watch:  ring call watch {ringid}\nCancel: ring call cut {ringid}",
+                ring_proto::RINGING_SECONDS
+            ),
         });
     }
     if live {
@@ -284,12 +289,16 @@ async fn invite(ctx: &Ctx, target: &str, ringid: &str) -> CliResult<()> {
         .await
         .map_err(|e| with_retry_key(e, &key))?;
     output::emit(ctx.json, &invited, || {
-        format!(
-            "Inviting {} into {ringid} ({}). It rings until {}.",
-            output::who(&invited.invitation.to),
-            invited.invitation.invitation_id,
-            output::time(&invited.invitation.expires_at)
-        )
+        let invitee = output::who(&invited.invitation.to);
+        let invitation_id = &invited.invitation.invitation_id;
+        if invited.invitation.state == InvitationState::Busy {
+            format!("{invitee} is busy on another call, so {invitation_id} did not ring.")
+        } else {
+            format!(
+                "Inviting {invitee} into {ringid} ({invitation_id}). It rings until {}.",
+                output::time(&invited.invitation.expires_at)
+            )
+        }
     });
     Ok(())
 }
@@ -333,7 +342,7 @@ async fn history(ctx: &Ctx, filter: CallFilter) -> CliResult<()> {
             .map(|c| output::call_row(c, &me))
             .collect();
         if let Some(cursor) = &page.next_cursor {
-            lines.push(format!("More: ring call history --cursor {cursor}"));
+            lines.push(format!("More: {}", next_page_command("--cursor", cursor)));
         }
         lines.join("\n")
     });
@@ -348,11 +357,23 @@ async fn transcript(ctx: &Ctx, ringid: &str, after_seq: u64, limit: Option<u32>)
         if page.items.is_empty() {
             return "No transcript entries.".into();
         }
-        let mut lines: Vec<String> = page.items.iter().map(output::entry).collect();
+        // A speech segment finalised twice is shown once, as `ring call watch` shows it.
+        let mut segments = std::collections::HashSet::new();
+        let mut lines: Vec<String> = page
+            .items
+            .iter()
+            .filter(|e| {
+                e.kind != EntryKind::Speech
+                    || e.segment_id()
+                        .filter(|id| !id.is_empty())
+                        .is_none_or(|id| segments.insert(id))
+            })
+            .map(output::entry)
+            .collect();
         if page.items.len() as u32 >= limit.unwrap_or(200) {
             lines.push(format!(
-                "More: ring call transcript {ringid} --after-seq {}",
-                page.next_after_seq
+                "More: {}",
+                next_page_command("--after-seq", &page.next_after_seq.to_string())
             ));
         }
         lines.join("\n")
@@ -370,23 +391,31 @@ async fn recording(
     let signed = ctx.signed_in()?;
     let recording = signed.client.recording(&ringid).await?;
     let status = match recording.status {
-        RecordingStatus::None => "none",
-        RecordingStatus::Recording => "recording",
-        RecordingStatus::Processing => "processing",
-        RecordingStatus::Ready => "ready",
-        RecordingStatus::Failed => "failed",
+        RecordingStatus::None => "This call has no recording.",
+        RecordingStatus::Recording => "The call is still being recorded.",
+        RecordingStatus::Processing => "The recording is being processed.",
+        RecordingStatus::Ready => "The recording is ready.",
+        RecordingStatus::Failed => "The recording failed.",
     };
     let mut saved = None;
     if let Some(path) = &audio_out {
         let url = match (&recording.status, &recording.url) {
             (RecordingStatus::Ready, Some(url)) => url,
             (RecordingStatus::Recording | RecordingStatus::Processing, _) => {
+                return Err(CliError::new("recording_not_ready", status)
+                    .hint(format!(
+                        "Try again in a minute: ring call recording {ringid} --audio-out {}",
+                        path.display()
+                    ))
+                    .retryable(true));
+            }
+            (RecordingStatus::Ready, None) => {
                 return Err(CliError::new(
-                    "recording_not_ready",
-                    format!("The recording is still {status}."),
+                    "recording_unavailable",
+                    "The recording is ready, but the server gave no download link.",
                 )
                 .hint(format!(
-                    "Try again in a minute: ring call recording {ringid} --audio-out {}",
+                    "Try again: ring call recording {ringid} --audio-out {}",
                     path.display()
                 ))
                 .retryable(true));
@@ -394,7 +423,7 @@ async fn recording(
             _ => {
                 return Err(CliError::new(
                     "recording_unavailable",
-                    format!("There is no recording to download ({status})."),
+                    format!("{status} There is nothing to download."),
                 )
                 .exit(4));
             }
@@ -413,11 +442,12 @@ async fn recording(
         "saved_to": saved,
     });
     output::emit(ctx.json, &result, || {
-        let mut text = format!("Recording {status}");
-        if let Some(ms) = recording.duration_ms {
-            text.push_str(&format!(", {}", output::duration_ms(ms)));
-        }
-        text.push('.');
+        let mut text = match (recording.status, recording.duration_ms) {
+            (RecordingStatus::Ready, Some(ms)) => {
+                format!("The recording is ready ({}).", output::duration_ms(ms))
+            }
+            _ => status.to_owned(),
+        };
         match &saved {
             Some(path) => text.push_str(&format!("\nSaved to {path}.")),
             None if recording.status == RecordingStatus::Ready => text.push_str(&format!(
@@ -471,24 +501,4 @@ async fn approval_follow_up(
         output::context_preview(&preview, false)
     ))
     .exit(5)
-}
-
-/// The command line as typed, quoted for a POSIX shell, with the program shown as `ring`.
-fn original_command() -> String {
-    std::iter::once("ring".to_owned())
-        .chain(std::env::args().skip(1).map(|arg| shell_quote(&arg)))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn shell_quote(arg: &str) -> String {
-    let plain = !arg.is_empty()
-        && arg
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@,+%".contains(c));
-    if plain {
-        arg.to_owned()
-    } else {
-        format!("'{}'", arg.replace('\'', r"'\''"))
-    }
 }

@@ -326,8 +326,9 @@ struct DeviceRef: Codable, Sendable, Hashable {
         case deviceID = "device_id"
     }
 
+    /// The device's name ("Pixel 8"), or a platform word when it has none.
     var label: String {
-        if let name, !name.isEmpty { return name }
+        if let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty { return name }
         return platform?.label ?? "another device"
     }
 }
@@ -591,6 +592,9 @@ struct TranscriptEntry: Codable, Sendable, Hashable, Identifiable {
     var data: JSONValue
 
     var id: Int { seq }
+
+    /// For `speech`: the id of the `transcript.partial` events this entry finalises, when sent.
+    var segmentID: String? { data["segment_id"]?.stringValue }
 
     enum CodingKeys: String, CodingKey {
         case seq, at, kind, actor, text, data

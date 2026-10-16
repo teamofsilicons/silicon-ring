@@ -67,7 +67,15 @@ pub struct Live {
 
 impl Live {
     /// Opens a session with client delegation and returns once `session.started` arrives.
-    pub async fn connect(api_key: &str, voice: &str, instructions: &str) -> Result<Self> {
+    /// `opening` asks GPT-Live to speak first; it is given at startup as a developer message,
+    /// which is what GPT-Live follows most reliably and soonest (a greeting appended after the
+    /// start can take many seconds, or never come).
+    pub async fn connect(
+        api_key: &str,
+        voice: &str,
+        instructions: &str,
+        opening: Option<&str>,
+    ) -> Result<Self> {
         if !is_natural_voice(voice) {
             bail!("{voice:?} is not a Natural Voice");
         }
@@ -82,7 +90,7 @@ impl Live {
             .await
             .context("timed out connecting to GPT-Live")?
             .context("could not connect to GPT-Live")?;
-        let start = json!({
+        let mut start = json!({
             "type": "session.start",
             "session": {
                 "model": MODEL,
@@ -91,6 +99,13 @@ impl Live {
                 "delegation": {"type": "client"},
             }
         });
+        if let Some(opening) = opening {
+            start["session"]["input"] = json!([{
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": opening}],
+            }]);
+        }
         socket
             .send(Message::Text(start.to_string().into()))
             .await
@@ -252,7 +267,7 @@ const READBACK_CHARS: usize = 400;
 const READBACK_QUIET: Duration = Duration::from_secs(2);
 const READBACK_TIMEOUT: Duration = Duration::from_secs(60);
 const READBACK_ATTEMPTS: usize = 3;
-const AUDIBLE: i16 = 250;
+pub const AUDIBLE: i16 = 250;
 
 /// Speaks `text` in `voice` and returns 24 kHz PCM. The words GPT-Live reports saying must
 /// match the requested text, otherwise the audio is rejected rather than risk a voicemail or
@@ -260,6 +275,9 @@ const AUDIBLE: i16 = 250;
 pub async fn synthesize(api_key: &str, voice: &str, text: &str) -> Result<Vec<i16>> {
     if text.trim().is_empty() {
         bail!("nothing to synthesize");
+    }
+    if !is_natural_voice(voice) {
+        bail!("{voice:?} is not a Natural Voice");
     }
     let mut out = Vec::new();
     for chunk in split_text(text, READBACK_CHARS) {
@@ -292,13 +310,9 @@ async fn readback(api_key: &str, voice: &str, text: &str) -> Result<Vec<i16>> {
         api_key,
         voice,
         "Read supplied messages verbatim. Do not add any words or commentary.",
-    )
-    .await?;
-    live.append(
-        "instructions",
-        &format!("Speak first. Read exactly this message, then stay silent: {text}"),
-        None,
-        None,
+        Some(&format!(
+            "Speak first. Read exactly this message now, then stay silent: {text}"
+        )),
     )
     .await?;
     let mut samples: Vec<i16> = Vec::new();
@@ -340,7 +354,8 @@ async fn readback(api_key: &str, voice: &str, text: &str) -> Result<Vec<i16>> {
             READBACK_TIMEOUT.as_secs()
         ))
     });
-    live.close().await;
+    // The audio is complete; the session winds down in the background.
+    tokio::spawn(live.close());
     result?;
     if normalize(&transcript) != normalize(text) {
         bail!("the spoken words did not match the requested text");

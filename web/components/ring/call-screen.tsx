@@ -20,6 +20,7 @@ import { NameBlock, PersonAvatar, Pixel, SiliconBadge } from './identity';
 import { LiveTranscriptView } from './live-transcript';
 import { useRing, useRingStore } from './ring-context';
 import { RingRings } from './ring-mark';
+import { keepClearOfToasts } from './toasts';
 import styles from './call.module.css';
 
 export function CallScreen() {
@@ -60,7 +61,6 @@ export function CallScreen() {
 function CallView({ call, action }: { call: Call; action: string | null }) {
   const me = useMe();
   const media = useRing(state => (state.media?.ringid === call.ringid ? state.media : null));
-  const movedTo = useRing(state => state.movedTo[call.ringid]);
   const meUuid = me?.account.uuid;
   const mine = myParticipant(call, meUuid);
   const invitation = myInvitation(call, meUuid);
@@ -69,7 +69,7 @@ function CallView({ call, action }: { call: Call; action: string | null }) {
   if (call.state === 'ended' || (mine?.state === 'left' && !media)) return <EndedView call={call} />;
   if (call.state === 'voicemail' && call.created_by.uuid === meUuid) return <VoicemailView call={call} media={media} />;
   if (call.state === 'ringing' && call.created_by.uuid === meUuid) return <OutgoingView call={call} media={media} />;
-  if (mine?.state === 'joined') return <InCallView call={call} media={media} movedTo={movedTo} />;
+  if (mine?.state === 'joined') return <InCallView call={call} media={media} />;
   return <EndedView call={call} />;
 }
 
@@ -100,6 +100,48 @@ function Halo({ account, waves, speaking, recording, size = 'xl' }: { account: A
   );
 }
 
+/**
+ * Shown while this browser carries no audio for a call I'm on: where the call went (another device), or that it is
+ * still on this browser after a reload, with the button that brings it here.
+ */
+function ConnectionBanner({ call, media }: { call: Call; media: MediaState | null }) {
+  const store = useRingStore();
+  const me = useMe();
+  const movedTo = useRing(state => state.movedTo[call.ringid]);
+  const resume = useRing(state => (state.resume?.ringid === call.ringid ? state.resume : null));
+  const { toast } = useToastStack();
+  const [busy, setBusy] = useState(false);
+  // A room that failed to connect (or dropped for good) leaves media in place but disconnected: offer it again too.
+  if (media && media.status !== 'disconnected') return null;
+  const device = myParticipant(call, me?.account.uuid)?.device;
+  const switching = Boolean(movedTo || (!media && device && device.device_id !== me?.device.device_id));
+
+  async function bringHere() {
+    setBusy(true);
+    try {
+      if (switching) await store.switchHere(call.ringid);
+      else await store.resumeCall(call.ringid);
+    } catch (error) {
+      toast({ type: 'error', title: switching ? 'Couldn’t switch the call' : 'Couldn’t rejoin the call', description: errorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={styles.handoff} role="status">
+      <span>
+        {movedTo ? `Moved to ${movedTo}`
+          : switching ? `Active on ${deviceLabel(device)}`
+            : resume?.state === 'joining' ? 'Rejoining the call…' : 'This browser isn’t connected to the call'}
+      </span>
+      <Button size="sm" variant={switching ? 'secondary' : 'primary'} loading={busy || resume?.state === 'joining'} onClick={() => void bringHere()}>
+        {switching ? 'Switch to this browser' : 'Rejoin call'}
+      </Button>
+    </div>
+  );
+}
+
 function MediaNotes({ media }: { media: MediaState | null }) {
   const store = useRingStore();
   if (!media) return null;
@@ -120,16 +162,16 @@ function OutgoingView({ call, media }: { call: Call; media: MediaState | null })
   const me = useMe();
   const { hangUp, busy } = useHangUp(call);
   const callee = otherPeople(call, me?.account.uuid)[0] ?? call.created_by;
-  const connecting = !media || media.status === 'connecting';
   return (
     <div className={styles.screen}>
+      <ConnectionBanner call={call} media={media} />
       <div className={styles.stage}>
         <Halo account={callee} waves />
         <NameBlock account={callee} />
-        <Pixel tone="foreground" className={styles.callStatus}>{connecting ? 'Calling…' : 'Ringing'}</Pixel>
+        <Pixel tone="foreground" className={styles.callStatus}>{media?.status === 'connecting' ? 'Calling…' : 'Ringing'}</Pixel>
         <MediaNotes media={media} />
       </div>
-      <div className={styles.controls}>
+      <div className={styles.controls} ref={keepClearOfToasts}>
         <CallControl tone="danger" label="Hang up" icon={<PhoneOff size={26} strokeWidth={1.75} aria-hidden="true" />} busy={busy} onClick={() => void hangUp()} />
       </div>
     </div>
@@ -145,6 +187,7 @@ function VoicemailView({ call, media }: { call: Call; media: MediaState | null }
   const reason = call.invitations.find(invitation => invitation.to.uuid === callee.uuid);
   return (
     <div className={styles.screen}>
+      <ConnectionBanner call={call} media={media} />
       <div className={styles.stage}>
         <Halo account={callee} recording />
         <NameBlock account={callee} />
@@ -156,7 +199,7 @@ function VoicemailView({ call, media }: { call: Call; media: MediaState | null }
         </div>
         <MediaNotes media={media} />
       </div>
-      <div className={styles.controls}>
+      <div className={styles.controls} ref={keepClearOfToasts}>
         <Button variant="primary" size="lg" loading={busy} onClick={() => void hangUp()}>Done</Button>
       </div>
     </div>
@@ -186,18 +229,16 @@ function ParticipantTile({ participant, speaking, meUuid, solo }: { participant:
   );
 }
 
-function InCallView({ call, media, movedTo }: { call: Call; media: MediaState | null; movedTo: string | undefined }) {
+function InCallView({ call, media }: { call: Call; media: MediaState | null }) {
   const store = useRingStore();
   const me = useMe();
   const openDialer = useDialer();
   const transcript = useRing(state => state.transcripts[call.ringid]);
-  const { toast } = useToastStack();
+  const rejoining = useRing(state => state.resume?.ringid === call.ringid && state.resume.state === 'joining');
   const { hangUp, busy } = useHangUp(call);
   const now = useNow();
-  const [switching, setSwitching] = useState(false);
   const meUuid = me?.account.uuid;
   const mine = myParticipant(call, meUuid);
-  // A room that failed to connect (or dropped for good) leaves media in place but disconnected: offer to reconnect.
   const here = Boolean(media) && media?.status !== 'disconnected';
   const elsewhere = !media && mine?.device && mine.device.device_id !== me?.device.device_id;
   const others = call.participants.filter(p => p.state === 'joined' && p.account.uuid !== meUuid);
@@ -209,36 +250,16 @@ function InCallView({ call, media, movedTo }: { call: Call; media: MediaState | 
     void store.syncTranscript(call.ringid);
   }, [call.ringid, store]);
 
-  async function switchHere() {
-    setSwitching(true);
-    try {
-      await store.switchHere(call.ringid);
-    } catch (error) {
-      toast({ type: 'error', title: 'Couldn’t switch the call', description: errorMessage(error) });
-    } finally {
-      setSwitching(false);
-    }
-  }
-
   const timer = call.answered_at ? duration(now - Date.parse(call.answered_at)) : '0:00';
   const status = media?.status === 'reconnecting' || media?.status === 'connecting' ? 'Connecting…' : 'On call';
 
   return (
     <div className={[styles.screen, styles.inCall].join(' ')}>
-      {here ? null : (
-        <div className={styles.handoff} role="status">
-          <span>
-            {movedTo ? `Moved to ${movedTo}` : elsewhere ? `Active on ${deviceLabel(mine?.device)}` : 'This browser isn’t connected to the call'}
-          </span>
-          <Button size="sm" variant="secondary" loading={switching} onClick={() => void switchHere()}>
-            {movedTo || elsewhere ? 'Switch to this browser' : 'Reconnect'}
-          </Button>
-        </div>
-      )}
+      <ConnectionBanner call={call} media={media} />
 
       <header className={styles.callHeader}>
         <Pixel tone="foreground" className={styles.timer}>{timer}</Pixel>
-        <Pixel>{here ? status : elsewhere ? `On ${deviceLabel(mine?.device)}` : 'Not connected'}</Pixel>
+        <Pixel>{here ? status : elsewhere ? `On ${deviceLabel(mine?.device)}` : rejoining ? 'Connecting…' : 'Not connected'}</Pixel>
       </header>
 
       <ul className={solo ? styles.soloRoster : styles.roster} aria-label="On the call">
@@ -258,7 +279,7 @@ function InCallView({ call, media, movedTo }: { call: Call; media: MediaState | 
       <MediaNotes media={media} />
       <LiveTranscriptView transcript={transcript} meUuid={meUuid} />
 
-      <div className={styles.controls}>
+      <div className={styles.controls} ref={keepClearOfToasts}>
         <CallControl
           label={media?.muted ? 'Unmute' : 'Mute'}
           icon={media?.muted ? <MicOff size={24} strokeWidth={1.75} aria-hidden="true" /> : <Mic size={24} strokeWidth={1.75} aria-hidden="true" />}
@@ -325,7 +346,7 @@ function EndedView({ call }: { call: Call }) {
           </Pixel>
         </div>
       </div>
-      <div className={styles.endActions}>
+      <div className={styles.endActions} ref={keepClearOfToasts}>
         <ButtonLink href={`/history?id=${encodeURIComponent(call.ringid)}`} as={Link} variant="secondary">Call details</ButtonLink>
         {person.uuid !== meUuid ? <Button variant="primary" loading={calling} onClick={() => void callAgain()}>Call again</Button> : null}
         <ButtonLink href="/" as={Link} variant="ghost">Back to Recents</ButtonLink>
@@ -385,7 +406,7 @@ function IncomingFromLink({ call, action }: { call: Call; action: string | null 
         <Pixel tone="foreground" className={styles.callStatus}>{action === 'answer' ? 'Answering…' : action === 'decline' ? 'Declining…' : 'Is calling'}</Pixel>
       </div>
       {pending || !invitation ? null : (
-        <div className={styles.controls}>
+        <div className={styles.controls} ref={keepClearOfToasts}>
           <CallControl
             tone="danger"
             label="Decline"

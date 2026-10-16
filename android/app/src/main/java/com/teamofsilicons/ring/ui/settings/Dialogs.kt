@@ -23,6 +23,7 @@ import com.teamofsilicons.ring.ui.components.PixelLabel
 import com.teamofsilicons.ring.ui.components.TextAction
 import com.teamofsilicons.ring.ui.theme.Ring
 import com.teamofsilicons.ring.ui.theme.RingType
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 @Composable
 fun ringFieldColors() = OutlinedTextFieldDefaults.colors(
@@ -118,7 +119,9 @@ fun ServerDialog(current: String, onDismiss: () -> Unit, onSave: (String?) -> Un
         },
         confirmButton = {
             // Release builds forbid cleartext traffic, so only debug builds may point at http://.
-            val valid = text.trim().let { it.startsWith("https://") || (BuildConfig.DEBUG && it.startsWith("http://")) }
+            val valid = text.trim().let {
+                (it.startsWith("https://") || (BuildConfig.DEBUG && it.startsWith("http://"))) && it.toHttpUrlOrNull() != null
+            }
             TextAction("Save", { if (valid) onSave(text.trim()) }, color = if (valid) c.accentText else c.textMuted)
         },
         dismissButton = {

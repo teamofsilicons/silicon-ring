@@ -128,6 +128,49 @@ pub fn with_retry_key(error: ring_core::Error, key: &str) -> CliError {
     error
 }
 
+// ---- echoing the command line -------------------------------------------------------------
+
+/// The command line as typed, quoted for a POSIX shell, with the program shown as `ring`.
+pub fn original_command() -> String {
+    command_line(std::env::args().skip(1).collect())
+}
+
+/// The command as typed with `flag` set to `value`: the "More:" hint for the next page, which
+/// keeps every filter (a cursor carries only the position).
+pub fn next_page_command(flag: &str, value: &str) -> String {
+    let inline = format!("{flag}=");
+    let mut args = Vec::new();
+    let mut typed = std::env::args().skip(1);
+    while let Some(arg) = typed.next() {
+        if arg == flag {
+            typed.next();
+        } else if !arg.starts_with(&inline) {
+            args.push(arg);
+        }
+    }
+    args.extend([flag.to_owned(), value.to_owned()]);
+    command_line(args)
+}
+
+fn command_line(args: Vec<String>) -> String {
+    std::iter::once("ring".to_owned())
+        .chain(args.iter().map(|arg| shell_quote(arg)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote(arg: &str) -> String {
+    let plain = !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@,+%".contains(c));
+    if plain {
+        arg.to_owned()
+    } else {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
+}
+
 // ---- input checks -------------------------------------------------------------------------
 
 /// Text over its limit is rejected before sending, counted in code points like the server.

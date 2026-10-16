@@ -74,14 +74,16 @@ struct IncomingCallView: View {
                 AvatarView(account: ring.from, size: avatarSize, onMoment: true)
             }
             .frame(width: avatarSize * 1.9, height: avatarSize * 1.9)
-            Text(ring.from.label)
-                .font(RingFont.display(compact ? 32 : 36))
-                .foregroundStyle(Palette.momentForeground)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.6)
-            if ring.from.hasDisplayName {
-                Text(ring.from.id).pixelID(12, color: Palette.momentMuted)
+            VStack(spacing: 6) {
+                Text(ring.from.label)
+                    .font(RingFont.display(compact ? 32 : 36))
+                    .foregroundStyle(Palette.momentForeground)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.6)
+                if ring.from.hasDisplayName {
+                    Text(ring.from.id).pixelID(13, color: Palette.momentMuted)
+                }
             }
             HStack(spacing: 8) {
                 KindBadge(account: ring.from, onMoment: true)
@@ -338,14 +340,16 @@ struct OutgoingCallView: View {
                     AvatarView(account: person, size: 120)
                 }
                 .frame(width: 230, height: 230)
-                Text(person.label)
-                    .font(RingFont.display(Metrics.isTouch ? 36 : 44))
-                    .foregroundStyle(Palette.ink)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.6)
-                if person.hasDisplayName {
-                    Text(person.id).pixelID(12)
+                VStack(spacing: 6) {
+                    Text(person.label)
+                        .font(RingFont.display(Metrics.isTouch ? 36 : 44))
+                        .foregroundStyle(Palette.ink)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.6)
+                    if person.hasDisplayName {
+                        Text(person.id).pixelID(13)
+                    }
                 }
                 KindBadge(account: person)
                 Text(status)
@@ -460,16 +464,21 @@ struct InCallView: View {
                                 .frame(width: size, height: size)
                             AvatarView(account: person, size: size)
                         }
-                        Text(person.label)
-                            .font(RingFont.display(people.count == 1 ? 30 : 20))
-                            .foregroundStyle(Palette.ink)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        if person.isSilicon {
-                            KindBadge(account: person)
-                        } else if person.hasDisplayName {
-                            Text(person.id).pixelID(10)
+                        VStack(spacing: 4) {
+                            Text(person.label)
+                                .font(RingFont.display(people.count == 1 ? 30 : 20))
+                                .foregroundStyle(Palette.ink)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                            // The id under the name (`si:tos`, `c:alice`); a nameless account already shows it.
+                            if person.hasDisplayName {
+                                Text(person.id)
+                                    .pixelID(people.count == 1 ? 12 : 11)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
                         }
+                        if person.isSilicon { KindBadge(account: person) }
                     }
                     .frame(maxWidth: 200)
                     .accessibilityElement(children: .combine)

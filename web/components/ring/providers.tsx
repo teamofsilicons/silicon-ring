@@ -4,13 +4,14 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, type ReactNode } from 'react';
 import { SiliconProvider, type SiliconLinkProps } from '@teamofsilicons/silicon-ui/provider';
-import { ToastStack, ToastStackProvider } from '@teamofsilicons/silicon-ui/toast-stack';
+import { ToastStackProvider } from '@teamofsilicons/silicon-ui/toast-stack';
 import { applyAppearance, readAppearance } from '@/lib/theme';
 import { DialerProvider } from './dialer';
 import { IncomingCallLayer } from './incoming-call';
 import { RingProvider, useRing } from './ring-context';
 import { Shell } from './shell';
 import { SignIn, SiliconNotice, Splash, Unreachable } from './sign-in';
+import { Toasts } from './toasts';
 
 function SiliconNextLink(props: SiliconLinkProps) {
   return <Link {...props} />;
@@ -62,7 +63,7 @@ export function Providers({ children }: { children: ReactNode }) {
         <RingProvider>
           <AppFrame>{children}</AppFrame>
         </RingProvider>
-        <ToastStack position="bottom-center" />
+        <Toasts />
       </ToastStackProvider>
     </SiliconProvider>
   );

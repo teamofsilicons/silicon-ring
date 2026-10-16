@@ -248,7 +248,10 @@ pub async fn profile(ctx: &Ctx, target: Option<String>) -> CliResult<()> {
         if !on_ring {
             text.push_str("\nNot on Ring yet; a call still rings them once they sign in.");
         }
-        text.push_str(&format!("\nCall: ring call init {}", account.id));
+        // Ring refuses a call to yourself, so only someone else gets the hint.
+        if account.uuid != signed.session.account.uuid {
+            text.push_str(&format!("\nCall: ring call init {}", account.id));
+        }
         text
     });
     Ok(())

@@ -14,8 +14,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::json;
 
 use super::{
-    CallData, Effects, InvitationRow, enum_str, insert_invitation, load, render_invitation,
-    set_invitation_state,
+    CallData, Effects, InvitationRow, ParticipantRow, enum_str, insert_invitation, load,
+    render_invitation, set_invitation_state,
 };
 use crate::accounts;
 use crate::app::AppState;
@@ -181,6 +181,41 @@ fn ting_busy(
     Ok(())
 }
 
+/// A representative that was started and has not stopped.
+fn rep_running(p: &ParticipantRow) -> bool {
+    matches!(
+        p.rep_status,
+        Some(RepresentativeStatus::Starting | RepresentativeStatus::Live)
+    )
+}
+
+/// Stops the running representatives of a call nobody answered (a silicon caller's, started while
+/// ringing so it is ready when the callee answers).
+fn stop_unanswered_representatives(
+    tx: &Connection,
+    data: &CallData,
+    fx: &mut Effects,
+) -> rusqlite::Result<()> {
+    if data.call.answered_at.is_some() {
+        return Ok(());
+    }
+    let ringid = data.call.ringid.as_str();
+    for p in data
+        .joined()
+        .filter(|p| data.is_silicon(&p.account_uuid) && rep_running(p))
+    {
+        tx.execute(
+            "UPDATE participants SET rep_status = 'ended' WHERE ringid = ?1 AND account_uuid = ?2",
+            params![ringid, p.account_uuid],
+        )?;
+        fx.media.push(ToMedia::RepresentativeStop {
+            ringid: ringid.to_string(),
+            silicon_uuid: p.account_uuid.clone(),
+        });
+    }
+    Ok(())
+}
+
 /// Starts the representative of each listed silicon (status `starting`) with fresh tokens.
 fn start_representatives(
     app: &AppState,
@@ -270,6 +305,7 @@ pub fn end_call_tx(
         )?;
         fx.stop(inv, RingingStoppedReason::Cancelled, None);
     }
+    stop_unanswered_representatives(tx, data, fx)?;
     let was_recording = data.call.recording_status == ring_proto::RecordingStatus::Recording;
     tx.execute(
         "UPDATE calls SET state = 'ended', ended_at = ?2, end_reason = ?3,
@@ -385,6 +421,7 @@ fn enter_voicemail(
         "UPDATE calls SET state = 'voicemail', voicemail_reason = ?2, decline_reason = ?3 WHERE ringid = ?1",
         params![ringid, reason.as_str(), decline_reason],
     )?;
+    stop_unanswered_representatives(tx, data, fx)?;
     if data.is_silicon(caller_uuid) {
         let caller = data.account(caller_uuid);
         let payload = json!({
@@ -613,6 +650,11 @@ pub async fn create(app: &AppState, auth: &Auth, req: CreateCall) -> ApiResult<C
             }
             fx.incoming.push(inv.invitation_id.clone());
             fx.schedule_expiry.push(inv.clone());
+            // A silicon caller's representative connects while the call rings, so it is ready
+            // to speak the moment the callee answers (ring-media holds the start text until then).
+            if silicon {
+                start_representatives(app, tx, &ringid, std::slice::from_ref(&caller.uuid), &mut fx)?;
+            }
         }
         Ok(inv)
     });
@@ -631,6 +673,13 @@ pub async fn create(app: &AppState, auth: &Auth, req: CreateCall) -> ApiResult<C
         }
     };
     tracing::info!(ringid = %ringid, caller_kind = caller.kind.as_str(), callee_kind = callee.kind.as_str(), "call created");
+    if !silicon && invitation.state == InvitationState::Ringing {
+        // A carbon caller who reaches voicemail hears the callee's greeting: have it ready.
+        match app.db.with(|c| settings::load(c, &callee.uuid)) {
+            Ok(stored) => settings::prepare_greetings(app, &stored.settings, &callee),
+            Err(error) => tracing::warn!(%error, "could not read the callee's settings"),
+        }
+    }
     fx.apply(app, &ringid).await;
     if let Some(grant) = &media {
         expect_media(app, &ringid, &caller.uuid, &grant.identity);
@@ -816,8 +865,10 @@ pub async fn accept(
             fx.entry(entry, None);
         }
         let after = load(tx, ringid)?.ok_or_else(ApiError::internal)?;
+        // A silicon caller's representative is usually running already (started while ringing).
+        let prewarmed = after.joined().any(|p| after.is_silicon(&p.account_uuid) && rep_running(p));
         let to_start: Vec<String> = if first_answer {
-            after.joined().filter(|p| after.is_silicon(&p.account_uuid)).map(|p| p.account_uuid.clone()).collect()
+            after.joined().filter(|p| after.is_silicon(&p.account_uuid) && !rep_running(p)).map(|p| p.account_uuid.clone()).collect()
         } else if silicon {
             vec![account.uuid.clone()]
         } else {
@@ -825,7 +876,8 @@ pub async fn accept(
         };
         if first_answer {
             start_recorder(app, tx, &after, &mut fx)?;
-        } else {
+        }
+        if !first_answer || prewarmed {
             fx.media.push(ToMedia::RosterChanged { ringid: ringid.to_string(), roster: after.roster(), joined: Some(account.clone()), left: None });
         }
         start_representatives(app, tx, ringid, &to_start, &mut fx)?;
@@ -1199,17 +1251,19 @@ pub async fn media(app: &AppState, auth: &Auth, ringid: &str) -> ApiResult<CallW
     let mut fx = Effects::default();
     if participant.device_id.as_deref() != Some(device_id.as_str()) {
         let old_identity = participant.media_identity.clone();
-        app.db.with(|c| {
+        let device = app.db.with(|c| {
             c.execute(
                 "UPDATE participants SET device_id = ?3, media_identity = ?4 WHERE ringid = ?1 AND account_uuid = ?2",
                 params![ringid, account.uuid, device_id, grant.identity],
-            )
+            )?;
+            super::device_ref(c, &device_id)
         })?;
         fx.events.push((
             account.uuid.clone(),
             Event::CallHandoff {
                 ringid: ringid.to_string(),
                 device_id: device_id.clone(),
+                device: Some(device),
             },
         ));
         fx.media.push(ToMedia::AuthorityChanged {
@@ -1425,6 +1479,12 @@ pub async fn representative_status(
         let Some(data) = load(tx, ringid)? else { return Ok(()) };
         let Some(p) = data.participant(silicon_uuid) else { return Ok(()) };
         if data.call.state == CallState::Ended || !p.joined() || p.rep_status == Some(status) {
+            return Ok(());
+        }
+        // A representative stopped when the call went to voicemail may still report in late.
+        if data.call.state == CallState::Voicemail
+            && matches!(status, RepresentativeStatus::Starting | RepresentativeStatus::Live)
+        {
             return Ok(());
         }
         tx.execute(

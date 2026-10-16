@@ -13,6 +13,7 @@ import { CallControl } from './exceptions/call-control';
 import { useIncomingRings } from './hooks';
 import { NameBlock, PersonAvatar, Pixel } from './identity';
 import { useRing, useRingStore } from './ring-context';
+import { keepClearOfToasts } from './toasts';
 import styles from './call.module.css';
 
 const REASONS = ['Can’t talk right now', 'In a meeting', 'Call you back soon', 'Text me instead'];
@@ -152,7 +153,7 @@ function IncomingCallSheet({ ring, more }: { ring: IncomingRing; more: number })
         ) : null}
       </div>
 
-      <div className={styles.momentActions}>
+      <div className={styles.momentActions} ref={keepClearOfToasts}>
         <CallControl
           tone="danger"
           label={declining ? 'Decline, no reason' : 'Decline'}

@@ -1,7 +1,7 @@
 //! `ring call watch` and `--live`: the transcript so far, then live entries and events until the
 //! call ends or Ctrl-C. Watching never changes the call.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use ring_core::events::Update;
 use ring_proto::{Call, CallState, EntryKind, Event, TranscriptEntry};
@@ -28,6 +28,10 @@ struct Watcher<'a> {
     last_seq: u64,
     state: CallState,
     delegations: HashSet<String>,
+    /// Speech segments already shown: a segment is final once, so a repeat is a duplicate.
+    segments: HashSet<String>,
+    /// The last line shown per voicemail, so repeated updates print only real changes.
+    voicemails: HashMap<String, String>,
     printed_end: bool,
 }
 
@@ -43,6 +47,8 @@ async fn stream(ctx: &Ctx, signed: &SignedIn, ringid: &str, snapshot: bool) -> C
         last_seq: 0,
         state: call.state,
         delegations: HashSet::new(),
+        segments: HashSet::new(),
+        voicemails: HashMap::new(),
         printed_end: false,
     };
     if snapshot {
@@ -152,6 +158,14 @@ impl Watcher<'_> {
             return;
         }
         self.last_seq = self.last_seq.max(entry.seq);
+        // Interim speech (`transcript.partial`) is never shown, so each segment prints once,
+        // when it is final. Servers that predate `segment_id` simply skip this check.
+        if entry.kind == EntryKind::Speech
+            && let Some(segment) = entry.segment_id().filter(|id| !id.is_empty())
+            && !self.segments.insert(segment.to_owned())
+        {
+            return;
+        }
         if entry.kind == EntryKind::CallEnded {
             self.printed_end = true;
         }
@@ -162,16 +176,19 @@ impl Watcher<'_> {
             });
             return;
         }
-        output::line(&output::entry(&entry));
         if entry.kind == EntryKind::Delegation
             && let Some(id) = entry.data.get("delegation_id").and_then(|v| v.as_str())
         {
-            self.delegations.insert(id.to_owned());
-            output::line(&format!(
-                "  answer: ring send {} commentary \"…\" --delegation-id {id}",
-                self.ringid
-            ));
+            // `delegation.created` may already have shown it. An ended call takes no answers.
+            if self.delegations.insert(id.to_owned()) {
+                output::line(&output::entry(&entry));
+                if self.state != CallState::Ended {
+                    output::line(&answer_hint(self.ringid, id));
+                }
+            }
+            return;
         }
+        output::line(&output::entry(&entry));
     }
 
     /// Handles one live event for this call. Returns true when the call is over.
@@ -201,12 +218,11 @@ impl Watcher<'_> {
                     output::json(&Event::DelegationCreated { delegation });
                 } else if self.delegations.insert(delegation.delegation_id.clone()) {
                     output::line(&format!(
-                        "» delegation {}: {}\n  answer: ring send {} commentary \"…\" --delegation-id {}",
+                        "» delegation {}: {}",
                         delegation.delegation_id,
-                        delegation.request.as_deref().unwrap_or("(no request text)"),
-                        self.ringid,
-                        delegation.delegation_id
+                        output::delegation_request(&delegation)
                     ));
+                    output::line(&answer_hint(self.ringid, &delegation.delegation_id));
                 }
                 Ok(false)
             }
@@ -219,10 +235,15 @@ impl Watcher<'_> {
                             output::line(&format!("· ringing stopped ({})", reason.as_str()))
                         }
                         Event::VoicemailReceived { voicemail }
-                        | Event::VoicemailUpdated { voicemail } => output::line(&format!(
-                            "· voicemail {}",
-                            output::voicemail_row(voicemail).trim_start()
-                        )),
+                        | Event::VoicemailUpdated { voicemail } => {
+                            let line = output::voicemail_event(voicemail, &self.me);
+                            let previous = self
+                                .voicemails
+                                .insert(voicemail.voicemail_id.clone(), line.clone());
+                            if previous.as_ref() != Some(&line) {
+                                output::line(&line);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -257,6 +278,7 @@ impl Watcher<'_> {
 
     /// Prints whatever the transcript still holds, then the end of the call.
     async fn end(&mut self, signed: &SignedIn, call: &Call) -> CliResult<()> {
+        self.state = call.state;
         self.backfill(signed).await?;
         if self.json {
             output::json(&Event::CallEnded { call: call.clone() });
@@ -282,4 +304,8 @@ impl Watcher<'_> {
             call.end_reason.map(|r| r.as_str()).unwrap_or("completed")
         ));
     }
+}
+
+fn answer_hint(ringid: &str, delegation_id: &str) -> String {
+    format!("  answer: ring send {ringid} commentary \"…\" --delegation-id {delegation_id}")
 }

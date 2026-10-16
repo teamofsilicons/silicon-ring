@@ -3,9 +3,9 @@
 use std::io::Write;
 
 use ring_proto::{
-    Account, Call, CallState, ContextApproval, ContextPreview, Delegation, Device, EntryKind,
-    Invitation, InvitationState, Participant, ParticipantState, Settings, Time, TranscriptEntry,
-    Voicemail,
+    Account, Call, CallState, ContextApproval, ContextPreview, Delegation, Device, DeviceRef,
+    EntryKind, Invitation, InvitationState, Participant, ParticipantState, Settings, Time,
+    TranscriptEntry, Voicemail,
 };
 use serde::Serialize;
 
@@ -193,21 +193,30 @@ fn recording_status(call: &Call) -> &'static str {
     use ring_proto::RecordingStatus as R;
     match call.recording.status {
         R::None => "none",
-        R::Recording => "recording",
+        R::Recording => "in progress",
         R::Processing => "processing",
         R::Ready => "ready",
         R::Failed => "failed",
     }
 }
 
+/// A device by its name, else its platform, else its id.
+pub fn device_label(device: &DeviceRef) -> &str {
+    device
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .or(device.platform.map(|p| p.as_str()))
+        .unwrap_or(&device.device_id)
+}
+
 fn participant(p: &Participant) -> String {
-    let state = match p.state {
-        ParticipantState::Joined => "joined",
-        ParticipantState::Left => "left",
-    };
-    let mut row = format!("  {}  {state} {}", who(&p.account), time(&p.joined_at));
-    if let Some(left) = p.left_at {
-        row.push_str(&format!(", left {}", time(&left)));
+    let mut row = format!("  {}  joined {}", who(&p.account), time(&p.joined_at));
+    match (p.state, p.left_at) {
+        (_, Some(left)) => row.push_str(&format!(", left {}", time(&left))),
+        (ParticipantState::Left, None) => row.push_str(", left"),
+        (ParticipantState::Joined, None) => {}
     }
     if let Some(rep) = &p.representative {
         let status = match rep.status {
@@ -219,10 +228,7 @@ fn participant(p: &Participant) -> String {
         row.push_str(&format!("  representative {status}, voice {}", rep.voice));
     }
     if let Some(device) = &p.device {
-        row.push_str(&format!(
-            "  on {}",
-            device.name.as_deref().unwrap_or(&device.device_id)
-        ));
+        row.push_str(&format!("  on {}", device_label(device)));
     }
     if let Some(by) = &p.invited_by {
         row.push_str(&format!("  invited by {}", by.id));
@@ -239,7 +245,14 @@ pub fn invitation(i: &Invitation) -> String {
         i.state.as_str()
     );
     if i.state == InvitationState::Ringing {
+        if i.silenced {
+            row.push_str(" (silenced)");
+        }
         row.push_str(&format!(" until {}", time(&i.expires_at)));
+    } else if let Some(answered) = i.answered_at
+        && i.state == InvitationState::Accepted
+    {
+        row.push_str(&format!(" {}", time(&answered)));
     }
     if let Some(reason) = &i.reason {
         row.push_str(&format!(": {reason}"));
@@ -249,11 +262,13 @@ pub fn invitation(i: &Invitation) -> String {
 
 // ---- transcript ---------------------------------------------------------------------------
 
+/// One transcript line. Entries after the answer are stamped with their offset into the call
+/// (`01:05`); earlier ones (ringing, declines) with their UTC clock time (`09:30:12Z`).
 pub fn entry(e: &TranscriptEntry) -> String {
     let at = e
         .offset_ms
         .map(offset)
-        .unwrap_or_else(|| e.at.0.format("%H:%M:%S").to_string());
+        .unwrap_or_else(|| e.at.0.format("%H:%M:%SZ").to_string());
     let actor = e.actor.as_ref().map(who).unwrap_or_else(|| "Ring".into());
     let text = e.text.as_deref().unwrap_or("");
     let data = |key: &str| e.data.get(key).and_then(|v| v.as_str()).map(str::to_owned);
@@ -287,14 +302,15 @@ pub fn entry(e: &TranscriptEntry) -> String {
             Some(reason) => format!("· {actor} declined: {reason}"),
             None => format!("· {actor} declined"),
         },
-        EntryKind::Missed => format!("· missed by {actor}"),
+        EntryKind::Missed => format!("· {actor} did not answer"),
         EntryKind::Busy => format!("· {actor} was busy"),
         EntryKind::Delegation => format!(
             "» delegation {}: {}",
             data("delegation_id").unwrap_or_default(),
             data("request")
                 .or_else(|| e.text.clone())
-                .unwrap_or_default()
+                .filter(|r| !r.trim().is_empty())
+                .unwrap_or_else(|| NO_REQUEST.into())
         ),
         EntryKind::Thinking => format!("  thinking{}: {text}", reply_to(e)),
         EntryKind::Commentary => format!("  commentary{}: {text}", reply_to(e)),
@@ -319,6 +335,16 @@ fn reply_to(e: &TranscriptEntry) -> String {
         .unwrap_or_default()
 }
 
+const NO_REQUEST: &str = "(no request text)";
+
+/// What a delegation asks for, or a placeholder when the representative gave no text.
+pub fn delegation_request(d: &Delegation) -> &str {
+    d.request
+        .as_deref()
+        .filter(|r| !r.trim().is_empty())
+        .unwrap_or(NO_REQUEST)
+}
+
 pub fn delegation(d: &Delegation, verbose: bool) -> String {
     let status = match d.status {
         ring_proto::DelegationStatus::Open => "open",
@@ -328,7 +354,7 @@ pub fn delegation(d: &Delegation, verbose: bool) -> String {
         "{}  {status}  {}  {}",
         d.delegation_id,
         time(&d.created_at),
-        d.request.as_deref().unwrap_or("(no request text)")
+        delegation_request(d)
     )];
     if verbose {
         out.push(format!("call {}", d.ringid));
@@ -402,34 +428,67 @@ pub fn approval(a: &ContextApproval) -> String {
 
 pub fn voicemail_row(v: &Voicemail) -> String {
     let unread = if v.read { " " } else { "•" };
-    let length = v
-        .duration_ms
-        .map(|ms| format!(" {}", duration_ms(ms)))
-        .unwrap_or_default();
-    let transcript = v
-        .transcript
-        .as_deref()
-        .map(|t| format!("  \"{}\"", preview(t, 60)))
-        .unwrap_or_default();
     format!(
-        "{unread} {}  {}  {}  {}{length}{transcript}",
+        "{unread} {}  {}  {}  {}{}",
         v.voicemail_id,
         time(&v.created_at),
         who(&v.from),
-        v.reason.as_str()
+        v.reason.as_str(),
+        voicemail_tail(v)
     )
 }
 
-pub fn voicemail_details(v: &Voicemail) -> String {
+/// `  12.3s  "transcript…"`, each part only when known.
+fn voicemail_tail(v: &Voicemail) -> String {
+    let mut tail = String::new();
+    if let Some(ms) = v.duration_ms {
+        tail.push_str(&format!("  {}", duration_ms(ms)));
+    }
+    if let Some(text) = v.transcript.as_deref().filter(|t| !t.trim().is_empty()) {
+        tail.push_str(&format!("  \"{}\"", preview(text, 60)));
+    }
+    tail
+}
+
+fn audio_status(v: &Voicemail) -> &'static str {
+    match v.audio_status {
+        ring_proto::AudioStatus::Recording => "recording",
+        ring_proto::AudioStatus::Processing => "processing",
+        ring_proto::AudioStatus::Ready => "ready",
+        ring_proto::AudioStatus::Failed => "failed",
+    }
+}
+
+/// A voicemail event while watching a call, from `me`'s side: one I received or one I left.
+pub fn voicemail_event(v: &Voicemail, me: &str) -> String {
+    let party = if v.to.uuid == me {
+        format!("from {}", who(&v.from))
+    } else {
+        format!("for {}", who(&v.to))
+    };
+    format!(
+        "· voicemail {} {party}, audio {}{}",
+        v.voicemail_id,
+        audio_status(v),
+        voicemail_tail(v)
+    )
+}
+
+/// One voicemail in full, from `me`'s side: one I received, or one I left for someone.
+pub fn voicemail_details(v: &Voicemail, me: &str) -> String {
+    let (party, when) = if v.from.uuid == me && v.to.uuid != me {
+        (format!("to {}", who(&v.to)), "left    ")
+    } else {
+        (format!("from {}", who(&v.from)), "received")
+    };
     let mut out = vec![
         format!(
-            "{}  from {}  {}",
+            "{}  {party}  {}",
             v.voicemail_id,
-            who(&v.from),
             if v.read { "read" } else { "unread" }
         ),
         format!(
-            "received   {}  ({}, call {})",
+            "{when}   {}  ({}, call {})",
             time(&v.created_at),
             v.reason.as_str(),
             v.ringid
@@ -441,13 +500,7 @@ pub fn voicemail_details(v: &Voicemail) -> String {
     if let Some(ms) = v.duration_ms {
         out.push(format!("length     {}", duration_ms(ms)));
     }
-    let audio = match v.audio_status {
-        ring_proto::AudioStatus::Recording => "recording",
-        ring_proto::AudioStatus::Processing => "processing",
-        ring_proto::AudioStatus::Ready => "ready",
-        ring_proto::AudioStatus::Failed => "failed",
-    };
-    out.push(format!("audio      {audio}"));
+    out.push(format!("audio      {}", audio_status(v)));
     match (&v.transcript, v.transcript_status) {
         (Some(text), _) => {
             out.push("transcript".into());
@@ -511,16 +564,18 @@ pub fn settings(s: &Settings) -> String {
 pub fn device(d: &Device) -> String {
     let marker = if d.current { "*" } else { " " };
     let platform = d.platform.map(|p| p.as_str()).unwrap_or("unknown");
-    let seen = d
-        .last_seen_at
-        .as_ref()
-        .map(time)
-        .unwrap_or_else(|| "never".into());
-    let online = if d.online { "online" } else { "offline" };
+    let presence = match (d.online, &d.last_seen_at) {
+        (true, _) => "online".to_owned(),
+        (false, Some(seen)) => format!("offline, last seen {}", time(seen)),
+        (false, None) => "offline, never seen".to_owned(),
+    };
     format!(
-        "{marker} {}  {}  {platform}  {online}  last seen {seen}{}",
+        "{marker} {}  {}  {platform}  {presence}{}",
         d.device_id,
-        d.name.as_deref().unwrap_or("(unnamed)"),
+        d.name
+            .as_deref()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or("(unnamed)"),
         if d.ring_enabled { "" } else { "  ringing off" }
     )
 }

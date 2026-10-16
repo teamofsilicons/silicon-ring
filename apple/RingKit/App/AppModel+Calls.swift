@@ -23,7 +23,7 @@ extension AppModel {
                     ringid: created.call.ringid, localUUID: UUID(), role: .outgoing, myUUID: myUUID,
                     call: created.call, invitationID: created.invitation.invitationID)
                 activeCall = session
-                liveCalls[created.call.ringid] = created.call
+                remember(created.call)
                 callSystem?.began(session)
                 updateRingback()
                 if session.phase == .ended {
@@ -143,7 +143,7 @@ extension AppModel {
                 ringid: ring.ringid, localUUID: ring.callUUID, role: .incoming, myUUID: myUUID,
                 call: accepted.call, invitationID: ring.invitationID)
             activeCall = session
-            liveCalls[ring.ringid] = accepted.call
+            remember(accepted.call)
             Task { await join(session, grant: grant) }
             return true
         } catch {
@@ -209,7 +209,7 @@ extension AppModel {
         do {
             let call = try await api.leave(session.ringid)
             session.call = call
-            liveCalls[call.ringid] = call.state.isLive ? call : nil
+            remember(call)
         } catch {
             handle(error, silently: true)
         }
@@ -264,7 +264,7 @@ extension AppModel {
                 let session = CallSession(
                     ringid: call.ringid, localUUID: UUID(), role: .handoff, myUUID: myUUID, call: moved.call, invitationID: nil)
                 activeCall = session
-                liveCalls[call.ringid] = moved.call
+                remember(moved.call)
                 movedNotice = nil
                 callSystem?.began(session)
                 callSystem?.connected(session)
@@ -321,7 +321,7 @@ extension AppModel {
                 guard activeCall === session, session.isLive else { return }
                 if let mine = call.participant(uuid: session.myUUID), mine.state == .joined,
                    let device = mine.device, device.deviceID != myDeviceID {
-                    handoffOccurred(ringid: call.ringid, deviceID: device.deviceID)
+                    handoffOccurred(ringid: call.ringid, deviceID: device.deviceID, device: device)
                     return
                 }
             }
@@ -341,19 +341,10 @@ extension AppModel {
     // MARK: State changes from the server
 
     func callChanged(_ call: Call) {
-        if call.state.isLive {
-            liveCalls[call.ringid] = call
-        } else {
-            liveCalls[call.ringid] = nil
-        }
+        remember(call)
         #if DEBUG
         DevHooks.callChanged(model: self)
         #endif
-        if let index = recents.firstIndex(where: { $0.ringid == call.ringid }) {
-            recents[index] = call
-        } else if call.state == .ended {
-            scheduleRecentsRefresh()
-        }
 
         // Ringing that this device shows but the server no longer considers ringing.
         for ring in rings.values where ring.ringid == call.ringid {
@@ -371,7 +362,7 @@ extension AppModel {
             if let device = mine.device, mine.state == .joined, device.deviceID != myDeviceID,
                Date().timeIntervalSince(session.startedAt) > 3 {
                 // The audio moved to another of this account's devices (in case call.handoff was missed).
-                handoffOccurred(ringid: call.ringid, deviceID: device.deviceID)
+                handoffOccurred(ringid: call.ringid, deviceID: device.deviceID, device: device)
                 return
             }
             if mine.state == .left {
@@ -391,24 +382,47 @@ extension AppModel {
         }
     }
 
-    /// The server moved this account's audio to another device.
-    func handoffOccurred(ringid: String, deviceID: String) {
+    /// The server moved this account's audio to another device ("Moved to Pixel 8").
+    func handoffOccurred(ringid: String, deviceID: String, device: DeviceRef? = nil) {
         guard let session = activeCall, session.ringid == ringid, deviceID != myDeviceID, session.isLive else { return }
-        let target = session.call.participant(uuid: session.myUUID)?.device
-        let label = (target?.deviceID == deviceID ? target?.platform?.label : nil)
-            ?? devices.first { $0.deviceID == deviceID }?.platform?.label
-            ?? "another device"
+        let known = session.call.participant(uuid: session.myUUID)?.device
+        let target = device ?? (known?.deviceID == deviceID ? known : nil) ?? DeviceRef(deviceID: deviceID)
+        let notice = "Moved to \(deviceLabel(target))"
         session.phase = .ended
         session.endedAt = Date()
-        session.endSummary = "Moved to \(label)"
-        movedNotice = "Moved to \(label)"
+        session.endSummary = notice
+        movedNotice = notice
         Tones.shared.stopRingback()
         Task { await media.disconnect() }
         callSystem?.ended(session, cause: .answeredElsewhere)
         scheduleDismissal(session, after: 1.2)
         Task {
             try? await Task.sleep(for: .seconds(8))
-            if movedNotice == "Moved to \(label)" { movedNotice = nil }
+            if movedNotice == notice { movedNotice = nil }
+        }
+    }
+
+    /// What to call one of this account's devices: its name ("Pixel 8"), from the reference or the
+    /// device list, and only failing that a platform word.
+    func deviceLabel(_ device: DeviceRef) -> String {
+        if let name = device.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty { return name }
+        let listed = devices.first { $0.deviceID == device.deviceID }
+        if let name = listed?.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty { return name }
+        return (device.platform ?? listed?.platform)?.label ?? "another device"
+    }
+
+    // MARK: Recents
+
+    /// Records the latest copy of a call: in the live calls while it is on, and in Recents always,
+    /// so a call shows there from its first event rather than only once it has ended.
+    func remember(_ call: Call) {
+        liveCalls[call.ringid] = call.state.isLive ? call : nil
+        if let index = recents.firstIndex(where: { $0.ringid == call.ringid }) {
+            recents[index] = call
+        } else {
+            // Newest first; a call older than everything loaded waits for its page.
+            let index = recents.firstIndex { $0.createdAt < call.createdAt } ?? recents.endIndex
+            if index < recents.endIndex || recentsCursor == nil { recents.insert(call, at: index) }
         }
     }
 

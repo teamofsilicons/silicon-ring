@@ -413,7 +413,9 @@ private fun Transcript(lines: List<TranscriptLine>, modifier: Modifier) {
         item { Spacer(Modifier.height(120.dp)) }
         items(lines, key = { it.key }) { line ->
             val alpha by animateFloatAsState(if (line.final) 1f else 0.6f, tween(150), label = "interim")
-            Column(Modifier.fillMaxWidth().animateItem()) {
+            // No fade-out: a line that goes away is replaced in place, and a fading copy would
+            // overlap whatever takes its slot.
+            Column(Modifier.fillMaxWidth().animateItem(fadeOutSpec = null)) {
                 if (line.system) {
                     PixelLabel(line.text, color = c.textMuted)
                 } else {

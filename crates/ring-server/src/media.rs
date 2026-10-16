@@ -2,7 +2,7 @@
 //! away are queued; on its `hello` the server re-issues the state of every live call (ring-media
 //! treats repeated starts as no-ops), then delivers the queue.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -12,7 +12,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
-use ring_proto::internal::{FromMedia, ToMedia};
+use ring_proto::internal::{FromMedia, RosterMember, ToMedia};
 use ring_proto::{AccountKind, CallState, RepresentativeStatus};
 use tokio::sync::mpsc;
 
@@ -23,11 +23,15 @@ use crate::extract::{Peer, is_direct_loopback};
 use crate::util::secret_eq;
 
 const MAX_QUEUE: usize = 5000;
+/// Distinct greetings remembered as prepared before the memory starts over.
+const MAX_PREPARED: usize = 10_000;
 
 #[derive(Default)]
 pub struct MediaLink {
     state: Mutex<LinkState>,
     next_id: AtomicU64,
+    /// Greetings (voice, text) already sent to ring-media for preparation.
+    prepared: Mutex<HashSet<(String, String)>>,
 }
 
 #[derive(Default)]
@@ -65,6 +69,33 @@ impl MediaLink {
             state.queue.pop_front();
         }
         state.queue.push_back(command);
+    }
+
+    /// Asks ring-media to synthesize and cache a voicemail greeting before anyone needs it, once
+    /// per voice and text for the life of this process. While ring-media is away nothing is sent
+    /// or remembered, so the next occasion tries again.
+    pub fn prepare_greeting(&self, voice: &str, text: &str) {
+        let key = (voice.to_string(), text.to_string());
+        let mut prepared = self.prepared.lock().unwrap_or_else(|p| p.into_inner());
+        if prepared.contains(&key) {
+            return;
+        }
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let Some((_, tx)) = &state.tx else {
+            return;
+        };
+        let command = ToMedia::GreetingPrepare {
+            voice: key.0.clone(),
+            text: key.1.clone(),
+        };
+        if let Ok(json) = serde_json::to_string(&command)
+            && tx.send(json).is_ok()
+        {
+            if prepared.len() >= MAX_PREPARED {
+                prepared.clear();
+            }
+            prepared.insert(key);
+        }
     }
 
     pub fn is_connected(&self) -> bool {
@@ -176,8 +207,9 @@ fn reissue(app: &AppState, active_rings: &[String]) -> Vec<ToMedia> {
     let live: Vec<String> = app
         .db
         .with(|c| {
-            let mut stmt =
-                c.prepare("SELECT ringid FROM calls WHERE state IN ('active', 'voicemail')")?;
+            let mut stmt = c.prepare(
+                "SELECT ringid FROM calls WHERE state IN ('ringing', 'active', 'voicemail')",
+            )?;
             let rows = stmt.query_map([], |r| r.get(0))?;
             rows.collect()
         })
@@ -195,6 +227,11 @@ fn reissue(app: &AppState, active_rings: &[String]) -> Vec<ToMedia> {
         };
         let roster = data.roster();
         match data.call.state {
+            // A silicon caller's representative waits in the room while the call rings; it has
+            // not spoken its start text yet.
+            CallState::Ringing => {
+                out.extend(representative_starts(app, &data, &roster, true));
+            }
             CallState::Active => {
                 if data.call.recording_status == ring_proto::RecordingStatus::Recording
                     && let (Some(key), Ok(token)) = (
@@ -209,34 +246,12 @@ fn reissue(app: &AppState, active_rings: &[String]) -> Vec<ToMedia> {
                         s3_key: key,
                     });
                 }
-                for p in data.joined() {
-                    let account = data.account(&p.account_uuid);
-                    if account.kind == AccountKind::Silicon {
-                        if !matches!(
-                            p.rep_status,
-                            Some(RepresentativeStatus::Starting | RepresentativeStatus::Live)
-                        ) {
-                            continue;
-                        }
-                        let Ok(token) = app.livekit.representative_token(&ringid, &account) else {
-                            continue;
-                        };
-                        out.push(ToMedia::RepresentativeStart {
-                            ringid: ringid.clone(),
-                            silicon: account,
-                            voice: p
-                                .rep_voice
-                                .clone()
-                                .unwrap_or_else(|| ring_proto::DEFAULT_VOICE.into()),
-                            context: p.rep_context.clone().unwrap_or_default(),
-                            start: None,
-                            roster: roster.clone(),
-                            token,
-                        });
-                    } else if let Some(identity) = &p.media_identity {
+                out.extend(representative_starts(app, &data, &roster, false));
+                for p in data.joined().filter(|p| !data.is_silicon(&p.account_uuid)) {
+                    if let Some(identity) = &p.media_identity {
                         out.push(ToMedia::AuthorityChanged {
                             ringid: ringid.clone(),
-                            account_uuid: account.uuid.clone(),
+                            account_uuid: p.account_uuid.clone(),
                             identity: identity.clone(),
                         });
                     }
@@ -309,6 +324,49 @@ fn reissue(app: &AppState, active_rings: &[String]) -> Vec<ToMedia> {
             }
             _ => {}
         }
+    }
+    out
+}
+
+/// `representative.start` for each running representative of a call; `with_start` when its start
+/// text has not been spoken yet (the call is still ringing).
+fn representative_starts(
+    app: &AppState,
+    data: &calls::CallData,
+    roster: &[RosterMember],
+    with_start: bool,
+) -> Vec<ToMedia> {
+    let ringid = &data.call.ringid;
+    let mut out = Vec::new();
+    for p in data.joined() {
+        let account = data.account(&p.account_uuid);
+        if account.kind != AccountKind::Silicon
+            || !matches!(
+                p.rep_status,
+                Some(RepresentativeStatus::Starting | RepresentativeStatus::Live)
+            )
+        {
+            continue;
+        }
+        let Ok(token) = app.livekit.representative_token(ringid, &account) else {
+            continue;
+        };
+        out.push(ToMedia::RepresentativeStart {
+            ringid: ringid.clone(),
+            silicon: account,
+            voice: p
+                .rep_voice
+                .clone()
+                .unwrap_or_else(|| ring_proto::DEFAULT_VOICE.into()),
+            context: p.rep_context.clone().unwrap_or_default(),
+            start: if with_start {
+                p.rep_start.clone()
+            } else {
+                None
+            },
+            roster: roster.to_vec(),
+            token,
+        });
     }
     out
 }

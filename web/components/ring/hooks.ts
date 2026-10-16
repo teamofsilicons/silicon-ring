@@ -34,6 +34,20 @@ export function useMediaCall() {
   return { media, call };
 }
 
+/**
+ * Names the tab for a screen that stands in for the route's own page (sign-in, loading), which would otherwise keep the
+ * route's title, such as "Recents". The route's title comes back when the screen goes.
+ */
+export function useDocumentTitle(title: string) {
+  useEffect(() => {
+    const previous = document.title;
+    document.title = title;
+    return () => {
+      if (document.title === title) document.title = previous;
+    };
+  }, [title]);
+}
+
 /** Tracks a CSS media query on the client. */
 export function useMediaQuery(query: string) {
   const [matches, setMatches] = useState(false);

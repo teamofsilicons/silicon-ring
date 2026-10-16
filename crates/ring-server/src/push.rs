@@ -487,6 +487,7 @@ fn person(account: &ring_proto::Account) -> PushPerson {
     PushPerson {
         uuid: account.uuid.clone(),
         id: account.id.clone(),
+        kind: Some(account.kind),
         display_name: account.display_name.clone(),
         pfp_url: account.pfp_url.clone(),
     }
@@ -506,8 +507,15 @@ fn fcm_data(payload: &Value) -> Map<String, Value> {
             o.iter()
                 .filter(|(_, v)| !v.is_null())
                 .map(|(k, v)| {
-                    let key = if k == "from" { "caller".to_string() } else { k.clone() };
-                    let value = v.as_str().map(String::from).unwrap_or_else(|| v.to_string());
+                    let key = if k == "from" {
+                        "caller".to_string()
+                    } else {
+                        k.clone()
+                    };
+                    let value = v
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| v.to_string());
                     (key, Value::String(value))
                 })
                 .collect()
@@ -554,7 +562,9 @@ pub fn incoming(app: &AppState, data: &CallData, inv: &InvitationRow) {
             .joined()
             .map(|p| data.account(&p.account_uuid))
             .map(|a| PushParticipant {
+                uuid: Some(a.uuid),
                 id: a.id,
+                kind: Some(a.kind),
                 display_name: a.display_name,
             })
             .collect(),

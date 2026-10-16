@@ -12,6 +12,19 @@ function personName(person) {
   return (person.display_name && person.display_name.trim()) || person.id || 'Someone';
 }
 
+// Push people carry uuid, id and display_name; newer servers add kind ("carbon" or "silicon"), and uuid to participants.
+function samePerson(a, b) {
+  if (a.uuid && b.uuid) return a.uuid === b.uuid;
+  if (a.id && b.id) return a.id === b.id;
+  return personName(a) === personName(b);
+}
+
+function callingLine(from, others) {
+  const lead = from.kind === 'silicon' ? 'Silicon calling you' : 'Calling you';
+  const id = from.id ? ` · ${from.id}` : '';
+  return others.length ? `${lead} with ${others.join(', ')}${id}` : `${lead}${id}`;
+}
+
 async function visibleClient() {
   const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
   return windows.find(client => client.visibilityState === 'visible') || null;
@@ -27,14 +40,15 @@ async function handlePush(payload) {
     case 'call.incoming': {
       // An open, visible Ring tab is already ringing in the page itself.
       if (await visibleClient()) return;
-      const name = personName(payload.from);
-      const others = (payload.participants || []).map(personName).filter(other => other !== name);
-      await self.registration.showNotification(name, {
-        body: others.length ? `Calling you with ${others.join(', ')} · ${payload.from.id}` : `Calling you · ${payload.from.id}`,
+      const from = payload.from || {};
+      // Participants are everyone already on the call, the caller among them.
+      const others = (payload.participants || []).filter(person => person && !samePerson(person, from)).map(personName);
+      await self.registration.showNotification(personName(from), {
+        body: callingLine(from, others),
         tag: payload.ringid,
         renotify: true,
         requireInteraction: true,
-        icon: (payload.from && payload.from.pfp_url) || ICON,
+        icon: from.pfp_url || ICON,
         badge: BADGE,
         timestamp: Date.now(),
         actions: [

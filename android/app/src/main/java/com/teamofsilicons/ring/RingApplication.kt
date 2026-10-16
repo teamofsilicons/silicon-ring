@@ -92,7 +92,7 @@ class AppGraph(val app: Application) {
     fun onForeground() {
         realtime.hold(HOLD_APP)
         repo.refreshAll()
-        if (sessions.current != null) calls.reconcile()
+        if (sessions.current != null) calls.onAppForeground()
     }
 
     fun onBackground() {

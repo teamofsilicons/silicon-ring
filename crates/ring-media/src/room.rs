@@ -165,6 +165,12 @@ impl Voice {
         self.queue.pushed.notify_one();
     }
 
+    /// Queues a prepared clip in full, past the backlog limit, so none of it is cut.
+    pub fn push_clip(&self, samples: &[i16]) {
+        self.queue.samples.lock().unwrap().extend(samples);
+        self.queue.pushed.notify_one();
+    }
+
     pub fn queued(&self) -> usize {
         self.queue.samples.lock().unwrap().len()
     }

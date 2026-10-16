@@ -566,6 +566,12 @@ pub async fn send_message(
             return Err(ApiError::call_ended());
         }
         let p = data.participant(&uuid).filter(|p| p.joined()).ok_or_else(ApiError::not_participant)?;
+        // A silicon caller's representative is live while the call rings, but nobody can hear
+        // it until someone answers.
+        if data.call.state == CallState::Ringing {
+            return Err(ApiError::conflict("Nobody has answered this call yet.")
+                .hint("Send messages once the call is active."));
+        }
         if p.rep_status != Some(RepresentativeStatus::Live) {
             return Err(ApiError::conflict("Your representative on this call is not live.")
                 .details(json!({"representative": p.rep_status.map(|s| enum_str(&s))})));

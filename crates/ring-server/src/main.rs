@@ -141,6 +141,8 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sy
             tokio::time::sleep(Duration::from_secs(5)).await;
         } => {}
     }
+    // Tell open WebSockets to reconnect (1013) and let them say so before the process exits.
+    app.hub.shut_down(Duration::from_secs(2)).await;
     tracing::info!("stopped");
     Ok(())
 }

@@ -9,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +18,7 @@ import androidx.core.telecom.CallEndpointCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.teamofsilicons.ring.call.CallPhase
 import com.teamofsilicons.ring.call.CallUi
+import com.teamofsilicons.ring.data.Appearance
 import com.teamofsilicons.ring.ring
 import com.teamofsilicons.ring.ui.rememberCallPermissions
 import com.teamofsilicons.ring.ui.theme.RingTheme
@@ -40,6 +42,20 @@ class CallActivity : ComponentActivity() {
             val appearance by graph.prefs.appearance.collectAsStateWithLifecycle()
             val primary by graph.calls.primary.collectAsStateWithLifecycle()
             val permissions = rememberCallPermissions()
+
+            // The incoming screen is ink in both themes; the others follow the appearance. The
+            // status and navigation bar icons have to contrast with whichever is showing.
+            val systemDark = isSystemInDarkTheme()
+            val darkScreen = primary?.phase == CallPhase.Incoming || when (appearance) {
+                Appearance.System -> systemDark
+                Appearance.Light -> false
+                Appearance.Dark -> true
+            }
+            LaunchedEffect(darkScreen) {
+                val transparent = android.graphics.Color.TRANSPARENT
+                val style = if (darkScreen) SystemBarStyle.dark(transparent) else SystemBarStyle.light(transparent, transparent)
+                enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+            }
 
             LaunchedEffect(primary == null) { if (primary == null) finishAndRemoveTask() }
             LaunchedEffect(primary?.phase, primary?.route) { primary?.let(::updateProximity) ?: releaseProximity() }

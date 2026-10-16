@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useState, type CSSProperties, type ReactNode } from 'react';
-import { History, PhoneCall, Settings, Voicemail } from 'lucide-react';
+import { History, PhoneCall, Settings, Voicemail, Volume2 } from 'lucide-react';
 import { Badge } from '@teamofsilicons/silicon-ui/badge';
 import { Button } from '@teamofsilicons/silicon-ui/button';
 import { ButtonLink } from '@teamofsilicons/silicon-ui/button-link';
@@ -15,6 +15,7 @@ import { useMe, useMediaCall, useNow } from './hooks';
 import { Pixel } from './identity';
 import { useRing, useRingStore } from './ring-context';
 import { Wordmark } from './ring-mark';
+import { keepClearOfToasts } from './toasts';
 import styles from './shell.module.css';
 
 const NAV = [
@@ -74,13 +75,13 @@ export function Shell({ children }: { children: ReactNode }) {
 
       {onCallScreen ? null : (
         <>
-          <div className={styles.fab}>
+          <div className={styles.fab} ref={keepClearOfToasts}>
             <Button variant="primary" size="lg" onClick={() => openDialer()}>
               <PhoneCall size={18} strokeWidth={1.75} aria-hidden="true" />
               New call
             </Button>
           </div>
-          <nav className={styles.tabbar} aria-label="Main">
+          <nav className={styles.tabbar} aria-label="Main" ref={keepClearOfToasts}>
             {index >= 0 ? <span className={styles.tabPill} style={pill} aria-hidden="true" /> : null}
             {links}
           </nav>
@@ -90,11 +91,15 @@ export function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-/** Shown on every screen except the call itself while a call is live: return to it, or bring it to this browser. */
+/**
+ * Shown on every screen except the call itself while a call is live: return to it, rejoin it after a reload, or bring it
+ * to this browser from another device.
+ */
 function CallBanner() {
   const store = useRingStore();
   const me = useMe();
   const calls = useRing(state => state.calls);
+  const resume = useRing(state => state.resume);
   const { media, call: mediaCall } = useMediaCall();
   const now = useNow();
   const { toast } = useToastStack();
@@ -102,17 +107,57 @@ function CallBanner() {
   const [switching, setSwitching] = useState(false);
   const meUuid = me?.account.uuid;
 
+  function rejoin(ringid: string) {
+    // The call screen shows the rejoin in progress, so go there right away.
+    router.push(`/call?id=${encodeURIComponent(ringid)}`);
+    store.resumeCall(ringid).catch(error => {
+      toast({ type: 'error', title: 'Couldn’t rejoin the call', description: errorMessage(error) });
+    });
+  }
+
   if (mediaCall && (mediaCall.state === 'active' || mediaCall.state === 'ringing' || mediaCall.state === 'voicemail')) {
     const names = otherPeople(mediaCall, meUuid).map(label).join(', ');
     const timer = mediaCall.answered_at ? duration(now - Date.parse(mediaCall.answered_at)) : mediaCall.state === 'ringing' ? 'RINGING' : 'VOICEMAIL';
+    // Audio that couldn't connect (as when a rejoin after a reload fails) leaves the call here but silent.
+    const lost = media?.status === 'disconnected';
     return (
       <div className={styles.banner} role="status">
-        <span className={styles.bannerText}>On a call with {names} <Pixel>{timer}</Pixel></span>
-        <ButtonLink href={`/call?id=${encodeURIComponent(mediaCall.ringid)}`} size="sm" variant="secondary" as={Link}>Return to call</ButtonLink>
+        <span className={styles.bannerText}>On a call with {names} <Pixel>{lost ? 'NOT CONNECTED' : timer}</Pixel></span>
+        <span className={styles.bannerActions}>
+          {lost ? (
+            <Button size="sm" variant="primary" loading={resume?.ringid === mediaCall.ringid && resume.state === 'joining'} onClick={() => rejoin(mediaCall.ringid)}>
+              Rejoin call
+            </Button>
+          ) : (
+            <>
+              {/* A call rejoined on its own after a reload can't play sound until the page is clicked. */}
+              {media?.audioBlocked ? (
+                <Button size="sm" variant="primary" onClick={() => void store.startAudio()}>
+                  <Volume2 size={16} strokeWidth={1.75} aria-hidden="true" />
+                  Turn on sound
+                </Button>
+              ) : null}
+              <ButtonLink href={`/call?id=${encodeURIComponent(mediaCall.ringid)}`} size="sm" variant="secondary" as={Link}>Return to call</ButtonLink>
+            </>
+          )}
+        </span>
       </div>
     );
   }
   if (media) return null;
+
+  const resumable = resume ? calls[resume.ringid] : undefined;
+  if (resume && resumable) {
+    const names = otherPeople(resumable, meUuid).map(label).join(', ');
+    return (
+      <div className={styles.banner} role="status">
+        <span className={styles.bannerText}>Your call with {names} is still on</span>
+        <Button size="sm" variant="primary" loading={resume.state === 'joining'} onClick={() => rejoin(resumable.ringid)}>
+          Rejoin call
+        </Button>
+      </div>
+    );
+  }
 
   const elsewhere = Object.values(calls).find(call => {
     if (call.state !== 'active') return false;

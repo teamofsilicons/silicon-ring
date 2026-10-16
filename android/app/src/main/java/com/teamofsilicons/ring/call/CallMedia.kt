@@ -102,9 +102,7 @@ class CallMedia(
         }
         return try {
             room.connect(grant.url, grant.token)
-            // Publish the microphone even when muted: voicemail recording and handoff expect a track.
-            room.localParticipant.setMicrophoneEnabled(true)
-            if (muted) room.localParticipant.setMicrophoneEnabled(false)
+            publishMicrophone(room)
             _status.value = Status.Connected
             true
         } catch (e: Exception) {
@@ -112,6 +110,20 @@ class CallMedia(
             _status.value = Status.Disconnected
             disconnectRoom()
             false
+        }
+    }
+
+    /**
+     * Publishes the microphone even when muted: voicemail recording and handoff expect a track.
+     * Without microphone access (a call answered from a watch or headset before the permission
+     * was granted) the call still plays; the other side just cannot hear this device.
+     */
+    private suspend fun publishMicrophone(room: Room) {
+        try {
+            room.localParticipant.setMicrophoneEnabled(true)
+            if (muted) room.localParticipant.setMicrophoneEnabled(false)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not publish the microphone; the call continues without it", e)
         }
     }
 

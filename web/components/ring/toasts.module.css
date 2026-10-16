@@ -1,0 +1,18 @@
+/* The toast stack is contained in this frame, which stops above whatever the screen pins to the bottom edge
+   (--ring-toast-clearance, measured in toasts.tsx), so a toast never covers the tab bar or the call controls. */
+.frame {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: max(var(--ring-toast-clearance, 0px), env(safe-area-inset-bottom));
+  left: 0;
+  z-index: 60;
+  pointer-events: none;
+}
+
+/* Wider screens keep the stack's usual distance from the edge. */
+@media (min-width: 30rem) {
+  .frame {
+    bottom: calc(max(var(--ring-toast-clearance, 0px), env(safe-area-inset-bottom)) + var(--space-related));
+  }
+}

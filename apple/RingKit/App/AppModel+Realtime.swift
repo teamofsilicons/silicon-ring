@@ -15,8 +15,12 @@ extension AppModel {
         case .callUpdated(let call), .callEnded(let call):
             callChanged(call)
 
-        case .ringingStopped(let ringid, let invitationID, let reason):
-            guard let ring = rings[invitationID] else { return }
+        case .ringingStopped(let ringid, let invitationID, let reason, let from):
+            let ring = rings[invitationID]
+            if reason == .missed, let caller = from ?? ring?.from {
+                callSystem?.missedCall(from: caller, ringid: ringid)
+            }
+            guard let ring else { return }
             if activeCall?.ringid == ringid, activeCall?.role == .incoming {
                 // This device is the one that answered.
                 rings[invitationID] = nil
@@ -24,8 +28,8 @@ extension AppModel {
             }
             stopRing(ring, cause: Self.cause(for: reason))
 
-        case .handoff(let ringid, let deviceID):
-            handoffOccurred(ringid: ringid, deviceID: deviceID)
+        case .handoff(let ringid, let deviceID, let device):
+            handoffOccurred(ringid: ringid, deviceID: deviceID, device: device)
 
         case .transcriptEntry(let ringid, let entry):
             guard let session = activeCall, session.ringid == ringid else { return }
@@ -96,6 +100,11 @@ extension AppModel {
                 callChanged(call)
             }
         }
+
+        // Calls that ended while the socket was down (or the app suspended) belong in Recents too;
+        // this also retries a first load that failed.
+        scheduleRecentsRefresh()
+        if !voicemailsLoaded { await refreshVoicemails() }
     }
 
     /// Opens what an alert notification was about: a missed call or a voicemail.

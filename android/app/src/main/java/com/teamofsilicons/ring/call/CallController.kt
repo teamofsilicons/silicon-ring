@@ -2,6 +2,7 @@ package com.teamofsilicons.ring.call
 
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import android.telecom.DisconnectCause
 import android.util.Log
 import androidx.lifecycle.Lifecycle
@@ -10,6 +11,7 @@ import com.teamofsilicons.ring.data.Account
 import com.teamofsilicons.ring.data.ApiException
 import com.teamofsilicons.ring.data.Call
 import com.teamofsilicons.ring.data.CallState
+import com.teamofsilicons.ring.data.DeviceRef
 import com.teamofsilicons.ring.data.EntryKind
 import com.teamofsilicons.ring.data.Invitation
 import com.teamofsilicons.ring.data.InvitationState
@@ -67,6 +69,7 @@ class CallController(
     // not ring or rejoin them again.
     private val settledInvitations = mutableSetOf<String>()
     private val leftCalls = mutableSetOf<String>()
+    private val missedNotified = mutableSetOf<String>()
 
     private val me: String? get() = repo.myUuid
     private val myDevice: String? get() = repo.myDeviceId
@@ -79,14 +82,14 @@ class CallController(
             is RingEvent.CallIncoming -> onIncoming(event.call, event.invitation)
             is RingEvent.CallUpdated -> onCallUpdated(event.call)
             is RingEvent.CallEnded -> onCallUpdated(event.call)
-            is RingEvent.RingingStopped -> onRingingStopped(event.ringid, event.reason)
-            is RingEvent.Handoff -> onHandoff(event.ringid, event.deviceId)
+            is RingEvent.RingingStopped -> onRingingStopped(event.ringid, event.invitationId, event.reason, event.from)
+            is RingEvent.Handoff -> onHandoff(event.ringid, event.deviceId, event.device)
             is RingEvent.Transcript -> runtimes[event.ringid]?.let {
                 it.addEntry(event.entry)
                 publish()
             }
             is RingEvent.TranscriptPartial -> runtimes[event.ringid]?.let {
-                it.partials[event.speaker.uuid] = event.speaker to event.text
+                it.addPartial(event.speaker, event.segmentId, event.text)
                 publish()
             }
             is RingEvent.VoicemailReceived -> CallNotifications.voicemail(context, event.voicemail.voicemailId, event.voicemail.from, event.voicemail.transcript)
@@ -116,7 +119,14 @@ class CallController(
         }
     }
 
-    fun onPushCancelled(ringid: String, reason: String) = onRingingStopped(ringid, reason)
+    fun onPushCancelled(ringid: String, invitationId: String?, reason: String) =
+        onRingingStopped(ringid, invitationId.orEmpty(), reason, from = null)
+
+    /** Posts the missed-call notification for [ringid] once, whichever signal arrives first. */
+    fun notifyMissed(ringid: String, from: Account) {
+        if (!missedNotified.add(ringid)) return
+        CallNotifications.missed(context, ringid, from)
+    }
 
     /**
      * Debug builds only: rings a local incoming call that has no server behind it, to exercise
@@ -186,7 +196,7 @@ class CallController(
                     val (cause, text) = endingFor(invitation.state)
                     end(rt, cause, text)
                     if (invitation.state == InvitationState.MISSED || invitation.state == InvitationState.CANCELLED) {
-                        CallNotifications.missed(context, call.ringid, rt.peer)
+                        notifyMissed(call.ringid, rt.peer)
                     }
                 }
                 call.state == CallState.ENDED -> end(rt, DisconnectCause.MISSED, "MISSED")
@@ -211,7 +221,7 @@ class CallController(
             }
             CallState.ACTIVE -> when {
                 mine != null && mine.joined && mine.device != null && myDevice != null && mine.device.deviceId != myDevice ->
-                    moveAway(rt, mine.device.name)
+                    moveAway(rt, mine.device.label)
                 mine != null && !mine.joined && rt.phase != CallPhase.Connecting -> end(rt, DisconnectCause.LOCAL, "CALL ENDED")
                 rt.phase == CallPhase.Calling || rt.phase == CallPhase.Ringing -> {
                     tones.stopRingback()
@@ -229,8 +239,15 @@ class CallController(
         publish()
     }
 
-    private fun onRingingStopped(ringid: String, reason: String) {
-        val rt = runtimes[ringid] ?: return
+    private fun onRingingStopped(ringid: String, invitationId: String, reason: String, from: Account?) {
+        val missed = reason == RingingStoppedReason.MISSED || reason == RingingStoppedReason.CANCELLED
+        val rt = runtimes[ringid]
+        if (rt == null) {
+            // Not ringing here (ringing off on this device, or the process restarted): the event
+            // names the caller, so the missed call can still be noted.
+            if (missed && from != null && invitationId !in settledInvitations) notifyMissed(ringid, from)
+            return
+        }
         if (!rt.incoming || rt.accepted || rt.phase != CallPhase.Incoming) return
         if (reason == RingingStoppedReason.SILENCED) {
             rt.silenced = true
@@ -242,49 +259,94 @@ class CallController(
             else -> DisconnectCause.MISSED to "MISSED"
         }
         end(rt, cause, text)
-        if (reason == RingingStoppedReason.MISSED || reason == RingingStoppedReason.CANCELLED) {
-            CallNotifications.missed(context, ringid, rt.peer)
-        }
+        if (missed) notifyMissed(ringid, from ?: rt.peer)
         publish()
     }
 
-    private fun onHandoff(ringid: String, deviceId: String) {
+    private fun onHandoff(ringid: String, deviceId: String, device: DeviceRef?) {
         val rt = runtimes[ringid]
-        if (rt != null && deviceId != myDevice && rt.phase != CallPhase.Ended && rt.phase != CallPhase.Incoming) {
-            val name = rt.call?.participants?.firstOrNull { it.device?.deviceId == deviceId }?.device?.name
-            moveAway(rt, name)
+        if (rt != null && deviceId.isNotEmpty() && deviceId != myDevice && rt.phase != CallPhase.Ended && rt.phase != CallPhase.Incoming) {
+            val where = device?.label ?: rt.call?.participants?.firstOrNull { it.device?.deviceId == deviceId }?.device?.label
+            moveAway(rt, where)
             publish()
         }
-        scope.launch { runCatching { api.call(ringid) }.onSuccess { onCallUpdated(it) } }
+        scope.launch {
+            runCatching { api.call(ringid) }.onSuccess { call ->
+                // A server that leaves the device out of the event: name it from the fresh call.
+                val moved = rt?.takeIf { it.phase == CallPhase.Ended && it.endedText == MOVED_SOMEWHERE }
+                val label = call.participant(me.orEmpty())?.device?.takeIf { it.deviceId == deviceId }?.label
+                if (moved != null && label != null) {
+                    moved.endedText = "MOVED TO ${label.uppercase()}"
+                    if (_movedAway.value != null) _movedAway.value = "Moved to $label"
+                    publish()
+                }
+                onCallUpdated(call)
+            }
+        }
     }
 
     /** Brings local state in line with the server after (re)connecting. */
     fun reconcile() {
-        val me = me ?: return
+        if (me == null) return
+        scope.launch { reconcileNow() }
+    }
+
+    /** The app came to the foreground: reconcile, and let a live call keep the microphone. */
+    fun onAppForeground() {
+        reconcile()
+        // A call rejoined while Ring was in the background could not claim the microphone
+        // foreground-service type; now that Ring is visible it can.
+        if (runtimes.values.any { it.joinedHere }) CallService.refresh(context)
+    }
+
+    /**
+     * The call service was restarted by the system after Ring's process died (a crash, or the
+     * system reclaiming memory). If the server says this device still carries a call, rejoin it
+     * within the server's 30 s grace; otherwise let the service stop.
+     */
+    fun resumeAfterRestart() {
+        if (recovering || me == null) return
+        recovering = true
         scope.launch {
-            val live = try {
-                api.calls(states = "${CallState.RINGING},${CallState.ACTIVE},${CallState.VOICEMAIL}", limit = 50).items
-            } catch (e: ApiException) {
-                Log.i(TAG, "Reconcile failed: ${e.code}")
-                return@launch
-            }
-            val seen = live.map { it.ringid }.toSet()
-            _elsewhere.value = emptyList()
-            for (call in live) {
-                val invitation = call.ringingInvitationFor(me)
-                when {
-                    invitation != null && runtimes[call.ringid] == null -> onIncoming(call, invitation)
-                    runtimes[call.ringid] == null && isMineHere(call) && call.ringid !in leftCalls -> rejoin(call)
-                    else -> onCallUpdated(call)
+            try {
+                // The network can take a moment to come back with the process.
+                for (attempt in 0 until 5) {
+                    if (reconcileNow()) break
+                    delay(2_000L * (attempt + 1))
                 }
+            } finally {
+                recovering = false
+                publish()
             }
-            runtimes.values.filter { it.ringid !in seen && it.phase != CallPhase.Ended }.forEach { rt ->
-                runCatching { api.call(rt.ringid) }
-                    .onSuccess { onCallUpdated(it) }
-                    .onFailure { end(rt, DisconnectCause.MISSED, null) }
-            }
-            publish()
         }
+    }
+
+    /** Returns false when the server could not be reached, so a caller may retry. */
+    private suspend fun reconcileNow(): Boolean {
+        val me = me ?: return true
+        val live = try {
+            api.calls(states = "${CallState.RINGING},${CallState.ACTIVE},${CallState.VOICEMAIL}", limit = 50).items
+        } catch (e: ApiException) {
+            Log.i(TAG, "Reconcile failed: ${e.code}")
+            return !e.isNetwork && !e.retryable
+        }
+        val seen = live.map { it.ringid }.toSet()
+        _elsewhere.value = emptyList()
+        for (call in live) {
+            val invitation = call.ringingInvitationFor(me)
+            when {
+                invitation != null && runtimes[call.ringid] == null -> onIncoming(call, invitation)
+                runtimes[call.ringid] == null && isMineHere(call) && call.ringid !in leftCalls -> rejoin(call)
+                else -> onCallUpdated(call)
+            }
+        }
+        runtimes.values.filter { it.ringid !in seen && it.phase != CallPhase.Ended }.forEach { rt ->
+            runCatching { api.call(rt.ringid) }
+                .onSuccess { onCallUpdated(it) }
+                .onFailure { end(rt, DisconnectCause.MISSED, null) }
+        }
+        publish()
+        return true
     }
 
     // Actions
@@ -499,18 +561,34 @@ class CallController(
 
     private val rejoinsInFlight = mutableSetOf<String>()
 
-    /** Picks a call back up after this process restarted mid-call (within the server's grace). */
-    private fun rejoin(call: Call) {
+    // True while the call service, restarted after a process death, waits for resumeAfterRestart.
+    private var recovering = false
+
+    /**
+     * Picks up a call the server says this device carries but this process has no state for: the
+     * app was restarted or crashed mid-call. Same path as a handoff (`POST /media`), and it has to
+     * land within the server's 30 s grace, so network failures are retried briefly.
+     */
+    private suspend fun rejoin(call: Call) {
+        if (runtimes.values.any { it.joinedHere }) return
         if (!rejoinsInFlight.add(call.ringid)) return
-        scope.launch {
-            try {
-                val result = api.media(call.ringid)
-                if (runtimes[call.ringid] == null) startJoined(result.call, result.media)
-            } catch (e: ApiException) {
-                Log.i(TAG, "Rejoin failed: ${e.code}")
-            } finally {
-                rejoinsInFlight -= call.ringid
+        try {
+            for (attempt in 0 until 4) {
+                try {
+                    val result = api.media(call.ringid)
+                    if (runtimes[call.ringid] == null && call.ringid !in leftCalls) {
+                        Log.i(TAG, "Rejoining a call this device carried before the app restarted")
+                        startJoined(result.call, result.media)
+                    }
+                    return
+                } catch (e: ApiException) {
+                    Log.i(TAG, "Rejoin failed: ${e.code}")
+                    if (!e.isNetwork && !e.retryable) return
+                    delay(1_500L * (attempt + 1))
+                }
             }
+        } finally {
+            rejoinsInFlight -= call.ringid
         }
     }
 
@@ -533,6 +611,9 @@ class CallController(
         }
         rt.observeTelecom()
         publish()
+        // Claims the microphone service type when the call service was already running (it was
+        // restarted after a process death and holds a placeholder notification).
+        CallService.refresh(context)
         if (isAppVisible()) openCallScreen()
         scope.launch {
             rt.telecom?.setActive()
@@ -610,11 +691,15 @@ class CallController(
         }
     }
 
-    private fun moveAway(rt: Runtime, deviceName: String?) {
-        val where = deviceName?.takeIf { it.isNotBlank() } ?: "another device"
-        end(rt, DisconnectCause.LOCAL, "MOVED TO ${where.uppercase()}", playTone = false)
-        _movedAway.value = "Moved to $where"
-        scope.launch {
+    private var movedAwayClear: Job? = null
+
+    /** The call moved to another of this account's devices; [where] is its name or platform word. */
+    private fun moveAway(rt: Runtime, where: String?) {
+        val place = where?.takeIf { it.isNotBlank() } ?: "another device"
+        end(rt, DisconnectCause.LOCAL, if (where.isNullOrBlank()) MOVED_SOMEWHERE else "MOVED TO ${place.uppercase()}", playTone = false)
+        _movedAway.value = "Moved to $place"
+        movedAwayClear?.cancel()
+        movedAwayClear = scope.launch {
             delay(6_000)
             _movedAway.value = null
         }
@@ -651,8 +736,9 @@ class CallController(
     }
 
     private fun isMineHere(call: Call): Boolean {
+        val device = myDevice ?: return false
         val mine = call.participant(me ?: return false) ?: return false
-        return call.state in setOf(CallState.ACTIVE, CallState.VOICEMAIL) && mine.joined && mine.device?.deviceId == myDevice
+        return call.state in setOf(CallState.ACTIVE, CallState.VOICEMAIL) && mine.joined && mine.device?.deviceId == device
     }
 
     private fun endingFor(state: String): Pair<Int, String> = when (state) {
@@ -696,6 +782,7 @@ class CallController(
         runtimes.clear()
         settledInvitations.clear()
         leftCalls.clear()
+        missedNotified.clear()
         _elsewhere.value = emptyList()
         publish()
     }
@@ -711,7 +798,8 @@ class CallController(
         // The service and its CallStyle notification come first: Telecom and the FCM exemption
         // give only a few seconds, and starting the ringtone can be slow.
         if (snapshots.isEmpty()) {
-            CallService.stop(context)
+            // A rejoin after a restart keeps the (restarted) service until it knows the outcome.
+            if (!recovering && rejoinsInFlight.isEmpty()) CallService.stop(context)
             if (holdingSocket) realtime.release(HOLD)
             holdingSocket = false
         } else {
@@ -760,7 +848,10 @@ class CallController(
         var telecom: TelecomCall? = null
         var media: CallMedia? = null
         val entries = TreeMap<Long, TranscriptEntry>()
-        val partials = LinkedHashMap<String, Pair<Account, String>>()
+        // Interim speech by segment id (or "speaker:<uuid>" when a partial has none), oldest
+        // first; a segment's final entry replaces its line.
+        private val partials = LinkedHashMap<String, Partial>()
+        private val finalSegments = LinkedHashSet<String>()
         val jobs = mutableListOf<Job>()
         private var mediaObserved = false
 
@@ -769,8 +860,29 @@ class CallController(
 
         fun addEntry(entry: TranscriptEntry) {
             entries[entry.seq] = entry
-            if (entry.kind == EntryKind.SPEECH) entry.actor?.uuid?.let { partials.remove(it) }
+            if (entry.kind != EntryKind.SPEECH) return
+            val speaker = entry.actor?.uuid
+            val segment = entry.segmentId
+            if (segment != null) {
+                finalSegments += segment
+                if (finalSegments.size > 400) finalSegments.remove(finalSegments.first())
+                if (partials.remove(segment) == null && speaker != null) partials.remove(speakerKey(speaker))
+                return
+            }
+            // No segment id: the final replaces the newest interim line of its speaker.
+            speaker ?: return
+            partials.entries.lastOrNull { it.value.speaker.uuid == speaker }?.let { partials.remove(it.key) }
         }
+
+        fun addPartial(speaker: Account, segmentId: String, text: String) {
+            // A partial that arrives after its segment's final would otherwise linger.
+            if (segmentId in finalSegments) return
+            val key = segmentId.ifEmpty { speakerKey(speaker.uuid) }
+            // Updating a segment keeps its place, so two people talking at once do not swap lines.
+            if (text.isBlank()) partials.remove(key) else partials[key] = Partial(speaker, text, SystemClock.elapsedRealtime())
+        }
+
+        private fun speakerKey(uuid: String) = "speaker:$uuid"
 
         fun observeTelecom() {
             val telecom = telecom ?: return
@@ -848,7 +960,10 @@ class CallController(
             val finals = entries.values.mapNotNull { e ->
                 val who = e.actor?.label ?: "Someone"
                 when (e.kind) {
-                    EntryKind.SPEECH -> e.text?.takeIf { it.isNotBlank() }?.let { TranscriptLine("s${e.seq}", e.actor, it, final = true, system = false) }
+                    // Keyed by segment so the final takes the place of its interim line in the list.
+                    EntryKind.SPEECH -> e.text?.takeIf { it.isNotBlank() }?.let {
+                        TranscriptLine(e.segmentId?.let { id -> "g:$id" } ?: "s${e.seq}", e.actor, it, final = true, system = false)
+                    }
                     EntryKind.JOINED -> TranscriptLine("s${e.seq}", null, "$who joined", final = true, system = true)
                     EntryKind.LEFT -> TranscriptLine("s${e.seq}", null, "$who left", final = true, system = true)
                     EntryKind.INVITED -> {
@@ -865,14 +980,22 @@ class CallController(
                     else -> null
                 }
             }
-            val interim = partials.values.filter { it.second.isNotBlank() }
-                .map { (speaker, text) -> TranscriptLine("p${speaker.uuid}", speaker, text, final = false, system = false) }
-            return (finals + interim).takeLast(80)
+            // An interim line whose final never came (the speaker dropped) fades out after a while.
+            val now = SystemClock.elapsedRealtime()
+            val interim = partials.filter { now - it.value.at < PARTIAL_TTL_MS }
+                .map { (key, p) -> TranscriptLine(if (key.startsWith("speaker:")) "p:$key" else "g:$key", p.speaker, p.text, final = false, system = false) }
+            // The list is keyed: a repeated key (a server repeating a segment id) would crash it.
+            val used = HashSet<String>()
+            return (finals + interim).takeLast(80).mapIndexed { i, line -> if (used.add(line.key)) line else line.copy(key = "${line.key}#$i") }
         }
     }
+
+    private class Partial(val speaker: Account, val text: String, val at: Long)
 
     private companion object {
         const val TAG = "RingCalls"
         const val HOLD = "call"
+        const val PARTIAL_TTL_MS = 30_000L
+        const val MOVED_SOMEWHERE = "MOVED TO ANOTHER DEVICE"
     }
 }

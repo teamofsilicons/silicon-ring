@@ -39,7 +39,7 @@
   - Delegations, start text, roster changes ("X joined", "X left") and thinking/commentary messages are relayed through GPT-Live events.
 - **Recorder.** A hidden participant `ring:recorder`. It subscribes to all audio, mixes it to a 16 kHz mono WAV, and uploads it to S3 when the call ends.
 - **STT.** Each carbon's authoritative track is streamed to Deepgram live (`nova-3`, `language=multi`). Speakers are attributed exactly, one track per person. A silicon's speech text comes from its representative's output transcript.
-- **Voicemail player.** It joins as `ring:voicemail`, plays the greeting and a beep (Natural Voice, synthesised by Live readback and cached), records the caller's track (at most 120 s), uploads the result to S3, and transcribes it with Deepgram's prerecorded API.
+- **Voicemail player.** It joins as `ring:voicemail`, plays the greeting and a beep (Natural Voice, synthesised by Live readback and cached by voice and text; `greeting.prepare` fills the cache ahead of need), records the caller's track (at most 120 s), uploads the result to S3, and transcribes it with Deepgram's prerecorded API.
 - **Silicon voicemail.** It synthesises the silicon's text in the silicon's voice and uploads it.
 
 ### livekit-server
@@ -70,7 +70,8 @@ Shared Rust crates:
    - Resolves the callee through Accounts.
    - Creates the call (`ringing`) and an invitation (60 s), and creates the LiveKit room.
    - A carbon caller gets a media grant immediately and joins the room. Its own client plays the ringback.
-   - A silicon caller is represented in the room only once the call becomes active.
+   - A silicon caller's representative starts right away, so GPT-Live is connected by the time the callee answers. ring-media holds the start text until someone else's audio is in the room. If the call ends or goes to voicemail unanswered, the representative is stopped. A busy callee gets no pre-started representative.
+   - When a carbon calls a callee with voicemail enabled, the server asks ring-media to prepare the callee's three greetings (`greeting.prepare`), so a caller who reaches voicemail never waits for synthesis. Each voice and text is sent once per server run, and a change of voice or greeting prepares the new ones right away.
    - If the callee is a silicon already in a reserved or active call, the invitation is `busy` straight away (see step 5).
 2. **Ring.** For each of the callee's devices with ringing enabled:
    - Sends a WebSocket event `call.incoming`, plus push: APNs VoIP for iOS/iPadOS, FCM for Android, APNs alert for macOS when offline, and Web Push.
@@ -80,7 +81,7 @@ Shared Rust crates:
    - The call becomes `active`.
    - Ringing stops everywhere else: `call.ringing_stopped`, cancel pushes, and the CallKit/Telecom call ends with "answered elsewhere".
    - A carbon device gets a media grant and joins.
-   - For each silicon participant, ring-media starts a representative, which speaks the start text first.
+   - For each silicon participant whose representative is not already running, ring-media starts one, which speaks the start text first. A silicon caller's pre-started representative is told who answered (`roster.changed`) and then speaks its start text.
    - The recorder and STT start.
 4. **During the call.**
    - Transcript entries stream to participants over the WebSocket, and to silicons through Ting in 10 s batches.

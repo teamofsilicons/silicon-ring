@@ -9,10 +9,8 @@ enum DevLog {
     private static let queue = DispatchQueue(label: "com.teamofsilicons.ring.devlog")
     private static let url: URL? = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
         .appendingPathComponent("ring-dev.log")
-    #endif
 
     static func log(_ message: @autoclosure () -> String) {
-        #if DEBUG
         let line = "\(Date().ISO8601Format(.iso8601.time(includingFractionalSeconds: true))) \(message())\n"
         queue.async {
             guard let url, let data = line.data(using: .utf8) else { return }
@@ -24,6 +22,10 @@ enum DevLog {
                 try? data.write(to: url)
             }
         }
-        #endif
     }
+    #else
+    /// Release: no file, no queue, and the message is never even built.
+    @inline(__always)
+    static func log(_ message: @autoclosure () -> String) {}
+    #endif
 }

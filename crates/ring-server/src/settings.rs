@@ -103,6 +103,22 @@ pub fn greeting_text(settings: &Settings, callee: &Account, reason: VoicemailRea
     }
 }
 
+/// Has ring-media prepare the account's three effective greetings in its voice, so a caller who
+/// reaches voicemail hears the greeting at once instead of waiting for it to be synthesized.
+pub fn prepare_greetings(app: &AppState, settings: &Settings, account: &Account) {
+    if !settings.voicemail.enabled {
+        return;
+    }
+    for reason in [
+        VoicemailReason::Busy,
+        VoicemailReason::Declined,
+        VoicemailReason::Missed,
+    ] {
+        app.media
+            .prepare_greeting(&settings.voice, &greeting_text(settings, account, reason));
+    }
+}
+
 pub async fn get_settings(State(app): State<AppState>, auth: Auth) -> ApiResult<Json<Settings>> {
     Ok(Json(app.db.with(|c| load(c, auth.uuid()))?.settings))
 }
@@ -148,7 +164,7 @@ pub async fn patch_settings(
         }
     }
     let uuid = auth.uuid().to_string();
-    let settings = app.db.tx(|tx| -> rusqlite::Result<Settings> {
+    let (settings, greetings_changed) = app.db.tx(|tx| -> rusqlite::Result<(Settings, bool)> {
         ensure_row(tx, &uuid)?;
         let before = load(tx, &uuid)?;
         let mut s = before.settings.clone();
@@ -185,6 +201,7 @@ pub async fn patch_settings(
                 set(&mut s.voicemail.greetings.missed, &g.missed);
             }
         }
+        let greetings_changed = s.voice != before.settings.voice || s.voicemail != before.settings.voicemail;
         let mut revision = before.settings.revision;
         if s != before.settings {
             revision += 1;
@@ -214,8 +231,11 @@ pub async fn patch_settings(
         if context_changed {
             tx.execute("UPDATE context_approvals SET revoked_at = ?2 WHERE account_uuid = ?1 AND revoked_at IS NULL", params![uuid, now])?;
         }
-        Ok(s)
+        Ok((s, greetings_changed))
     })?;
+    if greetings_changed {
+        prepare_greetings(&app, &settings, &auth.account);
+    }
     Ok(Json(settings))
 }
 

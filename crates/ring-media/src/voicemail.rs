@@ -2,8 +2,9 @@
 //! and the synthesis of a silicon's text message in its own voice.
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -306,7 +307,8 @@ fn interrupted(interrupt: Interrupt) -> anyhow::Error {
     }
 }
 
-/// A greeting in `voice`, cached by voice and text.
+/// A greeting in `voice`, cached by voice and text. Concurrent requests for the same greeting
+/// share one synthesis.
 async fn greeting(supervisor: &Supervisor, voice: &str, text: &str) -> Result<Vec<i16>> {
     let text = text.trim();
     if text.is_empty() {
@@ -319,14 +321,16 @@ async fn greeting(supervisor: &Supervisor, voice: &str, text: &str) -> Result<Ve
         .data_dir
         .join("greetings")
         .join(format!("{name}.wav"));
-    if let Ok(bytes) = std::fs::read(&path) {
-        match audio::parse_wav(&bytes) {
-            Ok((LIVE_RATE, samples)) if !samples.is_empty() => {
-                tracing::debug!(%voice, "greeting from the cache");
-                return Ok(samples);
-            }
-            _ => tracing::warn!(path = %path.display(), "ignoring an unreadable cached greeting"),
-        }
+    if let Some(samples) = cached(&path) {
+        tracing::debug!(%voice, "greeting from the cache");
+        return Ok(samples);
+    }
+    // Whoever gets the lock first synthesizes; the others then find the greeting in the cache.
+    let lock = supervisor.greetings.lock_for(&name);
+    let _synthesizing = lock.lock().await;
+    if let Some(samples) = cached(&path) {
+        tracing::debug!(%voice, "greeting from the cache");
+        return Ok(samples);
     }
     let samples = live::synthesize(supervisor.config.openai_key()?, voice, text).await?;
     tracing::info!(
@@ -336,6 +340,51 @@ async fn greeting(supervisor: &Supervisor, voice: &str, text: &str) -> Result<Ve
     );
     store(&path, &audio::wav_bytes(&samples, LIVE_RATE)).context("could not cache the greeting")?;
     Ok(samples)
+}
+
+fn cached(path: &Path) -> Option<Vec<i16>> {
+    let bytes = std::fs::read(path).ok()?;
+    match audio::parse_wav(&bytes) {
+        Ok((LIVE_RATE, samples)) if !samples.is_empty() => Some(samples),
+        _ => {
+            tracing::warn!(path = %path.display(), "ignoring an unreadable cached greeting");
+            None
+        }
+    }
+}
+
+/// Greetings being synthesized, by cache name.
+#[derive(Default)]
+pub struct Greetings {
+    synthesizing: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+}
+
+impl Greetings {
+    /// The lock held while the greeting called `name` is synthesized.
+    fn lock_for(&self, name: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut synthesizing = self.synthesizing.lock().unwrap();
+        synthesizing.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = synthesizing.get(name).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        synthesizing.insert(name.to_owned(), Arc::downgrade(&lock));
+        lock
+    }
+}
+
+/// `greeting.prepare`: synthesizes a greeting into the cache ahead of need, so a caller who
+/// reaches voicemail hears it at once. Nothing is reported back.
+pub async fn prepare(supervisor: Arc<Supervisor>, voice: String, text: String) {
+    let prepared = tokio::select! {
+        prepared = greeting(&supervisor, &voice, &text) => prepared,
+        // Only a hint: the next worker makes the greeting when it is needed.
+        _ = supervisor.shutdown.cancelled() => return,
+    };
+    match prepared {
+        Ok(_) => tracing::debug!(%voice, "greeting ready"),
+        Err(e) => tracing::warn!(%voice, "could not prepare a greeting: {e:#}"),
+    }
 }
 
 fn store(path: &Path, bytes: &[u8]) -> Result<()> {

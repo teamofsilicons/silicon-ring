@@ -9,7 +9,7 @@ import kotlinx.serialization.json.JsonObject
 import okhttp3.Call as HttpCall
 import okhttp3.Callback
 import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -182,7 +182,8 @@ class RingApi(
     private fun base(): String = sessions.current?.apiUrl ?: prefs.apiUrl.value
 
     private fun url(apiUrl: String, path: String, vararg query: Pair<String, String?>): HttpUrl {
-        val builder = "${apiUrl.trimEnd('/')}/$path".toHttpUrl().newBuilder()
+        val builder = "${apiUrl.trimEnd('/')}/$path".toHttpUrlOrNull()?.newBuilder()
+            ?: throw ApiException(0, "invalid_server", "The Ring server address $apiUrl is not valid.")
         query.forEach { (k, v) -> if (v != null) builder.addQueryParameter(k, v) }
         return builder.build()
     }

@@ -20,6 +20,10 @@ protocol CallSystem: AnyObject {
     /// Ringing stopped without this device answering.
     func stopRinging(_ ring: IncomingRing, cause: CallEndCause)
 
+    /// Nobody answered a call to this account. The server also sends a "Missed call" alert push,
+    /// so a platform only needs this where that push cannot arrive.
+    func missedCall(from caller: Account, ringid: String)
+
     /// When the system UI owns a ring, answering must go through it so its state stays consistent.
     func ownsRing(_ ring: IncomingRing) -> Bool
     func answer(_ ring: IncomingRing)

@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -33,8 +34,10 @@ sealed interface RingEvent {
     data class Ready(val account: Account, val deviceId: String) : RingEvent
     data class CallIncoming(val call: Call, val invitation: Invitation) : RingEvent
     data class CallUpdated(val call: Call) : RingEvent
-    data class RingingStopped(val ringid: String, val invitationId: String, val reason: String) : RingEvent
-    data class Handoff(val ringid: String, val deviceId: String) : RingEvent
+    /** [from] is the caller, when the server sends it. */
+    data class RingingStopped(val ringid: String, val invitationId: String, val reason: String, val from: Account?) : RingEvent
+    /** [device] is the new active device, when the server sends it. */
+    data class Handoff(val ringid: String, val deviceId: String, val device: DeviceRef?) : RingEvent
     data class CallEnded(val call: Call) : RingEvent
     data class Transcript(val ringid: String, val entry: TranscriptEntry) : RingEvent
     data class TranscriptPartial(val ringid: String, val speaker: Account, val segmentId: String, val text: String) : RingEvent
@@ -58,12 +61,23 @@ internal fun parseEvent(text: String): RingEvent? {
     val data = frame["data"] as? JsonObject ?: JsonObject(emptyMap())
     fun str(key: String) = (data[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
     fun call() = RingJson.decodeFromJsonElement(Call.serializer(), data.getValue("call"))
+    // Optional additions to an event: absent, null or unreadable all read as null.
+    fun <T> optional(key: String, serializer: KSerializer<T>): T? =
+        (data[key] as? JsonObject)?.let { runCatching { RingJson.decodeFromJsonElement(serializer, it) }.getOrNull() }
     return when (type) {
         "ready" -> RingEvent.Ready(RingJson.decodeFromJsonElement(Account.serializer(), data.getValue("account")), str("device_id"))
         "call.incoming" -> RingEvent.CallIncoming(call(), RingJson.decodeFromJsonElement(Invitation.serializer(), data.getValue("invitation")))
         "call.updated" -> RingEvent.CallUpdated(call())
-        "call.ringing_stopped" -> RingEvent.RingingStopped(str("ringid"), str("invitation_id"), str("reason"))
-        "call.handoff" -> RingEvent.Handoff(str("ringid"), str("device_id"))
+        "call.ringing_stopped" -> RingEvent.RingingStopped(
+            str("ringid"),
+            str("invitation_id"),
+            str("reason"),
+            optional("from", Account.serializer()),
+        )
+        "call.handoff" -> {
+            val device = optional("device", DeviceRef.serializer())
+            RingEvent.Handoff(str("ringid"), str("device_id").ifEmpty { device?.deviceId.orEmpty() }, device)
+        }
         "call.ended" -> RingEvent.CallEnded(call())
         "transcript.entry" -> RingEvent.Transcript(str("ringid"), RingJson.decodeFromJsonElement(TranscriptEntry.serializer(), data.getValue("entry")))
         "transcript.partial" -> RingEvent.TranscriptPartial(
@@ -150,13 +164,21 @@ class Realtime(
                     awaitWake(Long.MAX_VALUE)
                     continue
                 }
+                val url = session.apiUrl.trimEnd('/').replaceFirst(Regex("^http"), "ws") + "/v1/ws"
+                val request = runCatching {
+                    Request.Builder()
+                        .url(url)
+                        .header("Authorization", "Bearer ${session.token}")
+                        .build()
+                }.getOrNull()
+                if (request == null) {
+                    // An unusable server address: wait for a reset (sign-out or a server change).
+                    _status.value = Status.Offline
+                    awaitWake(Long.MAX_VALUE)
+                    continue
+                }
                 val closed = Job()
                 _status.value = Status.Connecting
-                val url = session.apiUrl.trimEnd('/').replaceFirst(Regex("^http"), "ws") + "/v1/ws"
-                val request = Request.Builder()
-                    .url(url)
-                    .header("Authorization", "Bearer ${session.token}")
-                    .build()
                 val ws = client.newWebSocket(request, Listener(closed))
                 socket = ws
                 val pinger = launch {

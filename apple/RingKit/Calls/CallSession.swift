@@ -29,7 +29,7 @@ struct IncomingRing: Identifiable, Hashable, Sendable {
         self.invitationID = invitationID
         self.callUUID = callUUID
         self.from = from.account
-        alreadyOnCall = participants.filter { $0.id != from.id }.map { $0.displayName ?? $0.id }
+        alreadyOnCall = participants.filter { !$0.isSame(as: from) }.map(\.label)
         self.expiresAt = expiresAt
         call = nil
     }
@@ -40,6 +40,8 @@ struct TranscriptLine: Identifiable, Hashable, Sendable {
     enum Style: Hashable, Sendable { case speech, partial, event }
 
     var id: String
+    /// The transcript entry behind a final line; nil while the line is interim.
+    var seq: Int?
     var speaker: Account?
     var text: String
     var style: Style
@@ -67,12 +69,17 @@ final class CallSession: Identifiable {
     var muted = false
     var mediaState: CallMedia.State = .idle
     var speakingIdentities: Set<String> = []
+    /// Final lines in transcript order.
     var lines: [TranscriptLine] = []
+    /// Interim speech, by segment id.
     var partials: [String: TranscriptLine] = [:]
     var endSummary: String?
     var endedAt: Date?
     var minimized = false
     private(set) var lastSeq = 0
+    @ObservationIgnored private var seenSeqs: Set<Int> = []
+    /// Segments whose final entry arrived; a straggling partial must not bring them back.
+    @ObservationIgnored private var finishedSegments: Set<String> = []
     /// When this device took the call; early updates may still describe the previous device.
     let startedAt = Date()
 
@@ -138,23 +145,40 @@ final class CallSession: Identifiable {
     }
 
     func add(_ entry: TranscriptEntry) {
-        let id = "seq-\(entry.seq)"
-        guard !lines.contains(where: { $0.id == id }) else { return }
+        guard seenSeqs.insert(entry.seq).inserted else { return }
         lastSeq = max(lastSeq, entry.seq)
-        guard let line = Self.line(for: entry, myUUID: myUUID) else { return }
-        if entry.kind == .speech, let actor = entry.actor {
-            partials = partials.filter { $0.value.speaker?.uuid != actor.uuid }
+        // A final speech entry replaces its interim line: the one with its segment id, or, from a
+        // server that sends none, the speaker's newest. It takes over that line's id, so the line
+        // settles in place instead of jumping.
+        var replaced: TranscriptLine?
+        if entry.kind == .speech {
+            if let segment = entry.segmentID {
+                finishedSegments.insert(segment)
+                replaced = partials.removeValue(forKey: segment)
+            } else if let actor = entry.actor,
+                      let newest = partials.filter({ $0.value.speaker?.uuid == actor.uuid }).max(by: { $0.value.at < $1.value.at }) {
+                finishedSegments.insert(newest.key)
+                replaced = partials.removeValue(forKey: newest.key)
+            }
         }
-        lines.append(line)
+        guard var line = Self.line(for: entry, myUUID: myUUID) else { return }
+        if let replaced { line.id = replaced.id }
+        // Entries can arrive out of order (the history loads while live entries stream in).
+        let index = lines.lastIndex { ($0.seq ?? 0) < entry.seq }.map { $0 + 1 } ?? 0
+        lines.insert(line, at: index)
         if lines.count > 200 { lines.removeFirst(lines.count - 200) }
     }
 
     func addPartial(speaker: Account, segmentID: String, text: String) {
+        guard !finishedSegments.contains(segmentID) else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             partials[segmentID] = nil
         } else {
-            partials[segmentID] = TranscriptLine(id: "partial-\(segmentID)", speaker: speaker, text: trimmed, style: .partial, at: Date())
+            // Keeps the time it first appeared, so interim lines hold their order as they grow.
+            let started = partials[segmentID]?.at ?? Date()
+            partials[segmentID] = TranscriptLine(
+                id: "segment-\(segmentID)", seq: nil, speaker: speaker, text: trimmed, style: .partial, at: started)
         }
     }
 
@@ -195,7 +219,7 @@ final class CallSession: Identifiable {
         default:
             return nil
         }
-        return TranscriptLine(id: "seq-\(entry.seq)", speaker: entry.actor, text: text, style: style, at: entry.at)
+        return TranscriptLine(id: "seq-\(entry.seq)", seq: entry.seq, speaker: entry.actor, text: text, style: style, at: entry.at)
     }
 
     static func accountUUID(fromIdentity identity: String) -> String? {

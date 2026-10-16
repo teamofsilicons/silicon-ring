@@ -59,7 +59,9 @@ impl Time {
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        DateTime::parse_from_rfc3339(s).ok().map(|d| Time(d.with_timezone(&Utc)))
+        DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| Time(d.with_timezone(&Utc)))
     }
 
     pub fn to_rfc3339(&self) -> String {
@@ -94,7 +96,8 @@ impl Serialize for Time {
 impl<'de> Deserialize<'de> for Time {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        Time::parse(&s).ok_or_else(|| serde::de::Error::custom(format!("invalid RFC 3339 timestamp: {s}")))
+        Time::parse(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid RFC 3339 timestamp: {s}")))
     }
 }
 
@@ -182,7 +185,10 @@ pub struct Account {
 impl Account {
     /// Display name if known, otherwise the id.
     pub fn label(&self) -> &str {
-        self.display_name.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or(&self.id)
+        self.display_name
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(&self.id)
     }
 }
 
@@ -405,7 +411,11 @@ pub fn natural_voices() -> Vec<Voice> {
         ("tempo", "Tempo", "Energetic and quick"),
     ]
     .into_iter()
-    .map(|(id, name, description)| Voice { id: id.into(), name: name.into(), description: description.into() })
+    .map(|(id, name, description)| Voice {
+        id: id.into(),
+        name: name.into(),
+        description: description.into(),
+    })
     .collect()
 }
 
@@ -593,12 +603,16 @@ pub struct Call {
 impl Call {
     /// Joined participants (not left).
     pub fn joined(&self) -> impl Iterator<Item = &Participant> {
-        self.participants.iter().filter(|p| p.state == ParticipantState::Joined)
+        self.participants
+            .iter()
+            .filter(|p| p.state == ParticipantState::Joined)
     }
 
     /// The ringing invitation addressed to `uuid`, if any.
     pub fn ringing_invitation_for(&self, uuid: &str) -> Option<&Invitation> {
-        self.invitations.iter().find(|i| i.to.uuid == uuid && i.state == InvitationState::Ringing)
+        self.invitations
+            .iter()
+            .find(|i| i.to.uuid == uuid && i.state == InvitationState::Ringing)
     }
 }
 
@@ -753,7 +767,10 @@ pub enum EntryKind {
 impl EntryKind {
     /// Private kinds are visible only to the silicon that owns them.
     pub fn is_private(&self) -> bool {
-        matches!(self, EntryKind::Delegation | EntryKind::Thinking | EntryKind::Commentary)
+        matches!(
+            self,
+            EntryKind::Delegation | EntryKind::Thinking | EntryKind::Commentary
+        )
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -787,6 +804,13 @@ pub struct TranscriptEntry {
     pub text: Option<String>,
     #[serde(default = "empty_object")]
     pub data: serde_json::Value,
+}
+
+impl TranscriptEntry {
+    /// For `speech`: the id of the `transcript.partial` segment this entry finalises, when given.
+    pub fn segment_id(&self) -> Option<&str> {
+        self.data.get("segment_id").and_then(|v| v.as_str())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -951,7 +975,11 @@ pub struct RepresentativeSettings {
 
 impl Default for RepresentativeSettings {
     fn default() -> Self {
-        RepresentativeSettings { default_context: String::new(), context_mode: ContextMode::Append, context_required: false }
+        RepresentativeSettings {
+            default_context: String::new(),
+            context_mode: ContextMode::Append,
+            context_required: false,
+        }
     }
 }
 
@@ -980,7 +1008,10 @@ pub struct VoicemailSettings {
 
 impl Default for VoicemailSettings {
     fn default() -> Self {
-        VoicemailSettings { enabled: true, greetings: Greetings::default() }
+        VoicemailSettings {
+            enabled: true,
+            greetings: Greetings::default(),
+        }
     }
 }
 
@@ -1024,11 +1055,23 @@ pub struct VoicemailPatchSettings {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct GreetingsPatch {
-    #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub busy: Option<Option<String>>,
-    #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub declined: Option<Option<String>>,
-    #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub missed: Option<Option<String>>,
 }
 
@@ -1102,8 +1145,12 @@ pub fn merge_context(default: &str, supplied: Option<&str>, mode: ContextMode) -
         (ContextMode::Overwrite, s) => (s.unwrap_or("").to_string(), false),
         (_, None) => (default.to_string(), !default.is_empty()),
         (_, Some(s)) if default.is_empty() => (s.to_string(), false),
-        (ContextMode::Append, Some(s)) => (format!("{default}{}{s}", limits::CONTEXT_SEPARATOR), true),
-        (ContextMode::Prepend, Some(s)) => (format!("{s}{}{default}", limits::CONTEXT_SEPARATOR), true),
+        (ContextMode::Append, Some(s)) => {
+            (format!("{default}{}{s}", limits::CONTEXT_SEPARATOR), true)
+        }
+        (ContextMode::Prepend, Some(s)) => {
+            (format!("{s}{}{default}", limits::CONTEXT_SEPARATOR), true)
+        }
     }
 }
 
@@ -1162,6 +1209,9 @@ pub struct EventFrame {
     pub at: Time,
 }
 
+// Events are short-lived values moved once from the socket to a handler, so the size difference
+// between variants costs nothing worth boxing every call payload for.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum Event {
@@ -1172,15 +1222,37 @@ pub enum Event {
     #[serde(rename = "call.updated")]
     CallUpdated { call: Call },
     #[serde(rename = "call.ringing_stopped")]
-    CallRingingStopped { ringid: String, invitation_id: String, reason: RingingStoppedReason },
+    CallRingingStopped {
+        ringid: String,
+        invitation_id: String,
+        reason: RingingStoppedReason,
+        /// The caller, so a missed-call notice needs no cached call. Absent from older servers.
+        #[serde(default)]
+        from: Option<Account>,
+    },
     #[serde(rename = "call.handoff")]
-    CallHandoff { ringid: String, device_id: String },
+    CallHandoff {
+        ringid: String,
+        /// The new active device.
+        device_id: String,
+        /// The new active device, for "Moved to <name>". Absent from older servers.
+        #[serde(default)]
+        device: Option<DeviceRef>,
+    },
     #[serde(rename = "call.ended")]
     CallEnded { call: Call },
     #[serde(rename = "transcript.entry")]
-    TranscriptEntry { ringid: String, entry: TranscriptEntry },
+    TranscriptEntry {
+        ringid: String,
+        entry: TranscriptEntry,
+    },
     #[serde(rename = "transcript.partial")]
-    TranscriptPartial { ringid: String, speaker: Account, segment_id: String, text: String },
+    TranscriptPartial {
+        ringid: String,
+        speaker: Account,
+        segment_id: String,
+        text: String,
+    },
     #[serde(rename = "delegation.created")]
     DelegationCreated { delegation: Delegation },
     #[serde(rename = "voicemail.received")]
@@ -1218,13 +1290,17 @@ impl Event {
     /// The call this event concerns, if any.
     pub fn ringid(&self) -> Option<&str> {
         match self {
-            Event::CallIncoming { call, .. } | Event::CallUpdated { call } | Event::CallEnded { call } => Some(&call.ringid),
+            Event::CallIncoming { call, .. }
+            | Event::CallUpdated { call }
+            | Event::CallEnded { call } => Some(&call.ringid),
             Event::CallRingingStopped { ringid, .. }
             | Event::CallHandoff { ringid, .. }
             | Event::TranscriptEntry { ringid, .. }
             | Event::TranscriptPartial { ringid, .. } => Some(ringid),
             Event::DelegationCreated { delegation } => Some(&delegation.ringid),
-            Event::VoicemailReceived { voicemail } | Event::VoicemailUpdated { voicemail } => Some(&voicemail.ringid),
+            Event::VoicemailReceived { voicemail } | Event::VoicemailUpdated { voicemail } => {
+                Some(&voicemail.ringid)
+            }
             _ => None,
         }
     }
@@ -1245,13 +1321,22 @@ pub enum ClientFrame {
 pub struct PushPerson {
     pub uuid: String,
     pub id: String,
+    /// Absent from older servers.
+    #[serde(default)]
+    pub kind: Option<AccountKind>,
     pub display_name: Option<String>,
     pub pfp_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PushParticipant {
+    /// Absent from older servers.
+    #[serde(default)]
+    pub uuid: Option<String>,
     pub id: String,
+    /// Absent from older servers.
+    #[serde(default)]
+    pub kind: Option<AccountKind>,
     pub display_name: Option<String>,
 }
 
@@ -1268,11 +1353,20 @@ pub enum PushPayload {
         expires_at: Time,
     },
     #[serde(rename = "call.cancelled")]
-    CallCancelled { ringid: String, invitation_id: String, call_uuid: String, reason: RingingStoppedReason },
+    CallCancelled {
+        ringid: String,
+        invitation_id: String,
+        call_uuid: String,
+        reason: RingingStoppedReason,
+    },
     #[serde(rename = "call.missed")]
     CallMissed { ringid: String, from: PushPerson },
     #[serde(rename = "voicemail.received")]
-    VoicemailReceived { voicemail_id: String, from: PushPerson, transcript: Option<String> },
+    VoicemailReceived {
+        voicemail_id: String,
+        from: PushPerson,
+        transcript: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1300,13 +1394,26 @@ pub fn normalize_actor_ref(input: &str) -> Option<String> {
         return None;
     }
     let lower = s.to_ascii_lowercase();
-    if let Some(handle) = lower.strip_prefix("c:").or_else(|| lower.strip_prefix("si:")) {
-        if handle.is_empty() || !handle.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
+    if let Some(handle) = lower
+        .strip_prefix("c:")
+        .or_else(|| lower.strip_prefix("si:"))
+    {
+        if handle.is_empty()
+            || !handle
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        {
             return None;
         }
         return Some(lower);
     }
     let is_uuid = lower.len() == 36
-        && lower.chars().enumerate().all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() });
+        && lower.chars().enumerate().all(|(i, c)| {
+            if [8, 13, 18, 23].contains(&i) {
+                c == '-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        });
     if is_uuid { Some(lower) } else { None }
 }

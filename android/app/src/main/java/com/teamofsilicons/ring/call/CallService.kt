@@ -30,18 +30,28 @@ class CallService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val ui = ring.calls.primary.value
-        if (ui == null) {
-            // The call ended before the service came up, but startForegroundService() still
-            // obliges it to enter the foreground once; leaving immediately avoids that crash.
-            runCatching {
-                ServiceCompat.startForeground(this, CallNotifications.SERVICE_ID, CallNotifications.idle(this), phoneCallType())
-            }
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return START_NOT_STICKY
+        val graph = ring
+        val ui = graph.calls.primary.value
+        if (ui != null) {
+            promote(CallNotifications.forCall(this, ui), wantsMic = ui.joined)
+            // Sticky: if the process dies mid-call, the system restarts this service (see below).
+            return START_STICKY
         }
-        promote(ui, CallNotifications.forCall(this, ui))
+        if (intent == null && graph.sessions.current != null) {
+            // The system restarted this sticky service after Ring's process died with a call on
+            // it. Stay in the foreground while the controller asks the server whether this device
+            // still carries the call; it rejoins it, or the service stops when there is none.
+            promote(CallNotifications.resuming(this), wantsMic = false)
+            graph.calls.resumeAfterRestart()
+            return START_STICKY
+        }
+        // The call ended before the service came up, but startForegroundService() still
+        // obliges it to enter the foreground once; leaving immediately avoids that crash.
+        runCatching {
+            ServiceCompat.startForeground(this, CallNotifications.SERVICE_ID, CallNotifications.idle(this), phoneCallType())
+        }
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
         return START_NOT_STICKY
     }
 
@@ -54,8 +64,7 @@ class CallService : Service() {
         super.onDestroy()
     }
 
-    private fun promote(ui: CallUi, notification: Notification) {
-        val wantsMic = ui.joined
+    private fun promote(notification: Notification, wantsMic: Boolean) {
         val micGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val phone = phoneCallType()
         val mic = if (Build.VERSION.SDK_INT >= 30 && wantsMic && micGranted) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
@@ -111,7 +120,7 @@ class CallService : Service() {
         fun refresh(context: Context) {
             val running = instance ?: return
             val ui = running.ring.calls.primary.value ?: return
-            running.promote(ui, CallNotifications.forCall(context, ui))
+            running.promote(CallNotifications.forCall(context, ui), wantsMic = ui.joined)
         }
 
         fun stop(context: Context) {

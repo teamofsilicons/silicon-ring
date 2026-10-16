@@ -226,7 +226,7 @@ private fun Banners(graph: AppGraph, permissions: CallPermissions) {
             )
         }
         elsewhere.forEach { call: Call ->
-            val device = call.participant(me)?.device?.name ?: "another device"
+            val device = call.participant(me)?.device?.label ?: "another device"
             val with = call.others(me).firstOrNull()?.label ?: "someone"
             Banner(
                 text = "On a call with $with on $device",

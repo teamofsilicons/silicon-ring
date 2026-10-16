@@ -39,8 +39,28 @@ pub struct Params {
 const MAX_VOICE_BACKLOG: Duration = Duration::from_secs(2);
 /// Wait this long after a delegation for the last words that prompted it.
 const DELEGATION_GRACE: Duration = Duration::from_millis(600);
-/// The longest the start text waits for someone else in the room to hear it.
-const START_WAIT: Duration = Duration::from_secs(10);
+/// The longest the representative waits for someone else in the room to hear it. A silicon
+/// caller's representative starts while the call rings (at most 60 s), so it is ready the
+/// moment the callee answers.
+const START_WAIT: Duration = Duration::from_secs(75);
+/// Someone in the room without an audio track (no microphone) is taken to be listening after
+/// this long.
+const PRESENCE_GRACE: Duration = Duration::from_secs(5);
+/// GPT-Live usually starts its opening within about 2 s of being asked; one that has not begun
+/// after this long is asked for again: once while the call rings, and once more when someone
+/// arrives.
+const OPENING_GRACE: Duration = Duration::from_secs(6);
+/// This much quiet after the opening's words ends it.
+const OPENING_QUIET: Duration = Duration::from_secs(1);
+/// Silence kept around the opening's words.
+const OPENING_MARGIN: Duration = Duration::from_millis(150);
+/// The longest opening kept.
+const OPENING_MAX: Duration = Duration::from_secs(20);
+/// After an opening was played, the playout queue runs behind GPT-Live until it is back under
+/// this depth (see `Bridge::catching_up`).
+const CATCH_UP: Duration = Duration::from_millis(400);
+/// GPT-Live's silence is digital zeros; anything below this is treated as silence.
+const SILENT: i16 = 64;
 /// Waits before each attempt to replace a failed GPT-Live session.
 const RESUME_DELAYS: [Duration; 3] = [
     Duration::ZERO,
@@ -85,9 +105,18 @@ async fn serve(
     let api_key = supervisor.config.openai_key()?.to_owned();
     let roster = Roster::new(p.roster.clone());
     let instructions = instructions(&p.silicon, &p.context, &roster);
+    let start = p
+        .start
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    // GPT-Live says the start text as soon as the session opens, whether or not anyone is there
+    // yet; until someone is, it is kept rather than played (see `Opening`).
+    let opening = start.as_deref().map(opening_request);
     // Not cancellable: a half-finished join would leave a participant behind in the room.
     let (live, joined) = tokio::join!(
-        Live::connect(&api_key, &p.voice, &instructions),
+        Live::connect(&api_key, &p.voice, &instructions, opening.as_deref()),
         room::join(&supervisor.config.livekit_url, &p.token),
     );
     let (mut live, (room, events)) = match (live, joined) {
@@ -129,10 +158,18 @@ async fn serve(
         delegation_ids: HashMap::new(),
         awaiting: HashMap::new(),
         delivered: HashSet::new(),
+        opening: start.is_some().then(Opening::default),
+        start,
+        asked_at: joined_at,
+        reminded: false,
+        catching_up: false,
+        waiting: Some(Waiting {
+            notes: Vec::new(),
+            until: joined_at + START_WAIT,
+            present_since: None,
+        }),
     };
-    let result = bridge
-        .run(&mut live, &room, events, session, p.start.as_deref())
-        .await;
+    let result = bridge.run(&mut live, &room, events, session).await;
     bridge.captions.finish();
     live.close().await;
     let _ = room.close().await;
@@ -150,18 +187,40 @@ fn signed_ms(at: Instant, since: Instant) -> i64 {
 fn instructions(silicon: &Account, context: &str, roster: &Roster) -> String {
     let name = silicon.label();
     let me = describe(silicon.display_name.as_deref(), &silicon.id);
+    // The delegation policy follows the structure GPT-Live's prompting guide recommends; the
+    // silicon is the backend, which the representative never names.
     let mut text = format!(
         "You are the voice of {me} on a live Silicon Ring voice call. {name} is a silicon, an AI agent \
          that cannot speak on calls itself, so you speak for it, in the first person, as {name}. Talk like a \
          warm, natural person on a phone call: short turns, plain spoken words, no lists or formatting, and \
          let people finish.\n\n\
-         You are {name}: say \"I\" and \"me\", never talk about {name} in the third person, and never \
-         say you are checking with {name} or with anyone else. You only know what is said on this call \
-         and what {name} tells you. Whenever something needs {name}'s knowledge, tools, memory, decisions \
-         or commitments, say a few words such as \"let me check\" or \"one moment\", then delegate it to \
-         {name}. Never guess or invent facts, results or promises. {name}'s replies reach you as thinking \
-         (private background; never read it out) or commentary (say it to the others right away, in your \
-         own words, as soon as there is a natural pause).\n\n"
+         You are {name}: say \"I\" and \"me\". Never talk about {name} in the third person, and never say \
+         you are checking with, asking or waiting for {name} or anyone else. Never guess or invent facts, \
+         results or promises.\n\n\
+         Delegation policy:\n\
+         Backend tools:\n\
+         - Your own knowledge, memory and tools as {name}: facts, lookups, schedules, messages and \
+         anything else you would need to look up or do.\n\
+         - Your decisions and commitments as {name}: promises, plans, bookings, permissions and opinions \
+         you have not already given on this call.\n\n\
+         Delegate to the backend when:\n\
+         - The request needs something you have not been told on this call: a fact, a lookup or an action.\n\
+         - The request needs your memory of something outside this call, or a decision or commitment \
+         from you.\n\
+         - A correction changes something you already delegated.\n\n\
+         Do not delegate to the backend when:\n\
+         - It is about the call itself: whether you can hear each other, who is on the call, who joined \
+         or left, or repeating what was just said.\n\
+         - It is a greeting, small talk, thanks, a pleasantry or a goodbye.\n\
+         - You can answer from this call or from what you have already been told.\n\
+         - You need a brief clarification to understand the request.\n\n\
+         When one turn mixes both, answer the part about the call yourself, then delegate the rest. \
+         Delegate before giving an answer that depends on backend work: say a few words such as \
+         \"let me check\" or \"one moment\", never mention the backend, and do not guess the result \
+         while waiting.\n\n\
+         Backend results reach you as thinking or commentary. Thinking is private background: use it when \
+         it is relevant, never read it out. Commentary is for the others to hear now: say it right away in \
+         your own words, without waiting for anyone to speak first, then pause and listen.\n\n"
     );
     let others: Vec<String> = roster
         .members()
@@ -175,9 +234,10 @@ fn instructions(silicon: &Account, context: &str, roster: &Roster) -> String {
         })
         .collect();
     if others.is_empty() {
-        text.push_str(
-            "Nobody else is on the call yet. You will be told when people join or leave.",
-        );
+        // Not "nobody is on the call yet": a silicon caller's representative opens the call while
+        // it rings (its opening is held until someone answers), and saying nobody is there makes
+        // GPT-Live less likely to speak.
+        text.push_str("You will be told when people join or leave.");
     } else {
         text.push_str(&format!(
             "On the call with you: {}. You will be told when people join or leave.",
@@ -199,6 +259,95 @@ struct PendingMessage {
     delegation_id: Option<String>,
 }
 
+/// The developer message that has GPT-Live open the call with the start text.
+fn opening_request(start: &str) -> String {
+    format!("Open the call now by saying exactly: {start}\nThen pause and listen.")
+}
+
+/// Until someone else in the room can hear the representative. Nothing GPT-Live says meanwhile
+/// is played or captioned, except its opening, which is kept for that moment.
+struct Waiting {
+    /// Join and leave announcements, held for that moment.
+    notes: Vec<String>,
+    /// Stop waiting at this point even if nobody is heard.
+    until: Instant,
+    /// When someone without an audio track was first seen in the room.
+    present_since: Option<Instant>,
+}
+
+/// GPT-Live's opening words (the start text), recorded while nobody can hear them yet so that
+/// they play the moment someone can: a silicon caller's representative is ready while the call
+/// rings, and the callee hears it without waiting for GPT-Live to react.
+#[derive(Default)]
+struct Opening {
+    audio: Vec<i16>,
+    text: String,
+    /// GPT-Live timeline span of `text`.
+    span: Option<(i64, i64)>,
+    started: bool,
+    /// Samples since the last audible one.
+    quiet: usize,
+    finished: bool,
+}
+
+fn live_samples(d: Duration) -> usize {
+    (LIVE_RATE as u128 * d.as_millis() / 1000) as usize
+}
+
+impl Opening {
+    /// Adds GPT-Live's audio until the opening has been said; returns whether it has.
+    fn push(&mut self, samples: &[i16]) -> bool {
+        if self.finished {
+            return true;
+        }
+        let last_audible = samples
+            .iter()
+            .rposition(|s| s.unsigned_abs() > live::AUDIBLE as u16);
+        if !self.started {
+            if last_audible.is_none() {
+                return false;
+            }
+            self.started = true;
+            self.audio = audio::silence(LIVE_RATE, OPENING_MARGIN);
+        }
+        self.audio.extend_from_slice(samples);
+        self.quiet = match last_audible {
+            Some(i) => samples.len() - 1 - i,
+            None => self.quiet + samples.len(),
+        };
+        if self.quiet >= live_samples(OPENING_QUIET) && live::spoken(&self.text).is_empty() {
+            // A sound but no words (GPT-Live can click as it connects): not the opening yet.
+            *self = Self::default();
+            return false;
+        }
+        if self.quiet >= live_samples(OPENING_QUIET)
+            || self.audio.len() >= live_samples(OPENING_MAX)
+        {
+            let excess = self.quiet.saturating_sub(live_samples(OPENING_MARGIN));
+            self.audio
+                .truncate(self.audio.len() - excess.min(self.audio.len()));
+            self.finished = true;
+        }
+        self.finished
+    }
+
+    fn transcript(&mut self, delta: &str, start_ms: i64, end_ms: i64) {
+        if self.finished {
+            return;
+        }
+        self.text.push_str(delta);
+        self.span = Some(match self.span {
+            Some((start, end)) => (start.min(start_ms), end.max(end_ms)),
+            None => (start_ms, end_ms),
+        });
+    }
+}
+
+/// Ring's own helpers (recorder, voicemail player) are never part of the conversation.
+fn is_system(identity: &str) -> bool {
+    identity.starts_with("ring:")
+}
+
 struct Bridge {
     reporter: Reporter,
     ringid: String,
@@ -218,6 +367,20 @@ struct Bridge {
     /// Messages sent to GPT-Live and not yet acknowledged, by message id.
     awaiting: HashMap<String, PendingMessage>,
     delivered: HashSet<String>,
+    /// The start text, which GPT-Live says as its session opens.
+    start: Option<String>,
+    /// When GPT-Live was last asked for the opening: its session start, or a reminder.
+    asked_at: Instant,
+    /// Whether this GPT-Live session has been reminded of the opening while the call rings.
+    reminded: bool,
+    /// Set while a played opening keeps the playout queue behind GPT-Live: what GPT-Live says
+    /// meanwhile (a reply to someone talking over the opening) is queued in full behind it rather
+    /// than cutting it short, and its silence is skipped until the queue is back to normal.
+    catching_up: bool,
+    /// Set until someone else can hear the representative.
+    waiting: Option<Waiting>,
+    /// The opening, until it has been played in full.
+    opening: Option<Opening>,
 }
 
 impl Bridge {
@@ -227,16 +390,8 @@ impl Bridge {
         room: &livekit::Room,
         mut events: tokio::sync::mpsc::UnboundedReceiver<livekit::RoomEvent>,
         session: &mut Session<RepControl>,
-        start: Option<&str>,
     ) -> Result<()> {
         let voice = Voice::publish(room, LIVE_RATE, MAX_VOICE_BACKLOG).await?;
-        // The start text is held until someone can hear it: a callee's device may still be
-        // joining the room when the representative is ready.
-        let mut start = start
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("Speak first. Begin by saying: {s}"));
-        let start_by = Instant::now() + START_WAIT;
         self.reporter.send(FromMedia::RepresentativeStatus {
             ringid: self.ringid.clone(),
             silicon_uuid: self.silicon.uuid.clone(),
@@ -271,22 +426,19 @@ impl Bridge {
                         // ring-server ends the room with the call; call.closed follows.
                         Change::Ended => return Ok(()),
                         Change::Disconnected(reason) => bail!("disconnected from the LiveKit room ({reason})"),
-                        Change::None | Change::Left(_) => Ok(()),
+                        // Someone's audio may have just arrived: speak to them at once.
+                        Change::None | Change::Left(_) => self.stop_waiting(live, &voice, room, &feeds, &me).await,
                     }
                 }
                 _ = housekeeping.tick() => {
                     self.captions.tick();
                     self.flush_delegations(false);
-                    let listening = || {
-                        Instant::now() >= start_by
-                            || feeds.identities().any(|id| id != me && !id.starts_with("ring:"))
-                    };
                     if heard_from_live.elapsed() > SILENCE_LIMIT {
                         Err(anyhow!("GPT-Live stopped responding"))
-                    } else if let Some(text) = start.take_if(|_| listening()) {
-                        live.append("instructions", &text, None, None).await
+                    } else if let Err(e) = self.remind(live).await {
+                        Err(e)
                     } else {
-                        Ok(())
+                        self.stop_waiting(live, &voice, room, &feeds, &me).await
                     }
                 }
             };
@@ -298,6 +450,133 @@ impl Bridge {
                 clock = Clock::new(LIVE_RATE);
                 heard_from_live = Instant::now();
             }
+        }
+    }
+
+    /// Ends the wait for a listener once someone else's audio is subscribed (or someone without
+    /// a microphone has been in the room for a while, or the wait ran out). The opening then
+    /// plays at once, and GPT-Live learns who joined meanwhile.
+    async fn stop_waiting(
+        &mut self,
+        live: &mut Live,
+        voice: &Voice,
+        room: &livekit::Room,
+        feeds: &Feeds,
+        me: &str,
+    ) -> Result<()> {
+        let Some(waiting) = self.waiting.as_mut() else {
+            return Ok(());
+        };
+        let heard = feeds.identities().any(|id| id != me && !is_system(id));
+        if !heard && Instant::now() < waiting.until {
+            let present = room
+                .remote_participants()
+                .keys()
+                .any(|id| id.as_str().starts_with("carbon:"));
+            if !present {
+                waiting.present_since = None;
+                return Ok(());
+            }
+            if waiting
+                .present_since
+                .get_or_insert_with(Instant::now)
+                .elapsed()
+                < PRESENCE_GRACE
+            {
+                return Ok(());
+            }
+        }
+        let Some(waiting) = self.waiting.take() else {
+            return Ok(());
+        };
+        let notes = waiting.notes.join(" ");
+        tracing::debug!(ringid = %self.ringid, heard, "someone is listening");
+        let Some(opening) = self.opening.as_mut() else {
+            // No start text: GPT-Live is told who joined like at any other time.
+            if notes.is_empty() {
+                return Ok(());
+            }
+            return live.append("instructions", &notes, None, None).await;
+        };
+        if opening.started {
+            voice.push_clip(&opening.audio);
+            self.catching_up = true;
+            if let Some((start_ms, end_ms)) = opening.span {
+                self.captions.delta(
+                    &opening.text,
+                    start_ms,
+                    end_ms,
+                    Instant::now() + OPENING_MARGIN,
+                );
+            }
+            tracing::debug!(
+                ringid = %self.ringid,
+                kept_ms = opening.audio.len() as u64 * 1000 / LIVE_RATE as u64,
+                finished = opening.finished,
+                "playing the opening"
+            );
+            if opening.finished {
+                self.opening = None;
+            }
+        } else if self.asked_at.elapsed() < OPENING_GRACE {
+            // GPT-Live has yet to begin; they hear it live.
+            self.opening = None;
+        } else {
+            // GPT-Live never said it: ask for it now.
+            self.opening = None;
+            let start = self.start.as_deref().unwrap_or_default();
+            let text = format!("{notes} Speak first. Begin by saying: {start}");
+            return live.append("instructions", text.trim(), None, None).await;
+        }
+        // They hear the opening; who joined is background, not a cue to greet them again.
+        if notes.is_empty() {
+            return Ok(());
+        }
+        live.append("thinking", &notes, None, None).await
+    }
+
+    /// Startup instructions do not guarantee a greeting: an opening GPT-Live has not begun while
+    /// the call still rings is asked for once more, so it is ready when someone answers.
+    async fn remind(&mut self, live: &mut Live) -> Result<()> {
+        let due = self.waiting.is_some()
+            && !self.reminded
+            && self.asked_at.elapsed() >= OPENING_GRACE
+            && self.opening.as_ref().is_some_and(|o| !o.started);
+        let Some(start) = self.start.as_deref().filter(|_| due) else {
+            return Ok(());
+        };
+        tracing::debug!(ringid = %self.ringid, "asking GPT-Live for the opening again");
+        self.reminded = true;
+        self.asked_at = Instant::now();
+        live.append("instructions", &opening_request(start), None, None)
+            .await
+    }
+
+    /// Plays GPT-Live's audio, or keeps its opening while nobody can hear it.
+    fn speak(&mut self, voice: &Voice, samples: &[i16]) {
+        match self.opening.as_mut() {
+            Some(opening) if self.waiting.is_some() => {
+                opening.push(samples);
+            }
+            // Nobody can hear it yet.
+            None if self.waiting.is_some() => {}
+            Some(opening) => {
+                // The rest of an opening that was under way when someone arrived, queued in
+                // full behind what was kept of it.
+                voice.push_clip(samples);
+                if opening.push(samples) || !opening.started {
+                    self.opening = None;
+                }
+            }
+            None if self.catching_up => {
+                if voice.queued() <= live_samples(CATCH_UP) {
+                    self.catching_up = false;
+                    voice.push(samples);
+                } else if samples.iter().any(|s| s.unsigned_abs() > SILENT as u16) {
+                    voice.push_clip(samples);
+                }
+            }
+            None => voice.push(samples),
         }
     }
 
@@ -321,12 +600,19 @@ impl Bridge {
         self.flush_delegations(true);
         let instructions = self.resume_instructions();
         self.heard = Heard::default();
+        // Nobody has heard the opening yet: the new session says it afresh.
+        let opening = self
+            .waiting
+            .as_ref()
+            .and(self.start.as_deref())
+            .map(opening_request);
+        self.opening = opening.as_ref().map(|_| Opening::default());
         let (api_key, voice) = (self.api_key.clone(), self.voice.clone());
         let mut last_error = cause;
         for (attempt, delay) in RESUME_DELAYS.into_iter().enumerate() {
             let connect = async {
                 tokio::time::sleep(delay).await;
-                Live::connect(&api_key, &voice, &instructions).await
+                Live::connect(&api_key, &voice, &instructions, opening.as_deref()).await
             };
             let connected = tokio::select! {
                 _ = stop.cancelled() => return Ok(false),
@@ -337,6 +623,8 @@ impl Bridge {
                     let old = std::mem::replace(live, fresh);
                     tokio::spawn(old.close());
                     self.resumed_at = Some(Instant::now());
+                    self.asked_at = Instant::now();
+                    self.reminded = false;
                     // Replies the old session never acknowledged go to the new one. It does
                     // not know the old delegations, so they are sent without one.
                     let unacknowledged: Vec<_> = self.awaiting.drain().collect();
@@ -365,6 +653,10 @@ impl Bridge {
 
     fn resume_instructions(&self) -> String {
         let mut text = instructions(&self.silicon, &self.context, &self.roster);
+        if self.waiting.is_some() {
+            // Nobody has heard anything yet: this is still the start of the call.
+            return text;
+        }
         text.push_str(
             "\n\nThe call is already under way: your line dropped for a moment and you are back. \
              Do not greet anyone or start over. If you were cut off, say briefly that the line \
@@ -393,8 +685,7 @@ impl Bridge {
         }
         let mut mix = vec![0i32; n];
         for (identity, samples) in feeds.pull(n) {
-            // Ring's own helpers (recorder, voicemail player) are never part of the conversation.
-            if identity != me && !identity.starts_with("ring:") && self.roster.audible(&identity) {
+            if identity != me && !is_system(&identity) && self.roster.audible(&identity) {
                 audio::mix_into(&mut mix, &samples);
             }
         }
@@ -403,7 +694,16 @@ impl Bridge {
 
     async fn live_event(&mut self, live: &mut Live, voice: &Voice, event: Event) -> Result<()> {
         match event {
-            Event::OutputAudio(samples) => voice.push(&samples),
+            Event::OutputAudio(samples) => self.speak(voice, &samples),
+            Event::OutputTranscript {
+                delta,
+                start_ms,
+                end_ms,
+            } if self.waiting.is_some() => {
+                if let Some(opening) = self.opening.as_mut() {
+                    opening.transcript(&delta, start_ms, end_ms);
+                }
+            }
             Event::OutputTranscript {
                 delta,
                 start_ms,
@@ -499,13 +799,13 @@ impl Bridge {
                 for (account, verb) in [(joined, "joined"), (left, "left")] {
                     if let Some(account) = account.filter(|a| a.uuid != self.silicon.uuid) {
                         let who = describe(account.display_name.as_deref(), &account.id);
-                        live.append(
-                            "instructions",
-                            &format!("{who} {verb} the call."),
-                            None,
-                            None,
-                        )
-                        .await?;
+                        let note = format!("{who} {verb} the call.");
+                        match self.waiting.as_mut() {
+                            // Held until someone can hear the representative, so GPT-Live
+                            // does not greet anyone who cannot hear it yet.
+                            Some(waiting) => waiting.notes.push(note),
+                            None => live.append("instructions", &note, None, None).await?,
+                        }
                     }
                 }
             }

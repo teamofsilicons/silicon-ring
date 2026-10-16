@@ -14,6 +14,7 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.media.AudioAttributes
 import android.media.RingtoneManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
@@ -29,6 +30,8 @@ import com.teamofsilicons.ring.ui.call.CallActivity
 
 /** Notification channels and the call, missed-call and voicemail notifications. */
 object CallNotifications {
+    private const val TAG = "RingNotifications"
+
     const val CHANNEL_INCOMING = "calls_incoming"
     const val CHANNEL_ONGOING = "calls_ongoing"
     const val CHANNEL_MISSED = "calls_missed"
@@ -78,8 +81,10 @@ object CallNotifications {
 
     fun postIncoming(context: Context, ui: CallUi) {
         if (!canNotify(context)) return
-        @Suppress("MissingPermission")
-        NotificationManagerCompat.from(context).notify(incomingId(ui.ringid), incoming(context, ui))
+        runCatching {
+            @Suppress("MissingPermission")
+            NotificationManagerCompat.from(context).notify(incomingId(ui.ringid), incoming(context, ui))
+        }.onFailure { Log.w(TAG, "Could not post the incoming call notification", it) }
     }
 
     fun cancelIncoming(context: Context, ringid: String) {
@@ -144,6 +149,25 @@ object CallNotifications {
         return builder.build()
     }
 
+    /** The call service's notification while it rejoins a call after Ring's process restarted. */
+    fun resuming(context: Context): Notification {
+        val open = PendingIntent.getActivity(
+            context, 0,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return NotificationCompat.Builder(context, CHANNEL_ONGOING)
+            .setSmallIcon(R.drawable.ic_stat_ring)
+            .setColor(accent)
+            .setContentTitle("Ring")
+            .setContentText("Reconnecting your call…")
+            .setContentIntent(open)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setOngoing(true)
+            .setSilent(true)
+            .build()
+    }
+
     /** A placeholder for the call service when the call it was started for has already ended. */
     fun idle(context: Context): Notification =
         NotificationCompat.Builder(context, CHANNEL_ONGOING)
@@ -179,8 +203,10 @@ object CallNotifications {
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
             .build()
-        @Suppress("MissingPermission")
-        NotificationManagerCompat.from(context).notify("missed:$ringid".hashCode(), notification)
+        runCatching {
+            @Suppress("MissingPermission")
+            NotificationManagerCompat.from(context).notify("missed:$ringid".hashCode(), notification)
+        }.onFailure { Log.w(TAG, "Could not post the missed call notification", it) }
     }
 
     fun voicemail(context: Context, voicemailId: String, from: Account, transcript: String?) {
@@ -202,8 +228,10 @@ object CallNotifications {
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
             .build()
-        @Suppress("MissingPermission")
-        NotificationManagerCompat.from(context).notify("voicemail:$voicemailId".hashCode(), notification)
+        runCatching {
+            @Suppress("MissingPermission")
+            NotificationManagerCompat.from(context).notify("voicemail:$voicemailId".hashCode(), notification)
+        }.onFailure { Log.w(TAG, "Could not post the voicemail notification", it) }
     }
 
     fun cancelVoicemail(context: Context, voicemailId: String) {

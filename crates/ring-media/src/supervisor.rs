@@ -95,6 +95,7 @@ pub struct Supervisor {
     pub config: Arc<Config>,
     pub reporter: Reporter,
     pub services: Services,
+    pub greetings: voicemail::Greetings,
     /// Cancelled on SIGTERM: every session finishes its work and ends.
     pub shutdown: CancellationToken,
     pub tracker: TaskTracker,
@@ -106,6 +107,7 @@ impl Supervisor {
     pub fn new(config: Arc<Config>, reporter: Reporter, shutdown: CancellationToken) -> Self {
         Self {
             services: Services::new(config.clone()),
+            greetings: voicemail::Greetings::default(),
             config,
             reporter,
             shutdown,
@@ -410,6 +412,12 @@ impl Supervisor {
                     Some(handle) => handle.stop.cancel(),
                     None => tracing::debug!(%voicemail_id, "no voicemail to stop"),
                 }
+            }
+            ToMedia::GreetingPrepare { voice, text } => {
+                if shutting_down {
+                    return;
+                }
+                self.spawn(voicemail::prepare(self.clone(), voice, text), |_, _| {});
             }
             ToMedia::VoicemailSynthesize {
                 voicemail_id,

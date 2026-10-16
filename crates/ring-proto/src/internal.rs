@@ -35,7 +35,10 @@ pub enum ToMedia {
         token: String,
     },
     #[serde(rename = "representative.stop")]
-    RepresentativeStop { ringid: String, silicon_uuid: String },
+    RepresentativeStop {
+        ringid: String,
+        silicon_uuid: String,
+    },
     #[serde(rename = "representative.message")]
     RepresentativeMessage {
         ringid: String,
@@ -47,13 +50,27 @@ pub enum ToMedia {
     },
     /// Roster changed; `joined`/`left` set when it was a join/leave (announce to representatives).
     #[serde(rename = "roster.changed")]
-    RosterChanged { ringid: String, roster: Vec<RosterMember>, joined: Option<Account>, left: Option<Account> },
+    RosterChanged {
+        ringid: String,
+        roster: Vec<RosterMember>,
+        joined: Option<Account>,
+        left: Option<Account>,
+    },
     /// The authoritative LiveKit identity for a carbon changed (handoff). Not announced.
     #[serde(rename = "authority.changed")]
-    AuthorityChanged { ringid: String, account_uuid: String, identity: String },
+    AuthorityChanged {
+        ringid: String,
+        account_uuid: String,
+        identity: String,
+    },
     /// Start recording and live STT for `ringid` (hidden identity `ring:recorder`).
     #[serde(rename = "recorder.start")]
-    RecorderStart { ringid: String, token: String, roster: Vec<RosterMember>, s3_key: String },
+    RecorderStart {
+        ringid: String,
+        token: String,
+        roster: Vec<RosterMember>,
+        s3_key: String,
+    },
     #[serde(rename = "recorder.stop")]
     RecorderStop { ringid: String },
     /// Play greeting + beep to `caller_identity` in `ringid` and record them (identity `ring:voicemail`).
@@ -71,9 +88,18 @@ pub enum ToMedia {
     /// Stop recording a voicemail now (caller hung up); finish and upload.
     #[serde(rename = "voicemail.stop")]
     VoicemailStop { voicemail_id: String },
+    /// Synthesize a voicemail greeting in `voice` and cache it ahead of need, so a caller who
+    /// reaches voicemail hears it at once. A hint: nothing is reported back.
+    #[serde(rename = "greeting.prepare")]
+    GreetingPrepare { voice: String, text: String },
     /// Synthesize a silicon's text voicemail in `voice` and upload it.
     #[serde(rename = "voicemail.synthesize")]
-    VoicemailSynthesize { voicemail_id: String, text: String, voice: String, s3_key: String },
+    VoicemailSynthesize {
+        voicemail_id: String,
+        text: String,
+        voice: String,
+        s3_key: String,
+    },
     /// The call is over: leave the room, stop everything for it.
     #[serde(rename = "call.closed")]
     CallClosed { ringid: String },
@@ -85,13 +111,32 @@ pub enum ToMedia {
 pub enum FromMedia {
     /// Sent once after connecting; lists rooms ring-media is still serving (after a reconnect).
     #[serde(rename = "hello")]
-    Hello { version: String, active_rings: Vec<String> },
+    Hello {
+        version: String,
+        active_rings: Vec<String>,
+    },
     #[serde(rename = "speech.partial")]
-    SpeechPartial { ringid: String, account_uuid: String, segment_id: String, text: String },
+    SpeechPartial {
+        ringid: String,
+        account_uuid: String,
+        segment_id: String,
+        text: String,
+    },
     #[serde(rename = "speech.final")]
-    SpeechFinal { ringid: String, account_uuid: String, segment_id: String, text: String, offset_ms: Option<i64> },
+    SpeechFinal {
+        ringid: String,
+        account_uuid: String,
+        segment_id: String,
+        text: String,
+        offset_ms: Option<i64>,
+    },
     #[serde(rename = "delegation.created")]
-    DelegationCreated { ringid: String, silicon_uuid: String, delegation_id: String, request: Option<String> },
+    DelegationCreated {
+        ringid: String,
+        silicon_uuid: String,
+        delegation_id: String,
+        request: Option<String>,
+    },
     #[serde(rename = "representative.status")]
     RepresentativeStatus {
         ringid: String,
@@ -102,7 +147,12 @@ pub enum FromMedia {
     #[serde(rename = "message.delivered")]
     MessageDelivered { ringid: String, message_id: String },
     #[serde(rename = "recording.finished")]
-    RecordingFinished { ringid: String, s3_key: Option<String>, duration_ms: Option<u64>, error: Option<String> },
+    RecordingFinished {
+        ringid: String,
+        s3_key: Option<String>,
+        duration_ms: Option<u64>,
+        error: Option<String>,
+    },
     #[serde(rename = "voicemail.finished")]
     VoicemailFinished {
         voicemail_id: String,
