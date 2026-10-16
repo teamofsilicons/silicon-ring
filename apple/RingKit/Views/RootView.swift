@@ -155,8 +155,9 @@ struct HomeView: View {
                             } label: {
                                 Label("New call", systemImage: "phone")
                                     .labelStyle(.titleAndIcon)
+                                    .font(RingFont.ui(14, .medium))
                             }
-                            .buttonStyle(RingButtonStyle(kind: .primary, small: true))
+                            .toolbarProminentStyle()
                             .keyboardShortcut("n", modifiers: .command)
                         }
                     }

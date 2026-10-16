@@ -212,6 +212,22 @@ struct RingButtonStyle: ButtonStyle {
     }
 }
 
+extension View {
+    /// The main action in a toolbar. From macOS 26 and iOS 26 the toolbar sets every item in a
+    /// Liquid Glass capsule, so the button takes the system's tinted glass instead of drawing its
+    /// own rounded rectangle inside that capsule, where its corners would be clipped. Set the
+    /// font on the label: the glass style ignores one set on the button.
+    @ViewBuilder
+    func toolbarProminentStyle() -> some View {
+        if #available(iOS 26, macOS 26, *) {
+            buttonStyle(.glassProminent)
+                .tint(Palette.accent)
+        } else {
+            buttonStyle(RingButtonStyle(kind: .primary, small: true))
+        }
+    }
+}
+
 extension ButtonStyle where Self == RingButtonStyle {
     static var ringPrimary: RingButtonStyle { RingButtonStyle(kind: .primary) }
     static var ringSecondary: RingButtonStyle { RingButtonStyle(kind: .secondary) }
