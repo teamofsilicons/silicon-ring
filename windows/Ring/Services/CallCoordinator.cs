@@ -933,6 +933,11 @@ public sealed class CallCoordinator
 
     private async Task LoadTranscriptAsync(ActiveCall active)
     {
+        if (active.TranscriptRequested)
+        {
+            return;
+        }
+        active.TranscriptRequested = true;
         try
         {
             // Pages run oldest first; only the latest lines matter on the live screen.
@@ -959,7 +964,8 @@ public sealed class CallCoordinator
         }
         catch (ApiException)
         {
-            // Live entries still arrive over the socket.
+            // Live entries still arrive over the socket; a later trigger may try again.
+            active.TranscriptRequested = false;
         }
     }
 
@@ -974,7 +980,7 @@ public sealed class CallCoordinator
         TranscriptLine? line = entry.Kind switch
         {
             EntryKinds.Speech when !string.IsNullOrWhiteSpace(entry.Text) =>
-                new TranscriptLine($"s:{entry.Seq}", who, entry.Text!.Trim(), false, false, actor?.Uuid),
+                new TranscriptLine($"s:{entry.Seq}", who, entry.Text!.Trim(), false, false, actor?.Uuid) { Seq = entry.Seq },
             EntryKinds.Joined => SystemLine(entry, $"{who} JOINED"),
             EntryKinds.Left => SystemLine(entry, $"{who} LEFT"),
             EntryKinds.Invited => SystemLine(entry, $"{who} INVITED {Format.Pixel(entry.DataAccount("invitee")?.Label ?? "SOMEONE")}"),
@@ -995,24 +1001,18 @@ public sealed class CallCoordinator
         {
             FinishInterim(active, entry.SegmentId, actor.Uuid);
         }
-        // Live interim lines stay below the final ones.
-        var firstInterim = -1;
+        // Final lines run in seq order (the stored transcript can land after live entries, as on
+        // a rejoin mid-call); live interim lines stay below them.
+        var index = active.Transcript.Count;
         for (var i = 0; i < active.Transcript.Count; i++)
         {
-            if (active.Transcript[i].IsInterim)
+            if (active.Transcript[i].IsInterim || active.Transcript[i].Seq > entry.Seq)
             {
-                firstInterim = i;
+                index = i;
                 break;
             }
         }
-        if (firstInterim >= 0)
-        {
-            active.Transcript.Insert(firstInterim, line);
-        }
-        else
-        {
-            active.Transcript.Add(line);
-        }
+        active.Transcript.Insert(index, line);
         TrimTranscript(active);
     }
 
@@ -1057,7 +1057,7 @@ public sealed class CallCoordinator
     }
 
     private static TranscriptLine SystemLine(TranscriptEntry entry, string text) =>
-        new($"e:{entry.Seq}", "", text.Trim(), false, true, null);
+        new($"e:{entry.Seq}", "", text.Trim(), false, true, null) { Seq = entry.Seq };
 
     private void AddPartial(ActiveCall active, TranscriptPartialData partial)
     {

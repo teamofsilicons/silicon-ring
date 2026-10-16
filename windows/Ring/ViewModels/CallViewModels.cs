@@ -97,6 +97,9 @@ public sealed class TranscriptLine : ObservableObject
 
     public string Key { get; }
 
+    /// <summary>The entry's seq on a final line, which keeps those lines in order; 0 on interim speech.</summary>
+    public long Seq { get; init; }
+
     public string Speaker { get; }
 
     public string? SpeakerUuid { get; }
@@ -176,6 +179,9 @@ public sealed class ActiveCall : ObservableObject
     public ObservableCollection<TranscriptLine> Transcript { get; } = [];
 
     public HashSet<long> SeenSeqs { get; } = [];
+
+    /// <summary>The stored transcript was asked for once; live entries cover the rest.</summary>
+    public bool TranscriptRequested { get; set; }
 
     /// <summary>Speech segments whose final entry has landed, so a late interim cannot bring them back.</summary>
     public HashSet<string> FinishedSegments { get; } = [];

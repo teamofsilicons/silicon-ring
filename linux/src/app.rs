@@ -1337,10 +1337,10 @@ impl App {
                 Ok::<_, ring_core::Error>(latest)
             })
             .await;
-            if let Ok(mut entries) = latest {
-                if app.active_ringid().as_deref() == Some(ringid.as_str()) {
-                    app.window().call.add_backlog(entries.make_contiguous());
-                }
+            if let Ok(mut entries) = latest
+                && app.active_ringid().as_deref() == Some(ringid.as_str())
+            {
+                app.window().call.add_backlog(entries.make_contiguous());
             }
         });
     }
