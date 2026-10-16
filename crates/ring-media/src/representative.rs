@@ -44,6 +44,14 @@ const DELEGATION_GRACE: Duration = Duration::from_millis(600);
 /// this long, then one more (offering to follow up) after `DELEGATION_FOLLOW_UP`.
 const DELEGATION_STILL_CHECKING: Duration = Duration::from_secs(12);
 const DELEGATION_FOLLOW_UP: Duration = Duration::from_secs(35);
+/// A progress update waits until GPT-Live has been quiet this long: one that lands mid-reply
+/// can displace what it is saying, such as an answer that has just arrived.
+const UPDATE_AFTER_QUIET: Duration = Duration::from_millis(1500);
+/// ...and until this long after the silicon's last commentary, so the answer is said first.
+const UPDATE_AFTER_ANSWER: Duration = Duration::from_secs(10);
+/// At most one progress update in this long. Other delegations due within it are covered by
+/// the same update rather than repeating "still checking".
+const UPDATE_SPACING: Duration = Duration::from_secs(10);
 /// The longest the representative waits for someone else in the room to hear it. A silicon
 /// caller's representative starts while the call rings (at most 60 s), so it is ready the
 /// moment the callee answers.
@@ -162,6 +170,9 @@ async fn serve(
         delegations: Vec::new(),
         delegation_ids: HashMap::new(),
         unanswered: HashMap::new(),
+        last_output: joined_at,
+        last_commentary: None,
+        last_update: None,
         awaiting: HashMap::new(),
         delivered: HashSet::new(),
         opening: start.is_some().then(Opening::default),
@@ -270,6 +281,67 @@ struct Unanswered {
     since: Instant,
     /// Progress updates already given to GPT-Live for it.
     updates: u8,
+    /// What was asked, once its grace period has passed; progress updates name it.
+    request: Option<String>,
+}
+
+impl Unanswered {
+    /// The progress update this delegation is due for within `ahead`, if any.
+    fn due(&self, ahead: Duration) -> Option<u8> {
+        let waited = self.since.elapsed() + ahead;
+        match self.updates {
+            0 if waited >= DELEGATION_STILL_CHECKING => Some(0),
+            1 if waited >= DELEGATION_FOLLOW_UP => Some(1),
+            _ => None,
+        }
+    }
+}
+
+/// What a progress update tells GPT-Live to say about `requests`, for update `stage`.
+fn progress_update(stage: u8, requests: &[String]) -> String {
+    /// A request is the caller's own words; long ones are cut at a word.
+    const MAX_REQUEST: usize = 120;
+    let requests: Vec<String> = requests
+        .iter()
+        .map(|r| {
+            if r.chars().count() <= MAX_REQUEST {
+                return r.clone();
+            }
+            let cut: String = r.chars().take(MAX_REQUEST).collect();
+            match cut.rsplit_once(' ') {
+                Some((head, _)) => format!("{head}…"),
+                None => format!("{cut}…"),
+            }
+        })
+        .collect();
+    let about = match requests.as_slice() {
+        [] => String::new(),
+        [one] => format!("About their request \"{one}\": "),
+        [rest @ .., last] => format!(
+            "About their requests {} and \"{last}\": ",
+            rest.iter()
+                .map(|r| format!("\"{r}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let update = match stage {
+        0 => {
+            "still working on it. If they do not have this answer yet, briefly tell them you are \
+             still checking. Then keep the conversation going and answer anything else you can \
+             meanwhile. Any answer you have been given and not said yet comes first."
+        }
+        _ => {
+            "this is taking longer than expected. If they still need this answer, tell them you \
+             will come back to it as soon as you have it, and carry on with the rest of the \
+             conversation. Any answer you have been given and not said yet comes first."
+        }
+    };
+    let mut text = format!("{about}{update}");
+    if let Some(first) = text.get(0..1) {
+        text.replace_range(0..1, &first.to_uppercase());
+    }
+    text
 }
 
 struct PendingMessage {
@@ -385,6 +457,11 @@ struct Bridge {
     delegation_ids: HashMap<String, String>,
     /// Delegations the silicon has not answered with commentary yet, by GPT-Live delegation id.
     unanswered: HashMap<String, Unanswered>,
+    /// When GPT-Live last sent audible speech, the silicon last sent commentary, and the last
+    /// progress update went out.
+    last_output: Instant,
+    last_commentary: Option<Instant>,
+    last_update: Option<Instant>,
     /// Messages sent to GPT-Live and not yet acknowledged, by message id.
     awaiting: HashMap<String, PendingMessage>,
     delivered: HashSet<String>,
@@ -720,7 +797,15 @@ impl Bridge {
 
     async fn live_event(&mut self, live: &mut Live, voice: &Voice, event: Event) -> Result<()> {
         match event {
-            Event::OutputAudio(samples) => self.speak(voice, &samples),
+            Event::OutputAudio(samples) => {
+                if samples
+                    .iter()
+                    .any(|s| s.unsigned_abs() > live::AUDIBLE as u16)
+                {
+                    self.last_output = Instant::now();
+                }
+                self.speak(voice, &samples)
+            }
             Event::OutputTranscript {
                 delta,
                 start_ms,
@@ -758,6 +843,7 @@ impl Bridge {
                         created: now,
                         since: now,
                         updates: 0,
+                        request: None,
                     },
                 );
                 let due = Instant::now() + DELEGATION_GRACE;
@@ -809,6 +895,9 @@ impl Bridge {
                     return Ok(());
                 }
                 let delegation_id = delegation_id.map(|id| self.live_delegation_id(&id));
+                if kind == MessageKind::Commentary {
+                    self.last_commentary = Some(Instant::now());
+                }
                 match (kind, &delegation_id) {
                     // Commentary is the answer the caller is waiting for. It also settles every
                     // earlier delegation (a correction delegates again and only the newest one
@@ -917,36 +1006,46 @@ impl Bridge {
     /// Keeps the caller informed while the silicon works on a delegation, so the representative
     /// never goes quiet on them.
     async fn update_unanswered(&mut self, live: &mut Live) -> Result<()> {
-        // One update per tick, oldest request first, so several slow delegations never make
-        // the representative say "still checking" twice in a row.
-        let due = self
+        let held = self.last_output.elapsed() < UPDATE_AFTER_QUIET
+            || self
+                .last_commentary
+                .is_some_and(|t| t.elapsed() < UPDATE_AFTER_ANSWER)
+            || self
+                .last_update
+                .is_some_and(|t| t.elapsed() < UPDATE_SPACING);
+        if held {
+            return Ok(());
+        }
+        // The oldest request that is due goes first.
+        let Some((id, stage)) = self
             .unanswered
             .iter()
-            .filter_map(|(id, open)| {
-                let waited = open.since.elapsed();
-                let text = match open.updates {
-                    0 if waited >= DELEGATION_STILL_CHECKING => {
-                        "Still working on it. If they do not have this answer yet, briefly tell \
-                         them you are still checking. Then keep the conversation going and answer \
-                         anything else you can meanwhile."
-                    }
-                    1 if waited >= DELEGATION_FOLLOW_UP => {
-                        "This is taking longer than expected. If they still need this answer, tell \
-                         them you will come back to it as soon as you have it, and carry on with \
-                         the rest of the conversation."
-                    }
-                    _ => return None,
-                };
-                Some((open.created, id.clone(), text))
-            })
-            .min_by_key(|(created, ..)| *created);
-        let Some((_, id, text)) = due else {
+            .filter_map(|(id, open)| Some((open.created, id, open.due(Duration::ZERO)?)))
+            .min_by_key(|(created, ..)| *created)
+            .map(|(_, id, stage)| (id.clone(), stage))
+        else {
             return Ok(());
         };
-        if let Some(open) = self.unanswered.get_mut(&id) {
-            open.updates += 1;
-        }
-        live.append("commentary", text, Some(&id), None).await
+        // Others at the same stage and due soon are covered by this update.
+        let mut covered: Vec<_> = self
+            .unanswered
+            .iter_mut()
+            .filter(|(_, open)| open.due(UPDATE_SPACING) == Some(stage))
+            .map(|(_, open)| {
+                open.updates += 1;
+                (open.created, open.request.clone())
+            })
+            .collect();
+        covered.sort_by_key(|(created, _)| *created);
+        let requests: Vec<String> = covered.into_iter().filter_map(|(_, r)| r).collect();
+        self.last_update = Some(Instant::now());
+        live.append(
+            "commentary",
+            &progress_update(stage, &requests),
+            Some(&id),
+            None,
+        )
+        .await
     }
 
     fn flush_delegations(&mut self, all: bool) {
@@ -960,6 +1059,13 @@ impl Bridge {
                 .heard
                 .request(offset_ms)
                 .or_else(|| self.captions.last_utterance());
+            if let Some(open) = self
+                .delegation_ids
+                .get(&delegation_id)
+                .and_then(|id| self.unanswered.get_mut(id))
+            {
+                open.request = request.clone();
+            }
             self.reporter.send(FromMedia::DelegationCreated {
                 ringid: self.ringid.clone(),
                 silicon_uuid: self.silicon.uuid.clone(),
