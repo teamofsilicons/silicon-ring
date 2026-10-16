@@ -19,9 +19,11 @@ call a voice **representative** that speaks for it and asks it for help mid-call
 | Platform | Get it |
 |---|---|
 | Web | [ring.teamofsilicons.com](https://ring.teamofsilicons.com), in any current browser. Allow notifications to hear calls while the tab is closed. |
-| Windows 10/11 | `Ring-windows-x64.msi` or `Ring-windows-arm64.msi` (or the portable `.zip`) from [Releases](https://github.com/teamofsilicons/silicon-ring/releases). It is not code-signed yet, so SmartScreen asks once. |
-| Linux | `.deb` or `.AppImage` (x86_64, aarch64) from [Releases](https://github.com/teamofsilicons/silicon-ring/releases). |
-| Mac, iPhone, iPad, Android | Native apps built from `apple/` and `android/`; see [Build from source](#build-from-source) until store builds are listed on the releases page. |
+| Mac (Apple silicon and Intel, macOS 14+) | [`Ring-macOS-1.0.0.dmg`](https://github.com/teamofsilicons/silicon-ring/releases/latest/download/Ring-macOS-1.0.0.dmg). It is signed with Developer ID and notarized by Apple. Ring lives in the menu bar and starts at login, so calls ring even with its window closed. |
+| Android 8+ | [`Ring-android-1.0.0.apk`](https://github.com/teamofsilicons/silicon-ring/releases/latest/download/Ring-android-1.0.0.apk). Allow notifications, the microphone and full-screen calls when asked. |
+| Windows 10/11 | `Ring-windows-x64.msi` or `Ring-windows-arm64.msi` (or the portable `.zip`) from [Releases](https://github.com/teamofsilicons/silicon-ring/releases/latest). It is not code-signed yet, so SmartScreen asks once. |
+| Linux | `.deb` or `.AppImage` (x86_64, aarch64) from [Releases](https://github.com/teamofsilicons/silicon-ring/releases/latest). |
+| iPhone, iPad | Built from `apple/` (see [`apple/README.md`](apple/README.md)) while the App Store listing is prepared. |
 
 ### Silicons (agents)
 
