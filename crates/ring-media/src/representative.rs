@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use ring_proto::{
-    Account, AccountKind, RepresentativeStatus,
+    Account, AccountKind, MessageKind, RepresentativeStatus,
     internal::{FromMedia, RosterMember},
 };
 
@@ -39,6 +39,11 @@ pub struct Params {
 const MAX_VOICE_BACKLOG: Duration = Duration::from_secs(2);
 /// Wait this long after a delegation for the last words that prompted it.
 const DELEGATION_GRACE: Duration = Duration::from_millis(600);
+/// While the silicon has not answered a delegation, GPT-Live is given progress updates to say,
+/// so the caller hears that the request is still being worked on instead of silence: one after
+/// this long, then one more (offering to follow up) after `DELEGATION_FOLLOW_UP`.
+const DELEGATION_STILL_CHECKING: Duration = Duration::from_secs(12);
+const DELEGATION_FOLLOW_UP: Duration = Duration::from_secs(35);
 /// The longest the representative waits for someone else in the room to hear it. A silicon
 /// caller's representative starts while the call rings (at most 60 s), so it is ready the
 /// moment the callee answers.
@@ -156,6 +161,7 @@ async fn serve(
         heard: Heard::default(),
         delegations: Vec::new(),
         delegation_ids: HashMap::new(),
+        unanswered: HashMap::new(),
         awaiting: HashMap::new(),
         delivered: HashSet::new(),
         opening: start.is_some().then(Opening::default),
@@ -218,6 +224,9 @@ fn instructions(silicon: &Account, context: &str, roster: &Roster) -> String {
          Delegate before giving an answer that depends on backend work: say a few words such as \
          \"let me check\" or \"one moment\", never mention the backend, and do not guess the result \
          while waiting.\n\n\
+         While something you delegated is still pending, stay with the people on the call. If anyone \
+         speaks, answer them right away: say you are still on it, answer anything you can without it, \
+         and keep the conversation going. Never go quiet or ignore someone because you are waiting.\n\n\
          Backend results reach you as thinking or commentary. Thinking is private background: use it when \
          it is relevant, never read it out. Commentary is for the others to hear now: say it right away in \
          your own words, without waiting for anyone to speak first, then pause and listen.\n\n"
@@ -251,6 +260,14 @@ fn instructions(silicon: &Account, context: &str, roster: &Roster) -> String {
         ));
     }
     text
+}
+
+/// A delegation still waiting for the silicon's commentary.
+struct Unanswered {
+    /// When it was created, or when the silicon last sent thinking for it.
+    since: Instant,
+    /// Progress updates already given to GPT-Live for it.
+    updates: u8,
 }
 
 struct PendingMessage {
@@ -364,6 +381,8 @@ struct Bridge {
     delegations: Vec<(String, Option<i64>, Instant)>,
     /// Ring delegation id → GPT-Live delegation id.
     delegation_ids: HashMap<String, String>,
+    /// Delegations the silicon has not answered with commentary yet, by GPT-Live delegation id.
+    unanswered: HashMap<String, Unanswered>,
     /// Messages sent to GPT-Live and not yet acknowledged, by message id.
     awaiting: HashMap<String, PendingMessage>,
     delivered: HashSet<String>,
@@ -433,6 +452,9 @@ impl Bridge {
                 _ = housekeeping.tick() => {
                     self.captions.tick();
                     self.flush_delegations(false);
+                    if let Err(e) = self.update_unanswered(live).await {
+                        tracing::debug!(ringid = %self.ringid, "progress update not sent: {e:#}");
+                    }
                     if heard_from_live.elapsed() > SILENCE_LIMIT {
                         Err(anyhow!("GPT-Live stopped responding"))
                     } else if let Err(e) = self.remind(live).await {
@@ -626,7 +648,9 @@ impl Bridge {
                     self.asked_at = Instant::now();
                     self.reminded = false;
                     // Replies the old session never acknowledged go to the new one. It does
-                    // not know the old delegations, so they are sent without one.
+                    // not know the old delegations, so they are sent without one, and their
+                    // progress updates stop.
+                    self.unanswered.clear();
                     let unacknowledged: Vec<_> = self.awaiting.drain().collect();
                     for (message_id, message) in unacknowledged {
                         live.append(&message.kind, &message.text, None, Some(&message_id))
@@ -724,7 +748,14 @@ impl Bridge {
             Event::Delegation { id, offset_ms } => {
                 // Ring's ids are dlg_…; remember GPT-Live's own id for the replies.
                 let ring_id = format!("dlg_{}", id.strip_prefix("item_").unwrap_or(&id));
-                self.delegation_ids.insert(ring_id.clone(), id);
+                self.delegation_ids.insert(ring_id.clone(), id.clone());
+                self.unanswered.insert(
+                    id,
+                    Unanswered {
+                        since: Instant::now(),
+                        updates: 0,
+                    },
+                );
                 let due = Instant::now() + DELEGATION_GRACE;
                 self.delegations.push((ring_id, offset_ms, due));
             }
@@ -774,6 +805,20 @@ impl Bridge {
                     return Ok(());
                 }
                 let delegation_id = delegation_id.map(|id| self.live_delegation_id(&id));
+                if let Some(id) = &delegation_id {
+                    match kind {
+                        // Commentary is the answer the caller is waiting for.
+                        MessageKind::Commentary => {
+                            self.unanswered.remove(id);
+                        }
+                        // Thinking means the silicon is working on it: give it more time.
+                        MessageKind::Thinking => {
+                            if let Some(open) = self.unanswered.get_mut(id) {
+                                open.since = Instant::now();
+                            }
+                        }
+                    }
+                }
                 live.append(
                     kind.as_str(),
                     &text,
@@ -855,6 +900,33 @@ impl Bridge {
             );
         } else {
             tracing::warn!(ringid = %self.ringid, %message_id, code, "GPT-Live rejected a message: {message}");
+        }
+        Ok(())
+    }
+
+    /// Keeps the caller informed while the silicon works on a delegation, so the representative
+    /// never goes quiet on them.
+    async fn update_unanswered(&mut self, live: &mut Live) -> Result<()> {
+        let mut due = Vec::new();
+        for (id, open) in &mut self.unanswered {
+            let waited = open.since.elapsed();
+            let text = match open.updates {
+                0 if waited >= DELEGATION_STILL_CHECKING => {
+                    "Still working on it. Briefly tell them you are still checking, then keep the \
+                     conversation going and answer anything else you can meanwhile."
+                }
+                1 if waited >= DELEGATION_FOLLOW_UP => {
+                    "This is taking longer than expected. Tell them you will come back to it as soon \
+                     as you have the answer, and carry on with the rest of the conversation."
+                }
+                _ => continue,
+            };
+            open.updates += 1;
+            due.push((id.clone(), text));
+        }
+        self.unanswered.retain(|_, open| open.updates < 2);
+        for (id, text) in due {
+            live.append("commentary", text, Some(&id), None).await?;
         }
         Ok(())
     }

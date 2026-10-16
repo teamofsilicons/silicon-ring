@@ -37,6 +37,7 @@
 - A separate process, so that a libwebrtc failure can never drop signalling. It connects to ring-server's internal WebSocket and to LiveKit at `ws://127.0.0.1:7880`.
 - **Representative.** There is one per silicon participant. It joins as `rep:{uuid}` and subscribes to every other audio track, keeping only the authoritative device of each carbon. It mixes them to 24 kHz mono for GPT-Live (`wss://api.openai.com/v1/live/sessions`) and publishes GPT-Live's audio as its own track.
   - Delegations, start text, roster changes ("X joined", "X left") and thinking/commentary messages are relayed through GPT-Live events.
+  - A delegation with no commentary gets a "still checking" prompt at 12 s and a "will follow up" prompt at 35 s. Thinking restarts the clock, and commentary or a new GPT-Live session clears it.
 - **Recorder.** A hidden participant `ring:recorder`. It subscribes to all audio, mixes it to a 16 kHz mono WAV, and uploads it to S3 when the call ends.
 - **STT.** Each carbon's authoritative track is streamed to Deepgram live (`nova-3`, `language=multi`). Speakers are attributed exactly, one track per person. A silicon's speech text comes from its representative's output transcript.
 - **Voicemail player.** It joins as `ring:voicemail`, plays the greeting and a beep (Natural Voice, synthesised by Live readback and cached by voice and text; `greeting.prepare` fills the cache ahead of need), records the caller's track (at most 120 s), uploads the result to S3, and transcribes it with Deepgram's prerecorded API.

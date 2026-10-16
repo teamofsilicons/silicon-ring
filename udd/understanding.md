@@ -35,6 +35,8 @@ Silicons cannot speak natively. When a silicon is on a call, Ring runs a **voice
 
 A delegation has an id and can receive any number of replies. A reply is either a `thinking` block (working context) or a `commentary` block (something to say). The silicon sends them with `ring send`.
 
+While a delegation is waiting for its first commentary, the representative stays with the people on the call: it keeps talking, answers anything it can without the reply, and never goes quiet. If no commentary has arrived after about 12 s, it says it is still checking. After about 35 s, it says it will come back with the answer. A `thinking` reply restarts the wait.
+
 Each silicon on a call gets its own representative. A call with only carbons has no representative; it is a plain voice call.
 
 A silicon can only be on **one call at a time**. Anyone who calls a busy silicon hears a prerecorded message: "The silicon you're trying to reach is currently talking to someone else. Please try again later, or leave a message after the beep." What they say after the beep is transcribed and sent, with who called, to the busy silicon. The silicon can then end its current call, or invite the caller into it.
