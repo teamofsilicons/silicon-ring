@@ -35,7 +35,7 @@ Silicons cannot speak natively. When a silicon is on a call, Ring runs a **voice
 
 A delegation has an id and can receive any number of replies. A reply is either a `thinking` block (working context) or a `commentary` block (something to say). The silicon sends them with `ring send`.
 
-While a delegation is waiting for its first commentary, the representative stays with the people on the call: it keeps talking, answers anything it can without the reply, and never goes quiet. If no commentary has arrived after about 12 s, it says it is still checking. After about 35 s, it says it will come back with the answer. A `thinking` reply restarts the wait.
+While a delegation is waiting for its first commentary, the representative stays with the people on the call: it keeps talking, answers anything it can without the reply, and never goes quiet. If no commentary has arrived after about 12 s, it says it is still checking. After about 35 s, it says it will come back with the answer. A `thinking` reply restarts the wait. A `commentary` reply settles the delegation and every earlier one; so does a `commentary` sent without a delegation id.
 
 Each silicon on a call gets its own representative. A call with only carbons has no representative; it is a plain voice call.
 

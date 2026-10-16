@@ -262,8 +262,10 @@ fn instructions(silicon: &Account, context: &str, roster: &Roster) -> String {
     text
 }
 
-/// A delegation still waiting for the silicon's commentary.
+/// A delegation still waiting for the silicon's commentary. It stays after both progress updates,
+/// so that its answer still settles the delegations before it.
 struct Unanswered {
+    created: Instant,
     /// When it was created, or when the silicon last sent thinking for it.
     since: Instant,
     /// Progress updates already given to GPT-Live for it.
@@ -749,10 +751,12 @@ impl Bridge {
                 // Ring's ids are dlg_…; remember GPT-Live's own id for the replies.
                 let ring_id = format!("dlg_{}", id.strip_prefix("item_").unwrap_or(&id));
                 self.delegation_ids.insert(ring_id.clone(), id.clone());
+                let now = Instant::now();
                 self.unanswered.insert(
                     id,
                     Unanswered {
-                        since: Instant::now(),
+                        created: now,
+                        since: now,
                         updates: 0,
                     },
                 );
@@ -805,19 +809,25 @@ impl Bridge {
                     return Ok(());
                 }
                 let delegation_id = delegation_id.map(|id| self.live_delegation_id(&id));
-                if let Some(id) = &delegation_id {
-                    match kind {
-                        // Commentary is the answer the caller is waiting for.
-                        MessageKind::Commentary => {
-                            self.unanswered.remove(id);
-                        }
-                        // Thinking means the silicon is working on it: give it more time.
-                        MessageKind::Thinking => {
-                            if let Some(open) = self.unanswered.get_mut(id) {
-                                open.since = Instant::now();
-                            }
+                match (kind, &delegation_id) {
+                    // Commentary is the answer the caller is waiting for. It also settles every
+                    // earlier delegation (a correction delegates again and only the newest one
+                    // gets an answer), and commentary without an id may answer any of them, so
+                    // no progress update could follow an answer the caller already has.
+                    (MessageKind::Commentary, Some(id)) => {
+                        if let Some(answered) = self.unanswered.remove(id) {
+                            self.unanswered
+                                .retain(|_, open| open.created > answered.created);
                         }
                     }
+                    (MessageKind::Commentary, None) => self.unanswered.clear(),
+                    // Thinking means the silicon is working on it: give it more time.
+                    (MessageKind::Thinking, Some(id)) => {
+                        if let Some(open) = self.unanswered.get_mut(id) {
+                            open.since = Instant::now();
+                        }
+                    }
+                    (MessageKind::Thinking, None) => {}
                 }
                 live.append(
                     kind.as_str(),
@@ -907,28 +917,36 @@ impl Bridge {
     /// Keeps the caller informed while the silicon works on a delegation, so the representative
     /// never goes quiet on them.
     async fn update_unanswered(&mut self, live: &mut Live) -> Result<()> {
-        let mut due = Vec::new();
-        for (id, open) in &mut self.unanswered {
-            let waited = open.since.elapsed();
-            let text = match open.updates {
-                0 if waited >= DELEGATION_STILL_CHECKING => {
-                    "Still working on it. Briefly tell them you are still checking, then keep the \
-                     conversation going and answer anything else you can meanwhile."
-                }
-                1 if waited >= DELEGATION_FOLLOW_UP => {
-                    "This is taking longer than expected. Tell them you will come back to it as soon \
-                     as you have the answer, and carry on with the rest of the conversation."
-                }
-                _ => continue,
-            };
+        // One update per tick, oldest request first, so several slow delegations never make
+        // the representative say "still checking" twice in a row.
+        let due = self
+            .unanswered
+            .iter()
+            .filter_map(|(id, open)| {
+                let waited = open.since.elapsed();
+                let text = match open.updates {
+                    0 if waited >= DELEGATION_STILL_CHECKING => {
+                        "Still working on it. If they do not have this answer yet, briefly tell \
+                         them you are still checking. Then keep the conversation going and answer \
+                         anything else you can meanwhile."
+                    }
+                    1 if waited >= DELEGATION_FOLLOW_UP => {
+                        "This is taking longer than expected. If they still need this answer, tell \
+                         them you will come back to it as soon as you have it, and carry on with \
+                         the rest of the conversation."
+                    }
+                    _ => return None,
+                };
+                Some((open.created, id.clone(), text))
+            })
+            .min_by_key(|(created, ..)| *created);
+        let Some((_, id, text)) = due else {
+            return Ok(());
+        };
+        if let Some(open) = self.unanswered.get_mut(&id) {
             open.updates += 1;
-            due.push((id.clone(), text));
         }
-        self.unanswered.retain(|_, open| open.updates < 2);
-        for (id, text) in due {
-            live.append("commentary", text, Some(&id), None).await?;
-        }
-        Ok(())
+        live.append("commentary", text, Some(&id), None).await
     }
 
     fn flush_delegations(&mut self, all: bool) {
