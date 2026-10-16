@@ -52,6 +52,10 @@ scripts/build-linux-server.sh         # ring-server + ring-media for aarch64 AL2
 deploy/deploy.py package              # → dist/release/<id>.tar.gz and <id>.json
 ```
 
+On a slow or flaky network, the container's libwebrtc download can time out. Fetch
+`webrtc-linux-arm64-release.zip` (the URL is in the error) on the host, unzip it under `target/`,
+and run `LK_CUSTOM_WEBRTC=target/…/linux-arm64-release scripts/build-linux-server.sh`.
+
 The server binaries can also come from the **Server binaries** workflow
 (`.github/workflows/media.yml`): download its `ring-server-linux-aarch64` artifact into
 `dist/server/`.

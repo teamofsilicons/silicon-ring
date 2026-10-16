@@ -9,6 +9,9 @@
 #   CARGO_BUILD_JOBS   parallel rustc jobs inside the container (default: all CPUs)
 #   CARGO_TARGET_DIR   a directory inside the repository (it is mounted into the container); the
 #                      build goes to its al2023/ subdirectory (default target/infra/al2023)
+#   LK_CUSTOM_WEBRTC   an unpacked webrtc-linux-arm64-release directory inside the repository, used
+#                      instead of downloading libwebrtc from GitHub inside the container (for slow
+#                      or flaky networks)
 #
 # The cargo registry lives in named docker volumes so repeat builds do not download crates again.
 # Build output never shares a directory with host builds (build scripts differ).
@@ -30,6 +33,15 @@ if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
     "$ROOT"/*) TARGET_DIR="${CARGO_TARGET_DIR#"$ROOT"/}/al2023" ;;
     /*) die "CARGO_TARGET_DIR must be inside $ROOT, which is what the build container sees" ;;
     *) TARGET_DIR="${CARGO_TARGET_DIR%/}/al2023" ;;
+  esac
+fi
+
+WEBRTC=
+if [[ -n "${LK_CUSTOM_WEBRTC:-}" ]]; then
+  dir=$(cd "$LK_CUSTOM_WEBRTC" 2>/dev/null && pwd) || die "LK_CUSTOM_WEBRTC $LK_CUSTOM_WEBRTC does not exist"
+  case "$dir" in
+    "$ROOT"/*) WEBRTC="/src/${dir#"$ROOT"/}" ;;
+    *) die "LK_CUSTOM_WEBRTC must be inside $ROOT, which is what the build container sees" ;;
   esac
 fi
 
@@ -76,9 +88,11 @@ docker run --rm --platform "$PLATFORM" \
   -e CARGO_TARGET_DIR="/src/$TARGET_DIR" \
   -e CARGO_TERM_COLOR=always \
   -e JOBS="${CARGO_BUILD_JOBS:-}" \
+  -e WEBRTC="$WEBRTC" \
   -e CC=clang -e CXX=clang++ \
   "$IMAGE" bash -euo pipefail -c '
     if [[ -n "$JOBS" ]]; then export CARGO_BUILD_JOBS=$JOBS; fi
+    if [[ -n "$WEBRTC" ]]; then export LK_CUSTOM_WEBRTC=$WEBRTC; fi
     cargo build --release --locked -p silicon-ring-server -p silicon-ring-media
     sh scripts/check-linux-binary.sh "$CARGO_TARGET_DIR/release/ring-server" "$CARGO_TARGET_DIR/release/ring-media"
     rustc --version > "$CARGO_TARGET_DIR/release/rustc-version.txt"
