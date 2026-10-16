@@ -218,7 +218,11 @@ pub async fn resolve(app: &App, reference: &str) -> ApiResult<Account> {
     }
     let summary = match app.accounts.app().resolve(&normalized).await {
         Ok(summary) => summary,
-        Err(e) if e.is_not_found() => return Err(ApiError::account_not_found(&normalized)),
+        // Accounts refuses ids that break its handle rules (a half-typed `c:sh`) with
+        // `invalid_id`; to the caller that is simply an account that does not exist.
+        Err(e) if e.is_not_found() || e.code() == "invalid_id" => {
+            return Err(ApiError::account_not_found(&normalized));
+        }
         Err(e) => {
             // Serve a known active account through an Accounts outage rather than failing the call.
             if let Some(row) = local.filter(|r| r.status == "active") {
