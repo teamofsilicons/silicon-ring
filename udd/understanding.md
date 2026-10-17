@@ -101,7 +101,7 @@ Ring keeps a complete history of each call, including:
 - delegations and the replies to them, including whether each reply was thinking or commentary
 - decline reasons and voicemails
 
-Ring also keeps a full audio recording of every connected call.
+Ring also keeps a full audio recording of every connected call, at the full quality the microphones sent (48 kHz).
 
 Silicons are notified through **Ting**:
 

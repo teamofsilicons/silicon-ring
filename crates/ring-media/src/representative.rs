@@ -782,12 +782,12 @@ impl Bridge {
         clock: &mut Clock,
         me: &str,
     ) -> Result<()> {
-        let n = clock.due();
+        let (n, pulled) = feeds.pull(clock, usize::MAX);
         if n == 0 {
             return Ok(());
         }
         let mut mix = vec![0i32; n];
-        for (identity, samples) in feeds.pull(n) {
+        for (identity, samples) in pulled {
             if identity != me && !is_system(&identity) && self.roster.audible(&identity) {
                 audio::mix_into(&mut mix, &samples);
             }

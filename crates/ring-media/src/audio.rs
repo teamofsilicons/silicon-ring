@@ -1,5 +1,5 @@
-//! PCM helpers: per-track jitter buffers, a wall-clock mixer timeline, WAV files and tones.
-//! All audio is mono signed 16-bit.
+//! PCM helpers: per-track jitter buffers mixed on a timeline that follows the audio, WAV files
+//! and tones. All audio is mono signed 16-bit.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -14,40 +14,63 @@ use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use livekit::{
     prelude::RemoteAudioTrack,
-    webrtc::audio_stream::native::{NativeAudioStream, NativeAudioStreamOptions},
+    webrtc::{
+        audio_stream::native::{NativeAudioStream, NativeAudioStreamOptions},
+        stats::RtcStats,
+    },
 };
 use tokio::task::JoinHandle;
 
 /// GPT-Live's audio format and the representative's published track.
 pub const LIVE_RATE: u32 = 24_000;
-/// Recordings, voicemail and Deepgram input.
-pub const RECORD_RATE: u32 = 16_000;
+/// Recordings, voicemail and Deepgram input: the rate Opus decodes at, so nothing the caller's
+/// microphone sent is lost to resampling.
+pub const RECORD_RATE: u32 = 48_000;
 /// Mixer cadence.
 pub const TICK: Duration = Duration::from_millis(20);
 
-/// How much to buffer per track: `prime` before reading it (so delivery jitter never clicks),
-/// at most `cap` (older audio is dropped so a stall never builds up lasting latency).
+/// How each track is buffered before it is mixed.
+///
+/// libwebrtc decodes every track in 10 ms frames on one playout clock, so all tracks deliver at
+/// the same steady rate; only when the frames reach the mixer varies. The mix therefore follows
+/// the audio, not the wall clock: `prime` stays buffered per track to absorb ordinary delivery
+/// jitter, and when frames run later than that (a busy host) the mix waits for them, up to
+/// `patience` behind the wall clock, rather than filling the gap with silence. A stall then
+/// delays the audio instead of cutting holes into words.
 #[derive(Clone, Copy)]
 pub struct Buffering {
     pub prime: Duration,
-    pub cap: Duration,
+    /// How far the mix may fall behind the wall clock waiting for a late track before it plays
+    /// silence in its place.
+    pub patience: Duration,
+    /// Extra latency a track may keep after such a gap; beyond it, quiet audio is skipped until
+    /// the track is back within bounds.
+    pub slack: Duration,
 }
 
 impl Buffering {
     /// For live conversation: little added latency.
     pub const INTERACTIVE: Self = Self {
         prime: Duration::from_millis(40),
-        cap: Duration::from_millis(400),
+        patience: Duration::from_millis(300),
+        slack: Duration::from_millis(60),
     };
     /// For recordings and speech-to-text, where latency does not matter but gaps do.
     pub const RECORDING: Self = Self {
         prime: Duration::from_millis(200),
-        cap: Duration::from_millis(1500),
+        patience: Duration::from_secs(3),
+        slack: Duration::from_secs(1),
     };
+
+    /// The most a track holds: a bound for a track nobody reads (one heard while a voicemail
+    /// greeting plays), which the mix itself only reaches after stalls far beyond `patience`.
+    fn cap(self) -> Duration {
+        self.prime + self.patience + self.slack + Duration::from_millis(500)
+    }
 }
 
-/// libwebrtc's per-stream queue in 10 ms frames; generous, so bursts after a stall are kept.
-const STREAM_QUEUE_FRAMES: usize = 50;
+/// A 10 ms block below this peak (about -40 dBFS) is quiet enough to skip.
+const QUIET: u16 = 330;
 
 fn samples_for(rate: u32, d: Duration) -> usize {
     (rate as u128 * d.as_millis() / 1000) as usize
@@ -57,8 +80,17 @@ struct FeedBuffer {
     samples: VecDeque<i16>,
     primed: bool,
     prime: usize,
+    slack: usize,
     cap: usize,
-    underruns: u64,
+    block: usize,
+    /// Samples mixed as silence because the track was later than `patience`.
+    late: u64,
+    /// Quiet samples skipped to shed latency.
+    trimmed: u64,
+    /// Samples dropped at `cap`.
+    dropped: u64,
+    /// libwebrtc's latest receive statistics for the track, when they are being reported.
+    reception: Option<Reception>,
 }
 
 impl FeedBuffer {
@@ -67,8 +99,13 @@ impl FeedBuffer {
             samples: VecDeque::new(),
             primed: false,
             prime: samples_for(rate, buffering.prime),
-            cap: samples_for(rate, buffering.cap),
-            underruns: 0,
+            slack: samples_for(rate, buffering.slack),
+            cap: samples_for(rate, buffering.cap()),
+            block: (rate / 100) as usize,
+            late: 0,
+            trimmed: 0,
+            dropped: 0,
+            reception: None,
         }
     }
 
@@ -76,31 +113,55 @@ impl FeedBuffer {
         self.samples.extend(data);
         let excess = self.samples.len().saturating_sub(self.cap);
         self.samples.drain(..excess);
+        self.dropped += excess as u64;
     }
 
-    /// Adds up to `out.len()` samples into `out`. Returns whether any audio was taken.
-    fn take_into(&mut self, out: &mut [i32]) -> bool {
-        if !self.primed {
-            if self.samples.len() < self.prime {
-                return false;
-            }
+    /// A track plays (and is waited for) once `prime` is buffered.
+    fn ready(&mut self) -> Option<usize> {
+        if !self.primed && self.samples.len() >= self.prime {
             self.primed = true;
         }
-        let n = out.len().min(self.samples.len());
-        if n < out.len() {
-            // Underrun: play what is left and wait for the buffer to refill.
-            self.primed = false;
-            self.underruns += 1;
+        self.primed.then_some(self.samples.len())
+    }
+
+    /// Adds the next `out.len()` samples into `out`. Returns whether any audio was taken.
+    fn take_into(&mut self, out: &mut [i32]) -> bool {
+        if !self.primed {
+            return false;
         }
+        let n = out.len().min(self.samples.len());
         for (acc, s) in out.iter_mut().zip(self.samples.drain(..n)) {
             *acc += s as i32;
+        }
+        if n < out.len() {
+            // The mix waited `patience` and this track is still short: the rest is silence, and
+            // the track is not waited for again until it has primed.
+            self.primed = false;
+            self.late += (out.len() - n) as u64;
+        } else {
+            self.trim();
         }
         n > 0
     }
 
+    /// Sheds latency left over from a late stretch by skipping quiet 10 ms blocks.
+    fn trim(&mut self) {
+        while self.samples.len() > self.prime + self.slack
+            && self
+                .samples
+                .range(..self.block)
+                .all(|s| s.unsigned_abs() < QUIET)
+        {
+            self.samples.drain(..self.block);
+            self.trimmed += self.block as u64;
+        }
+    }
+
+    /// Discards the buffered audio on purpose, so whatever was dropped meanwhile is not a loss.
     fn clear(&mut self) {
         self.samples.clear();
         self.primed = false;
+        self.dropped = 0;
     }
 
     fn take_all(&mut self) -> Vec<i16> {
@@ -108,6 +169,65 @@ impl FeedBuffer {
         self.samples.drain(..).collect()
     }
 }
+
+/// How a track's packets arrived and were decoded, from libwebrtc's receive statistics. Loss,
+/// concealment and time stretching all happen before the mixer, and are what makes a voice
+/// sound choppy when the network (or the sender) is at fault.
+struct Reception {
+    codec: String,
+    /// Seconds of audio decoded; with `packets`, shows whether the sender uses DTX (Opus sends
+    /// 50 packets a second without it).
+    seconds: f64,
+    /// Average payload bitrate.
+    kbps: f64,
+    packets: u64,
+    lost: i64,
+    jitter_ms: f64,
+    jitter_buffer_ms: f64,
+    concealed_pct: f64,
+    concealment_events: u64,
+    accelerated_ms: u64,
+    decelerated_ms: u64,
+    fec_packets: u64,
+}
+
+impl Reception {
+    fn from_stats(stats: &[RtcStats]) -> Option<Self> {
+        let rtp = stats.iter().find_map(|s| match s {
+            RtcStats::InboundRtp(rtp) => Some(rtp),
+            _ => None,
+        })?;
+        let codec = stats.iter().find_map(|s| match s {
+            RtcStats::Codec(c) if c.rtc.id == rtp.stream.codec_id => Some(&c.codec),
+            _ => None,
+        });
+        let clock_rate = codec.map_or(48_000, |c| c.clock_rate.max(1)) as u64;
+        let decoded = &rtp.inbound;
+        let seconds = decoded.total_samples_duration;
+        Some(Self {
+            codec: codec.map_or_else(|| "unknown".into(), |c| c.mime_type.clone()),
+            seconds: seconds.round(),
+            kbps: (decoded.bytes_received as f64 * 8.0 / 1000.0 / seconds.max(1.0)).round(),
+            packets: rtp.received.packets_received,
+            lost: rtp.received.packets_lost,
+            jitter_ms: (rtp.received.jitter * 1000.0).round(),
+            jitter_buffer_ms: (decoded.jitter_buffer_delay * 1000.0
+                / decoded.jitter_buffer_emitted_count.max(1) as f64)
+                .round(),
+            concealed_pct: (decoded.concealed_samples as f64 * 1000.0
+                / decoded.total_samples_received.max(1) as f64)
+                .round()
+                / 10.0,
+            concealment_events: decoded.concealment_events,
+            accelerated_ms: decoded.removed_samples_for_acceleration * 1000 / clock_rate,
+            decelerated_ms: decoded.inserted_samples_for_deceleration * 1000 / clock_rate,
+            fec_packets: decoded.fec_packets_received,
+        })
+    }
+}
+
+/// How often a reported track's receive statistics are refreshed.
+const RECEPTION_INTERVAL: Duration = Duration::from_secs(5);
 
 struct Feed {
     identity: String,
@@ -120,6 +240,8 @@ pub struct Feeds {
     rate: u32,
     buffering: Buffering,
     feeds: HashMap<String, Feed>,
+    /// The call whose tracks' reception is logged when they go away.
+    report: Option<String>,
 }
 
 impl Feeds {
@@ -128,21 +250,44 @@ impl Feeds {
             rate,
             buffering,
             feeds: HashMap::new(),
+            report: None,
         }
+    }
+
+    /// Logs how each track's audio arrived when it goes away.
+    pub fn reporting(mut self, ringid: &str) -> Self {
+        self.report = Some(ringid.to_owned());
+        self
     }
 
     pub fn add(&mut self, track_sid: String, identity: String, track: RemoteAudioTrack) {
         self.remove(&track_sid);
         let buffer = Arc::new(Mutex::new(FeedBuffer::new(self.rate, self.buffering)));
         let sink = buffer.clone();
+        // libwebrtc's own queue (10 ms frames, oldest dropped when full) holds as much as the
+        // buffer does, so a burst after a stall reaches it whole.
         let options = NativeAudioStreamOptions {
-            queue_size_frames: Some(STREAM_QUEUE_FRAMES),
+            queue_size_frames: Some(self.buffering.cap().as_millis() as usize / 10),
         };
         let mut stream =
             NativeAudioStream::with_options(track.rtc_track(), self.rate as i32, 1, options);
+        let reporting = self.report.is_some();
         let reader = tokio::spawn(async move {
-            while let Some(frame) = stream.next().await {
-                sink.lock().unwrap().push(&frame.data);
+            let mut stats = tokio::time::interval(RECEPTION_INTERVAL);
+            stats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    frame = stream.next() => match frame {
+                        Some(frame) => sink.lock().unwrap().push(&frame.data),
+                        None => break,
+                    },
+                    _ = stats.tick(), if reporting => {
+                        let latest = track.get_stats().await.unwrap_or_default();
+                        if let Some(reception) = Reception::from_stats(&latest) {
+                            sink.lock().unwrap().reception = Some(reception);
+                        }
+                    }
+                }
             }
         });
         tracing::debug!(%identity, track = %track_sid, "subscribed audio");
@@ -158,6 +303,7 @@ impl Feeds {
 
     pub fn remove(&mut self, track_sid: &str) {
         if let Some(feed) = self.feeds.remove(track_sid) {
+            self.log_reception(&feed);
             feed.reader.abort();
         }
     }
@@ -182,31 +328,51 @@ impl Feeds {
         self.feeds.values().map(|f| f.identity.as_str())
     }
 
-    /// Takes the next `n` samples from every track, summed per participant identity. Every
-    /// track is drained on every call, used or not, so none of them ever goes stale.
-    pub fn pull(&self, n: usize) -> HashMap<String, Vec<i32>> {
+    /// Advances the mix: takes the audio due on `clock` (at most `limit` samples) from every
+    /// track, summed per participant identity, and returns how many samples that is. It is less
+    /// than the wall clock asks for, or none, while a playing track's audio is late and the mix
+    /// waits for it. Every track is drained on every call, used or not, so none of them ever
+    /// goes stale.
+    pub fn pull(&self, clock: &mut Clock, limit: usize) -> (usize, HashMap<String, Vec<i32>>) {
         let mut out: HashMap<String, Vec<i32>> = HashMap::new();
-        for feed in self.feeds.values() {
+        let behind = clock.behind().min(limit);
+        if behind == 0 {
+            return (0, out);
+        }
+        let mut buffers: Vec<_> = self
+            .feeds
+            .values()
+            .map(|f| (f, f.buffer.lock().unwrap()))
+            .collect();
+        // Follow the slowest playing track, but no further behind the wall clock than `patience`.
+        let ready = buffers.iter_mut().filter_map(|(_, b)| b.ready()).min();
+        let patience = samples_for(self.rate, self.buffering.patience);
+        let n = match ready {
+            Some(ready) => behind.min(ready).max(behind.saturating_sub(patience)),
+            None => behind,
+        };
+        if n == 0 {
+            return (0, out);
+        }
+        for (feed, buffer) in &mut buffers {
             let mut acc = vec![0i32; n];
-            let took = {
-                let mut buffer = feed.buffer.lock().unwrap();
-                let underruns = buffer.underruns;
-                let took = buffer.take_into(&mut acc);
-                if buffer.underruns != underruns {
-                    tracing::trace!(identity = %feed.identity, "audio underrun");
-                }
-                took
-            };
+            let late = buffer.late;
+            let took = buffer.take_into(&mut acc);
+            if buffer.late != late {
+                let missing_ms = (buffer.late - late) * 1000 / self.rate as u64;
+                tracing::debug!(identity = %feed.identity, missing_ms, "audio arrived too late; mixed silence");
+            }
             if took {
                 match out.get_mut(&feed.identity) {
-                    Some(existing) => existing.iter_mut().zip(&acc).for_each(|(a, b)| *a += b),
+                    Some(existing) => mix_into(existing, &acc),
                     None => {
                         out.insert(feed.identity.clone(), acc);
                     }
                 }
             }
         }
-        out
+        clock.mixed += n as u64;
+        (n, out)
     }
 
     /// Everything still buffered, ignoring priming, summed per identity and padded to one
@@ -234,11 +400,52 @@ impl Feeds {
             feed.buffer.lock().unwrap().clear();
         }
     }
+
+    /// `late_ms`, `trimmed_ms` and `dropped_ms` are the mixer's own gaps and skips; the rest is
+    /// libwebrtc's view of the network and the decoder, as of the last refresh.
+    fn log_reception(&self, feed: &Feed) {
+        let Some(ringid) = &self.report else { return };
+        let ms = |samples: u64| samples * 1000 / self.rate as u64;
+        let buffer = feed.buffer.lock().unwrap();
+        let (late_ms, trimmed_ms, dropped_ms) =
+            (ms(buffer.late), ms(buffer.trimmed), ms(buffer.dropped));
+        match &buffer.reception {
+            Some(r) => tracing::info!(
+                ringid,
+                identity = %feed.identity,
+                codec = %r.codec,
+                seconds = r.seconds,
+                kbps = r.kbps,
+                packets = r.packets,
+                lost = r.lost,
+                jitter_ms = r.jitter_ms,
+                jitter_buffer_ms = r.jitter_buffer_ms,
+                concealed_pct = r.concealed_pct,
+                concealment_events = r.concealment_events,
+                accelerated_ms = r.accelerated_ms,
+                decelerated_ms = r.decelerated_ms,
+                fec_packets = r.fec_packets,
+                late_ms,
+                trimmed_ms,
+                dropped_ms,
+                "audio reception"
+            ),
+            None => tracing::info!(
+                ringid,
+                identity = %feed.identity,
+                late_ms,
+                trimmed_ms,
+                dropped_ms,
+                "audio reception (no receive statistics yet)"
+            ),
+        }
+    }
 }
 
 impl Drop for Feeds {
     fn drop(&mut self) {
         for feed in self.feeds.values() {
+            self.log_reception(feed);
             feed.reader.abort();
         }
     }
@@ -268,13 +475,13 @@ pub fn pcm_samples(bytes: &[u8]) -> Vec<i16> {
         .collect()
 }
 
-/// A sample timeline driven by the wall clock: each call returns how many samples are due
-/// since the last one. Late ticks yield more samples, so a timeline built from it never drifts
-/// from real time and gaps become silence.
+/// A mix's timeline against the wall clock: how much audio is due, and how much was mixed.
+/// Mixing may fall behind while it waits for late audio, then catches up, so the timeline
+/// never drifts from real time for longer than `Buffering::patience`.
 pub struct Clock {
     start: Instant,
     rate: u64,
-    emitted: u64,
+    mixed: u64,
 }
 
 impl Clock {
@@ -282,20 +489,19 @@ impl Clock {
         Self {
             start: Instant::now(),
             rate: rate as u64,
-            emitted: 0,
+            mixed: 0,
         }
     }
 
-    pub fn due(&mut self) -> usize {
-        let target = (self.start.elapsed().as_nanos() * self.rate as u128 / 1_000_000_000) as u64;
-        let n = target.saturating_sub(self.emitted);
-        self.emitted = target;
-        n as usize
+    /// Samples the wall clock has made due that are not mixed yet.
+    fn behind(&self) -> usize {
+        let due = (self.start.elapsed().as_nanos() * self.rate as u128 / 1_000_000_000) as u64;
+        due.saturating_sub(self.mixed) as usize
     }
 
-    /// Milliseconds of timeline emitted so far.
+    /// Milliseconds of timeline mixed so far.
     pub fn position_ms(&self) -> i64 {
-        (self.emitted * 1000 / self.rate) as i64
+        (self.mixed * 1000 / self.rate) as i64
     }
 }
 

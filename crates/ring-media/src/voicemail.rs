@@ -146,7 +146,7 @@ async fn record(
     let mut player = Player {
         room: &room,
         events,
-        feeds: Feeds::new(RECORD_RATE, Buffering::RECORDING),
+        feeds: Feeds::new(RECORD_RATE, Buffering::RECORDING).reporting(&p.ringid),
         caller: &p.caller_identity,
         stop,
     };
@@ -268,10 +268,12 @@ impl Player<'_> {
         while written < max_samples {
             tokio::select! {
                 _ = tick.tick() => {
-                    let n = clock.due().min(max_samples - written);
-                    let samples = self.feeds.pull(n).remove(self.caller);
-                    wav.write(&samples.map_or_else(|| vec![0; n], |s| audio::clip(&s)))?;
-                    written += n;
+                    let (n, mut pulled) = self.feeds.pull(&mut clock, max_samples - written);
+                    if n > 0 {
+                        let samples = pulled.remove(self.caller);
+                        wav.write(&samples.map_or_else(|| vec![0; n], |s| audio::clip(&s)))?;
+                        written += n;
+                    }
                 }
                 _ = presence.tick() => {
                     if self.caller_present() {

@@ -38,14 +38,19 @@
 - **Representative.** There is one per silicon participant. It joins as `rep:{uuid}` and subscribes to every other audio track, keeping only the authoritative device of each carbon. It mixes them to 24 kHz mono for GPT-Live (`wss://api.openai.com/v1/live/sessions`) and publishes GPT-Live's audio as its own track.
   - Delegations, start text, roster changes ("X joined", "X left") and thinking/commentary messages are relayed through GPT-Live events.
   - A delegation with no commentary gets a "still checking" prompt at 12 s and a "will follow up" prompt at 35 s. Thinking restarts the clock. Commentary clears it for that delegation and every earlier one, as does commentary with no id or a new GPT-Live session. A prompt names what was asked. It waits until GPT-Live has been quiet for 1.5 s and the silicon's last commentary is at least 10 s old, because a prompt that lands mid-reply can displace an answer that has just arrived. At most one prompt goes out every 10 s, oldest delegation first; other delegations due within that window are covered by the same prompt.
-- **Recorder.** A hidden participant `ring:recorder`. It subscribes to all audio, mixes it to a 16 kHz mono WAV, and uploads it to S3 when the call ends.
-- **STT.** Each carbon's authoritative track is streamed to Deepgram live (`nova-3`, `language=multi`). Speakers are attributed exactly, one track per person. A silicon's speech text comes from its representative's output transcript.
-- **Voicemail player.** It joins as `ring:voicemail`, plays the greeting and a beep (Natural Voice, synthesised by Live readback and cached by voice and text; `greeting.prepare` fills the cache ahead of need), records the caller's track (at most 120 s), uploads the result to S3, and transcribes it with Deepgram's prerecorded API.
+- **Recorder.** A hidden participant `ring:recorder`. It subscribes to all audio, mixes it to a 48 kHz mono WAV, and uploads it to S3 when the call ends. 48 kHz is the rate Opus decodes at, so nothing a microphone sent is resampled away.
+  - When a track goes away (or the call ends), the recorder logs its `audio reception`: codec, seconds and average bitrate received, packets received (50 a second without DTX) and lost, network jitter, libwebrtc's jitter-buffer delay, the share of audio it concealed, how much it time-stretched, and the mixer's own `late_ms`/`trimmed_ms`/`dropped_ms`. Concealment and stretching happen before the mixer, so this tells a lossy network or sender apart from a struggling server. Voicemail sessions log the same.
+- **STT.** Each carbon's authoritative track is streamed to Deepgram live (`nova-3`, `language=multi`) as the recorder's own 48 kHz linear PCM. Speakers are attributed exactly, one track per person. A silicon's speech text comes from its representative's output transcript.
+- **Mixing.** libwebrtc decodes every subscribed track (Opus, with its adaptive jitter buffer and loss concealment) and delivers 10 ms frames on one playout clock, resampled to the session's rate. Each session keeps a small buffer per track (40 ms for a representative, 200 ms for the recorder and voicemail) and mixes on a 20 ms tick that follows the audio, not the wall clock.
+  - When frames arrive late, on a busy host, the mix waits for them, up to 300 ms for a representative and 3 s for the recorder and voicemail. It then catches up, so a stall delays words instead of cutting holes into them. Only audio later than that is mixed as silence.
+  - Latency left over after such a gap is shed by skipping quiet 10 ms blocks, never speech, while a track holds more than 100 ms (representative) or 1.2 s (recorder) of audio.
+- **Voicemail player.** It joins as `ring:voicemail`, plays the greeting and a beep (Natural Voice, synthesised by Live readback and cached by voice and text; `greeting.prepare` fills the cache ahead of need), records the caller's track at 48 kHz (at most 120 s), uploads the result to S3, and transcribes it with Deepgram's prerecorded API.
 - **Silicon voicemail.** It synthesises the silicon's text in the silicon's voice and uploads it.
 
 ### livekit-server
 A single binary pinned to v1.13.10, run by systemd with no Redis. Its configuration is in `deploy/livekit.yaml`.
 - Signalling is on loopback `:7880` behind Caddy at `/rtc`.
+- Audio is Opus, and publishers may add RED (redundant audio). For a publisher that sends plain Opus, LiveKit adds RED towards subscribers that accept it (`active_red_encoding`). ring-media's participants receive plain Opus over loopback.
 - Media uses 7881/tcp, 7882–7892/udp and 3478/udp (TURN).
 - Rooms are named by `ringid`.
 
@@ -59,6 +64,8 @@ A single binary pinned to v1.13.10, run by systemd with no Redis. Its configurat
 | Linux | GTK4/libadwaita, Rust (`linux/`) | `ring-core` media (LiveKit `PlatformAudio`: Pulse/ALSA + AEC3) | Autostart background process with a persistent WebSocket; portal `call.incoming` notification plus a ringing window |
 | Web | Next.js 16 static export + Silicon UI (`web/`) | `livekit-client` 2.22.4 | WebSocket while open; Web Push (VAPID) service worker when closed |
 | CLI (silicons) | Rust (`crates/ring-cli`) | none (the representative speaks on the server) | Ting (`ring.call.incoming`) to the silicon's local webhook |
+
+Every client publishes one mono microphone track to the same spec: platform echo cancellation, noise suppression and gain control on, capture at 48 kHz where the platform allows it (Bluetooth HFP runs at 16 kHz), and Opus at up to 32 kbps with DTX off (so quiet word onsets are never dropped) and RED on (redundant frames against uplink loss).
 
 Shared Rust crates:
 - **`ring-proto`:** wire types.

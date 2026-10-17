@@ -1,4 +1,4 @@
-//! The call recorder (`ring:recorder`): mixes every voice into one continuous 16 kHz WAV,
+//! The call recorder (`ring:recorder`): mixes every voice into one continuous 48 kHz WAV,
 //! uploads it when the call ends, and streams each carbon's authoritative track to Deepgram.
 
 use std::{
@@ -162,7 +162,7 @@ impl Recorder<'_> {
         session: &mut Session<RecControl>,
         wav: &mut WavWriter,
     ) -> Result<()> {
-        let mut feeds = Feeds::new(RECORD_RATE, Buffering::RECORDING);
+        let mut feeds = Feeds::new(RECORD_RATE, Buffering::RECORDING).reporting(&self.ringid);
         let mut clock = Clock::new(RECORD_RATE);
         let mut tick = audio::tick_interval();
         loop {
@@ -170,9 +170,8 @@ impl Recorder<'_> {
                 _ = session.stop.cancelled() => break,
                 _ = tick.tick() => {
                     let position_ms = clock.position_ms();
-                    let n = clock.due();
+                    let (n, pulled) = feeds.pull(&mut clock, usize::MAX);
                     if n > 0 {
-                        let pulled = feeds.pull(n);
                         self.step(&feeds, &pulled, position_ms, n, wav)?;
                     }
                 }
