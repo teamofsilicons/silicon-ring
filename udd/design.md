@@ -135,7 +135,7 @@ The Ring mark is concentric cream (#EDE8E0) rings around a cream dot on ink (#18
 - **In-app sheet:** ink background in both themes, which makes it a "moment" screen in the Ring mark's colours.
   - Avatar (120 on phones, 88 on desktop) with expanding rings, the cream serif name, and the pixel id.
   - "IS CALLING", plus "WITH ALICE, BOB" when others are already on the call.
-  - **Touch devices:** a slide-to-answer track (cream thumb with a phone glyph on a translucent track, "slide to answer"), plus a round danger decline button.
+  - **Touch devices:** a slide-to-answer track (cream thumb with a phone glyph on a translucent track, "slide to answer"), plus a round danger decline button. Reaching the end of the track answers at once, without lifting the finger, as does releasing past most of it; a shorter slide springs back.
   - **Desktop and web:** Accept (success) and Decline (danger) buttons.
   - **Decline:** pressing once reveals reason chips and a text box. The chips are "Can't talk right now", "In a meeting", "Call you back soon" and "Text me instead". Pressing decline again declines with no reason.
   - A **Silence** text button.
@@ -146,7 +146,7 @@ The Ring mark is concentric cream (#EDE8E0) rings around a cream dot on ink (#18
 ### 5. In call
 - **Header:** the pixel-font call timer, and participants as large avatars with serif names. Whoever is speaking gets a soft concentric ring pulse.
 - **Live transcript** fills the middle. Lines enter at the bottom, move up and fade toward the top behind a gradient mask. Each line shows a pixel-font speaker label in textMuted, then the text in BDO Grotesk 16–18. Interim text is muted until final.
-- **Controls:** round 56–64 px buttons on surface or beige: mute (toggles to filled ink), speaker/route (mobile), add person (invite through the dialer), and hang up (filled danger).
+- **Controls:** round 56–64 px buttons on surface or beige: mute (toggles to filled ink), speaker/route (mobile), add person (invite through the dialer), and hang up (filled danger). On phones, speaker switches between the earpiece (or a connected headset) and the loudspeaker and shows the actual route. A device with no earpiece, such as an iPad, shows speaker as on and disabled.
 - **Handoff banner (beige):**
   - On the device that doesn't have the call: "On a call with Alice on iPhone · **Switch to this Mac**".
   - On the device the call left: "Moved to Mac".

@@ -1,7 +1,8 @@
 package com.teamofsilicons.ring.ui.components
 
 import android.provider.Settings
-import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -26,11 +27,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -41,8 +44,10 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
@@ -53,6 +58,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.teamofsilicons.ring.R
 import com.teamofsilicons.ring.ui.theme.RingType
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -121,31 +127,66 @@ private fun loopingPhase(durationMs: Int, mode: RepeatMode): State<Float> =
         label = "phase",
     )
 
+/** How far along the track (0..1) a release has to be to answer. */
+private const val ANSWER_AT = 0.85f
+
 /**
- * Slide right to answer: a cream thumb with a phone glyph on a translucent track. Releasing past
- * the end answers; anything short of it springs back. Accessibility users get a click action.
+ * Slide right to answer: a cream thumb with a phone glyph on a translucent track. Reaching the end
+ * answers at once, without lifting the finger, as does releasing past [ANSWER_AT]; anything short
+ * of it springs back. Accessibility users get a click action.
+ *
+ * The thumb follows the finger through plain state that the drag writes directly, and a release
+ * past the end answers before any animation starts. (Each drag step used to launch a coroutine
+ * that moved an Animatable. The last one ran after the release, cancelled the settle animation
+ * and the answer waiting behind it, and the thumb sat at the end without answering.)
+ *
+ * When [resetKey] changes after an answer (the screen now shows why it failed) the thumb comes
+ * back at once; otherwise it comes back after a few seconds if the screen is still up.
  */
 @Composable
-fun SlideToAnswer(onAnswer: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+fun SlideToAnswer(onAnswer: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, resetKey: Any? = null) {
     val cream = Color(0xFFEDE8E0)
     val scope = rememberCoroutineScope()
-    val offset = remember { Animatable(0f) }
+    val haptics = LocalHapticFeedback.current
+    var offset by remember { mutableFloatStateOf(0f) }
     var done by remember { mutableStateOf(false) }
+    var armed by remember { mutableStateOf(false) }
+    var keyAtAnswer by remember { mutableStateOf<Any?>(null) }
+    val settling = remember { arrayOfNulls<Job>(1) }
     val density = LocalDensity.current
     val thumb = 60.dp
     val pad = 6.dp
+
+    fun settle(target: Float, spec: AnimationSpec<Float>) {
+        settling[0]?.cancel()
+        settling[0] = scope.launch { animate(offset, target, animationSpec = spec) { value, _ -> offset = value } }
+    }
+
+    fun answer(): Boolean {
+        if (!enabled || done) return false
+        done = true
+        keyAtAnswer = resetKey
+        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+        onAnswer()
+        return true
+    }
+
     // An answer that fails (no microphone, a network error) leaves this screen up: let the thumb
     // come back so the person can try again.
-    LaunchedEffect(done) {
+    LaunchedEffect(done, resetKey) {
         if (!done) return@LaunchedEffect
-        delay(4_000)
+        if (resetKey == keyAtAnswer) delay(4_000)
         done = false
-        offset.animateTo(0f, spring(dampingRatio = 1f, stiffness = 500f))
+        armed = false
+        settle(0f, spring(dampingRatio = 1f, stiffness = 500f))
     }
     BoxWithConstraints(
         modifier
             .fillMaxWidth()
             .height(thumb + pad * 2)
+            // The thumb starts near the screen's left edge, where gesture navigation would take
+            // a swipe as Back.
+            .systemGestureExclusion()
             .clip(RoundedCornerShape(50))
             .background(cream.copy(alpha = 0.12f))
             .border(1.dp, cream.copy(alpha = 0.18f), RoundedCornerShape(50))
@@ -153,26 +194,23 @@ fun SlideToAnswer(onAnswer: () -> Unit, modifier: Modifier = Modifier, enabled: 
                 role = Role.Button
                 contentDescription = "Answer"
                 onClick("Answer") {
-                    if (enabled && !done) {
-                        done = true
-                        onAnswer()
-                    }
+                    answer()
                     true
                 }
             },
     ) {
         val maxOffset = with(density) { (maxWidth - thumb - pad * 2).toPx() }.coerceAtLeast(1f)
-        val progress = (offset.value / maxOffset).coerceIn(0f, 1f)
+        val progress = (offset / maxOffset).coerceIn(0f, 1f)
         Text(
-            "slide to answer",
+            if (done) "answering…" else "slide to answer",
             style = RingType.bodyLarge,
-            color = cream.copy(alpha = 0.75f * (1f - progress)),
+            color = cream.copy(alpha = if (done) 0.75f else 0.75f * (1f - progress)),
             modifier = Modifier.align(Alignment.Center).padding(start = thumb / 2),
         )
         Box(
             Modifier
                 .padding(pad)
-                .offset { IntOffset(offset.value.roundToInt(), 0) }
+                .offset { IntOffset(offset.roundToInt(), 0) }
                 .size(thumb)
                 .clip(CircleShape)
                 .background(cream)
@@ -180,15 +218,20 @@ fun SlideToAnswer(onAnswer: () -> Unit, modifier: Modifier = Modifier, enabled: 
                     enabled = enabled && !done,
                     orientation = Orientation.Horizontal,
                     state = rememberDraggableState { delta ->
-                        scope.launch { offset.snapTo((offset.value + delta).coerceIn(0f, maxOffset)) }
+                        offset = (offset + delta).coerceIn(0f, maxOffset)
+                        val past = offset >= maxOffset * ANSWER_AT
+                        if (past && !armed) haptics.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                        armed = past
+                        if (offset >= maxOffset) answer()
                     },
+                    onDragStarted = { settling[0]?.cancel() },
                     onDragStopped = {
-                        if (offset.value >= maxOffset * 0.85f) {
-                            offset.animateTo(maxOffset, tween(120))
-                            done = true
-                            onAnswer()
+                        // Answering at the end disables the drag, which stops it here too.
+                        if (done || (offset >= maxOffset * ANSWER_AT && answer())) {
+                            settle(maxOffset, tween(120))
                         } else {
-                            offset.animateTo(0f, spring(dampingRatio = 1f, stiffness = 500f))
+                            armed = false
+                            settle(0f, spring(dampingRatio = 1f, stiffness = 500f))
                         }
                     },
                 ),

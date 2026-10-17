@@ -194,7 +194,7 @@ fun IncomingCallScreen(
             }
         }
 
-        SlideToAnswer(onAnswer = onAnswer, enabled = !ui.working, modifier = Modifier.widthIn(max = 420.dp))
+        SlideToAnswer(onAnswer = onAnswer, enabled = !ui.working, resetKey = ui.notice, modifier = Modifier.widthIn(max = 420.dp))
         Spacer(Modifier.height(20.dp))
         Row(Modifier.fillMaxWidth().widthIn(max = 420.dp), verticalAlignment = Alignment.CenterVertically) {
             if (!ui.silenced) TextAction("Silence", onSilence, color = cream) else Spacer(Modifier.size(1.dp))
@@ -471,12 +471,16 @@ private fun Controls(ui: CallUi, graph: AppGraph, onInvite: () -> Unit) {
     }
 }
 
-/** Speaker toggle, or a list of routes when a headset or Bluetooth device is connected. */
+/**
+ * Speaker toggle, or a list of routes when a headset or Bluetooth device is connected. It shows
+ * the route the system reports. A device with nothing to switch to (a tablet without an
+ * earpiece) shows its one route as current, with the button disabled.
+ */
 @Composable
 private fun RouteButton(ui: CallUi, idle: Color, outline: BorderStroke, onSelect: (AudioRoute) -> Unit) {
     val c = Ring.colors
     var open by remember { mutableStateOf(false) }
-    val type = ui.route?.type ?: CallEndpointCompat.TYPE_EARPIECE
+    val type = ui.route?.type ?: ui.routes.singleOrNull()?.type ?: CallEndpointCompat.TYPE_EARPIECE
     val speaker = type == CallEndpointCompat.TYPE_SPEAKER
     val icon = when (type) {
         CallEndpointCompat.TYPE_BLUETOOTH -> R.drawable.ms_bluetooth
@@ -488,8 +492,8 @@ private fun RouteButton(ui: CallUi, idle: Color, outline: BorderStroke, onSelect
     Box {
         RoundButton(
             icon = icon,
-            contentDescription = "Audio route: ${ui.route?.name ?: "phone"}",
-            enabled = ui.routes.isNotEmpty(),
+            contentDescription = "Audio route: ${ui.route?.name ?: ui.routes.singleOrNull()?.name ?: "phone"}",
+            enabled = ui.routes.size > 1,
             onClick = {
                 if (rich) {
                     open = true

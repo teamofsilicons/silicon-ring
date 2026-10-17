@@ -106,8 +106,8 @@ class TelecomCall(
         }
     }
 
-    /** True once Telecom holds the call; false if it refused it or it already ended. */
-    suspend fun awaitReady(): Boolean = withTimeoutOrNull(6_000) { ready.await() } ?: false
+    /** True while Telecom holds the call; false if it refused it, or it has let go of it since. */
+    suspend fun awaitReady(): Boolean = (withTimeoutOrNull(6_000) { ready.await() } ?: false) && control != null
 
     suspend fun answer(): Boolean = act("answer") { answer(CallAttributesCompat.CALL_TYPE_AUDIO_CALL) }
 
@@ -145,15 +145,25 @@ class TelecomCall(
         }
 
     private suspend fun act(name: String, block: suspend CallControlScope.() -> CallControlResult): Boolean {
-        if (!awaitReady()) return false
+        if (!awaitReady()) {
+            Log.w(TAG, "Telecom $name skipped: Telecom does not hold the call")
+            return false
+        }
         val control = control ?: return false
-        return when (val result = runCatching { control.block() }.getOrNull()) {
+        val result = try {
+            control.block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Telecom $name threw", e)
+            return false
+        }
+        return when (result) {
             is CallControlResult.Success -> true
             is CallControlResult.Error -> {
                 Log.w(TAG, "Telecom $name failed: ${result.errorCode}")
                 false
             }
-            else -> false
         }
     }
 

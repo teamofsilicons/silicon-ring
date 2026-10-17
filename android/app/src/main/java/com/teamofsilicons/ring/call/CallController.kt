@@ -526,9 +526,36 @@ class CallController(
         publish()
     }
 
+    /**
+     * Plays the call through [route]: through Telecom when it holds the call, otherwise through
+     * AudioManager. The call screen follows the route Telecom or AudioManager then reports.
+     */
     fun setRoute(ringid: String, route: AudioRoute) {
         val rt = runtimes[ringid] ?: return
-        scope.launch { rt.telecom?.requestEndpoint(route.endpoint) }
+        val media = rt.media
+        if (media != null && media.ownsAudio) {
+            if (!media.selectRoute(route.endpoint)) routeFailed(rt, route)
+            return publish()
+        }
+        scope.launch {
+            if (rt.telecom?.requestEndpoint(route.endpoint) != true) routeFailed(rt, route)
+        }
+    }
+
+    /** Says for a moment that [route] could not be used, instead of the button doing nothing. */
+    private fun routeFailed(rt: Runtime, route: AudioRoute) {
+        Log.w(TAG, "Could not switch the call to ${route.name} (type ${route.type})")
+        if (rt.phase == CallPhase.Ended || rt.rejoining) return
+        val text = "COULD NOT SWITCH TO ${route.name.uppercase()}"
+        rt.notice = text
+        publish()
+        scope.launch {
+            delay(3_000)
+            if (rt.notice == text) {
+                rt.notice = null
+                publish()
+            }
+        }
     }
 
     /** Invites [ref] into the call. Returns an error message or null. */
@@ -901,6 +928,9 @@ class CallController(
             val media = media ?: return
             mediaObserved = true
             jobs += scope.launch { media.speakers.collect { publish() } }
+            // Routes the call switches itself when Telecom does not hold it.
+            jobs += scope.launch { media.routes.collect { publish() } }
+            jobs += scope.launch { media.route.collect { publish() } }
             jobs += scope.launch {
                 media.status.collect { status ->
                     // Outgoing calls start their ringback once the room is joined.
@@ -923,7 +953,8 @@ class CallController(
             val alreadyOn = call?.joined()?.map { it.account }?.filter { it.uuid != me && it.uuid != peer.uuid }
                 ?: alreadyOnFromPush.filter { it.uuid != peer.uuid }
             val speakingUuids = media?.speakers?.value.orEmpty().mapNotNull { identityToUuid(it, call) }.toSet()
-            val routes = telecom?.endpoints?.value.orEmpty().map { AudioRoute(it) }
+            val ownAudio = media?.ownsAudio == true
+            val routes = (if (ownAudio) media?.routes?.value else telecom?.endpoints?.value).orEmpty().map { AudioRoute(it) }
             return CallUi(
                 ringid = ringid,
                 incoming = incoming,
@@ -938,7 +969,7 @@ class CallController(
                 speaking = speakingUuids,
                 transcript = transcriptLines(),
                 answeredAt = parseInstant(call?.answeredAt),
-                route = telecom?.endpoint?.value?.let { AudioRoute(it) },
+                route = (if (ownAudio) media?.route?.value else telecom?.endpoint?.value)?.let { AudioRoute(it) },
                 routes = routes,
                 working = working,
                 notice = notice,
