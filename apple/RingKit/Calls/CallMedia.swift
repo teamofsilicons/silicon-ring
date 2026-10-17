@@ -67,10 +67,20 @@ final class CallMedia: NSObject {
 
     var localIdentity: String? { room?.localParticipant.identity?.stringValue }
 
+    /// This device's voice feeds the live transcript, the representative and the recording, so it is
+    /// published for speech quality: the platform's echo cancellation, noise suppression and gain
+    /// control (Apple's voice processing), Opus at 32 kbps rather than LiveKit's 24 kbps speech preset,
+    /// redundant audio (RED) against packet loss, and no DTX, which clips the start of words.
+    private static var roomOptions: RoomOptions {
+        RoomOptions(
+            defaultAudioCaptureOptions: AudioCaptureOptions(echoCancellation: true, autoGainControl: true, noiseSuppression: true),
+            defaultAudioPublishOptions: AudioPublishOptions(encoding: AudioEncoding(maxBitrate: 32_000), dtx: false, red: true))
+    }
+
     func connect(_ grant: MediaGrant, muted: Bool) async throws {
         await disconnect()
         generation += 1
-        let room = Room(delegate: self, connectOptions: ConnectOptions(autoSubscribe: true), roomOptions: RoomOptions())
+        let room = Room(delegate: self, connectOptions: ConnectOptions(autoSubscribe: true), roomOptions: Self.roomOptions)
         self.room = room
         state = .connecting
         do {

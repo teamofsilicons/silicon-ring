@@ -1,3 +1,4 @@
+import Intents
 import SwiftUI
 import UIKit
 import UserNotifications
@@ -19,6 +20,12 @@ struct RingApp: App {
                 .environment(AppModel.shared)
                 .onOpenURL { _ in
                     // Sign-in callbacks are delivered to ASWebAuthenticationSession; nothing else uses the scheme yet.
+                }
+                .onContinueUserActivity(NSStringFromClass(INStartCallIntent.self)) { activity in
+                    // A Ring call tapped in the Phone app's Recents: its handle is the person's Ring id.
+                    let intent = activity.interaction?.intent as? INStartCallIntent
+                    guard let id = intent?.contacts?.first?.personHandle?.value else { return }
+                    AppModel.shared.placeCall(to: id)
                 }
         }
         .onChange(of: scenePhase) { _, phase in

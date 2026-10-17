@@ -28,7 +28,9 @@ final class CallKitBridge: NSObject {
         configuration.maximumCallGroups = 2
         configuration.maximumCallsPerCallGroup = 1
         configuration.supportedHandleTypes = [.generic]
-        configuration.includesCallsInRecents = false
+        // Ring calls belong in the Phone app's Recents like any other call; tapping one calls back
+        // through RingApp's INStartCallIntent handler.
+        configuration.includesCallsInRecents = true
         configuration.ringtoneSound = "ringtone.wav"
         if let icon = UIImage(named: "CallKitIcon") {
             configuration.iconTemplateImageData = icon.pngData()
@@ -50,9 +52,14 @@ final class CallKitBridge: NSObject {
 
     private func isKnown(_ uuid: UUID) -> Bool { ringing.contains(uuid) || carrying.contains(uuid) }
 
+    /// Runs before CallKit activates the session for a new call. LiveKit's own session setup is off
+    /// (CallMedia.prepareAudio), so this also asks for what it would: 48 kHz and WebRTC's 20 ms IO buffer.
     private static func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP])
+        try? session.setPreferredSampleRate(48_000)
+        try? session.setPreferredIOBufferDuration(0.02)
+        CallAudioRoute.shared.callStarting()
     }
 
     private func update(for ring: IncomingRing) -> CXCallUpdate {
@@ -83,11 +90,12 @@ final class CallKitBridge: NSObject {
     }
 
     /// Satisfies PushKit for a push that has no live call behind it: report, then end at once.
-    private func reportAndEnd(_ uuid: UUID, caller: String, cause: CallEndCause, completion: @escaping () -> Void) {
+    /// The call lands in Recents, so it names the caller when the app knows them.
+    private func reportAndEnd(_ uuid: UUID, caller: Account?, cause: CallEndCause, completion: @escaping () -> Void) {
         nonisolated(unsafe) let completion = completion
         let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: caller)
-        update.localizedCallerName = caller
+        update.remoteHandle = CXHandle(type: .generic, value: caller?.id ?? "Ring")
+        update.localizedCallerName = caller?.label ?? "Ring"
         update.hasVideo = false
         provider.reportNewIncomingCall(with: uuid, update: update) { _ in
             Task { @MainActor in
@@ -102,8 +110,39 @@ final class CallKitBridge: NSObject {
         Self.configureAudioSession()
         try? session.setActive(true)
         CallMedia.audioSessionActivated()
+        CallAudioRoute.shared.sessionActivated()
         model?.audioActive = true
         model?.updateRingback()
+    }
+
+    /// Asks CallKit to answer a call it is ringing; its answer action does the work.
+    private func requestAnswer(_ ring: IncomingRing) {
+        let uuid = ring.callUUID
+        controller.request(CXTransaction(action: CXAnswerCallAction(call: uuid))) { error in
+            guard let error else { return }
+            DevLog.log("CallKit refused the answer request: \((error as NSError).domain) \((error as NSError).code)")
+            Task { @MainActor in
+                let bridge = CallKitBridge.shared
+                // End CallKit's copy so it doesn't keep ringing (a later swipe would answer nothing),
+                // then answer in the app, unless the ring stopped meanwhile.
+                if bridge.ringing.remove(uuid) != nil {
+                    bridge.provider.reportCall(with: uuid, endedAt: Date(), reason: .answeredElsewhere)
+                }
+                guard bridge.model?.rings[ring.invitationID] != nil else { return }
+                bridge.answerWithoutCallKit(ring)
+            }
+        }
+    }
+
+    /// Answers without CallKit's incoming call; CallKit then carries it like an outgoing call.
+    private func answerWithoutCallKit(_ ring: IncomingRing) {
+        guard let model else { return }
+        Task {
+            if await model.performAnswer(ring), let session = model.activeCall {
+                began(session)
+                connected(session)
+            }
+        }
     }
 }
 
@@ -129,25 +168,30 @@ extension CallKitBridge: CallSystem {
     /// The server's alert push says so: iOS always registers an APNs token.
     func missedCall(from caller: Account, ringid: String) {}
 
-    func ownsRing(_ ring: IncomingRing) -> Bool {
-        ringing.contains(ring.callUUID)
-    }
-
-    func answer(_ ring: IncomingRing) {
-        let action = CXAnswerCallAction(call: ring.callUUID)
-        controller.request(CXTransaction(action: action)) { error in
-            guard let error else { return }
-            DevLog.log("CallKit refused the answer request: \(error)")
+    func answer(_ ring: IncomingRing) -> Bool {
+        let uuid = ring.callUUID
+        if ringing.contains(uuid) {
+            requestAnswer(ring)
+            return true
+        }
+        // A ring the app shows itself (in the foreground). Hand it to CallKit and answer it there at
+        // once, so Recents logs an answered incoming call rather than an outgoing one.
+        model?.ringMovedToSystem(ring.invitationID)
+        ringing.insert(uuid)
+        provider.reportNewIncomingCall(with: uuid, update: update(for: ring)) { error in
             Task { @MainActor in
                 let bridge = CallKitBridge.shared
-                bridge.ringing.remove(ring.callUUID)
-                guard let model = bridge.model else { return }
-                if await model.performAnswer(ring), let session = model.activeCall {
-                    bridge.began(session)
-                    bridge.connected(session)
+                guard let error else {
+                    bridge.requestAnswer(ring)
+                    return
                 }
+                // A Focus or a blocked caller filters it: answer without CallKit's incoming call.
+                DevLog.log("CallKit refused the in-app answer report: \(error)")
+                bridge.ringing.remove(uuid)
+                bridge.answerWithoutCallKit(ring)
             }
         }
+        return true
     }
 
     func began(_ session: CallSession) {
@@ -227,21 +271,37 @@ extension CallKitBridge: @preconcurrency CXProviderDelegate {
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         let uuid = action.callUUID
         DevLog.log("CXAnswer \(uuid) known=\(model?.ring(forCallUUID: uuid) != nil)")
+        ringing.remove(uuid)
         guard let model, let ring = model.ring(forCallUUID: uuid) else {
-            action.fail()
-            ringing.remove(uuid)
+            if let session = model?.activeCall, session.localUUID == uuid, session.isLive {
+                // Already answered in the app; CallKit is catching up.
+                carrying.insert(uuid)
+                action.fulfill()
+            } else {
+                // Nothing left to answer: end the call rather than leave the system screen waiting.
+                action.fail()
+                provider.reportCall(with: uuid, endedAt: Date(), reason: .failed)
+            }
             return
         }
         Self.configureAudioSession()
+        // Fulfil at once: the system screen completes the answer and activates the audio session
+        // (which CallKit only does after fulfil) while the app accepts on the server and joins the
+        // room. Waiting for the network first left the slider stuck at the end of its track.
+        carrying.insert(uuid)
+        action.fulfill()
         Task {
             if await model.performAnswer(ring) {
-                ringing.remove(uuid)
-                carrying.insert(uuid)
-                startPerformed.insert(uuid)
-                action.fulfill()
-            } else {
-                // performAnswer already ended the ringing call in CallKit.
-                action.fail()
+                // CallKit ended the call while the accept was in flight (End on the system screen,
+                // or a provider reset): it is over for the person, so leave the room just joined.
+                if !carrying.contains(uuid), let session = model.activeCall, session.localUUID == uuid {
+                    await model.performHangUp(session)
+                }
+                return
+            }
+            // performAnswer has told the person why in the app; end the system call too.
+            if carrying.remove(uuid) != nil {
+                self.provider.reportCall(with: uuid, endedAt: Date(), reason: .failed)
             }
         }
     }
@@ -304,6 +364,7 @@ extension CallKitBridge: @preconcurrency CXProviderDelegate {
     func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         DevLog.log("audio session activated")
         CallMedia.audioSessionActivated()
+        CallAudioRoute.shared.sessionActivated()
         model?.audioActive = true
         model?.updateRingback()
     }
@@ -311,6 +372,7 @@ extension CallKitBridge: @preconcurrency CXProviderDelegate {
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         DevLog.log("audio session deactivated")
         CallMedia.audioSessionDeactivated()
+        CallAudioRoute.shared.sessionDeactivated()
         model?.audioActive = false
         Tones.shared.stopRingback()
     }
@@ -346,7 +408,7 @@ extension CallKitBridge: @preconcurrency PKPushRegistryDelegate {
     private func handleVoIPPush(_ dictionary: [AnyHashable: Any], mustReport: Bool, completion: @escaping () -> Void) {
         guard let model, model.isSignedIn else {
             if mustReport {
-                reportAndEnd(PushPayload.callUUID(in: dictionary) ?? UUID(), caller: "Ring", cause: .failed, completion: completion)
+                reportAndEnd(PushPayload.callUUID(in: dictionary) ?? UUID(), caller: nil, cause: .failed, completion: completion)
             } else {
                 completion()
             }
@@ -376,7 +438,7 @@ extension CallKitBridge: @preconcurrency PKPushRegistryDelegate {
                 return
             }
             if expired || model.currentDevice?.ringEnabled == false {
-                reportAndEnd(callUUID, caller: from.label, cause: .unanswered, completion: completion)
+                reportAndEnd(callUUID, caller: from.account, cause: .unanswered, completion: completion)
                 return
             }
             model.adoptSystemRing(ring)
@@ -387,13 +449,14 @@ extension CallKitBridge: @preconcurrency PKPushRegistryDelegate {
         case .callCancelled(_, let invitationID, let callUUID, let reason):
             let cause = AppModel.cause(for: reason)
             let knownToCallKit = isKnown(callUUID)
+            let caller = model.rings[invitationID]?.from
             if let ring = model.rings[invitationID] {
                 model.stopRing(ring, cause: cause)
             } else if ringing.remove(callUUID) != nil {
                 provider.reportCall(with: callUUID, endedAt: Date(), reason: cause.reason)
             }
             if mustReport && !knownToCallKit {
-                reportAndEnd(callUUID, caller: "Ring", cause: cause, completion: completion)
+                reportAndEnd(callUUID, caller: caller, cause: cause, completion: completion)
             } else {
                 completion()
             }
@@ -401,7 +464,7 @@ extension CallKitBridge: @preconcurrency PKPushRegistryDelegate {
         default:
             // VoIP pushes only ever carry incoming and cancelled calls.
             if mustReport {
-                reportAndEnd(PushPayload.callUUID(in: dictionary) ?? UUID(), caller: "Ring", cause: .failed, completion: completion)
+                reportAndEnd(PushPayload.callUUID(in: dictionary) ?? UUID(), caller: nil, cause: .failed, completion: completion)
             } else {
                 completion()
             }

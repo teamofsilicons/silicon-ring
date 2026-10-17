@@ -185,11 +185,15 @@ struct IncomingCallView: View {
     }
 }
 
-/// A real slide-to-answer control: drag the cream thumb to the end of the track.
+/// A real slide-to-answer control: drag the cream thumb to the end of the track. Reaching the end
+/// answers at once; letting go past most of the way answers too; anything shorter springs back.
 struct SlideToAnswer: View {
     var onAnswer: () -> Void
     @State private var offset: CGFloat = 0
     @State private var answered = false
+    /// True while a finger is down. It also resets when the system cancels the touch, which never
+    /// reaches onEnded, so the thumb is never left stranded mid-track.
+    @GestureState private var dragging = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let thumb: CGFloat = 56
@@ -216,31 +220,52 @@ struct SlideToAnswer: View {
                     .offset(x: inset + offset)
                     .gesture(
                         DragGesture(minimumDistance: 0)
+                            .updating($dragging) { _, state, _ in state = true }
                             .onChanged { value in
                                 guard !answered else { return }
                                 offset = min(max(0, value.translation.width), travel)
+                                if travel > 0, offset >= travel - 1 { answer(travel: travel) }
                             }
-                            .onEnded { _ in
-                                guard !answered else { return }
-                                if offset > travel * 0.8 {
-                                    answered = true
-                                    withAnimation(.smooth(duration: 0.15)) { offset = travel }
-                                    #if os(iOS)
-                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                    #endif
-                                    onAnswer()
-                                } else {
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { offset = 0 }
-                                }
-                            }
+                            .onEnded { _ in settle(travel: travel) }
                     )
+                    .onChange(of: dragging) { _, isDragging in
+                        if !isDragging { settle(travel: travel) }
+                    }
             }
         }
         .frame(height: thumb + inset * 2)
+        .task(id: answered) {
+            // An answer that didn't go through leaves this screen up: bring the thumb back so the
+            // person can try again.
+            guard answered else { return }
+            do { try await Task.sleep(for: .seconds(4)) } catch { return }
+            answered = false
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { offset = 0 }
+        }
         .accessibilityElement()
         .accessibilityLabel("Slide to answer")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { onAnswer() }
+    }
+
+    /// The finger lifted, or the system took the touch away.
+    private func settle(travel: CGFloat) {
+        guard !answered else { return }
+        if travel > 0, offset > travel * 0.8 {
+            answer(travel: travel)
+        } else if offset != 0 {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { offset = 0 }
+        }
+    }
+
+    private func answer(travel: CGFloat) {
+        guard !answered else { return }
+        answered = true
+        withAnimation(.smooth(duration: 0.15)) { offset = travel }
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        #endif
+        onAnswer()
     }
 }
 

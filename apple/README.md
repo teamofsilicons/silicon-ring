@@ -4,7 +4,7 @@ Native SwiftUI apps for carbons. One xcodegen project builds two targets from sh
 
 | Target | Platform | Notes |
 |---|---|---|
-| `Ring-iOS` | iPhone and iPad (iOS 17+) | PushKit VoIP → CallKit, LiveKit audio through the CallKit audio session, sidebar layout on iPad |
+| `Ring-iOS` | iPhone and iPad (iOS 17+) | PushKit VoIP → CallKit (calls are logged in the Phone app's Recents), LiveKit audio through the CallKit audio session, sidebar layout on iPad |
 | `Ring-macOS` | Mac (macOS 14+, native SwiftUI + AppKit) | Menu bar + main window, login item, persistent WebSocket, floating ringing panel, time-sensitive notifications |
 
 `RingKit/` is compiled into both: the API models (mirroring `udd/api.md`), the API client, the realtime WebSocket, sign-in (Silicon Accounts with PKCE), the LiveKit call media, the app model and every screen. Colours, fonts, the app icons and sounds come from `../assets` (see `udd/design.md`).
@@ -14,10 +14,10 @@ Native SwiftUI apps for carbons. One xcodegen project builds two targets from sh
 | `RingKit/Models` | Codable mirrors of the wire types, realtime frames and push payloads |
 | `RingKit/Networking` | `APIClient` (async/await, Bearer token, error bodies) and `RealtimeConnection` (`/v1/ws` with ping, backoff, network and wake reconnects) |
 | `RingKit/Auth` | PKCE sign-in through `WebAuthenticationSession`, Keychain session storage |
-| `RingKit/Calls` | `CallMedia` (LiveKit 2.17.0), `CallSession`, the `CallSystem` protocol the platforms implement |
+| `RingKit/Calls` | `CallMedia` (LiveKit 2.17.0; the microphone is published with platform voice processing, Opus 32 kbps, RED on, DTX off), `CallSession`, the `CallSystem` protocol the platforms implement |
 | `RingKit/App` | `AppModel`: session, history, rings, call flows, reconciliation |
 | `RingKit/Views`, `RingKit/Design` | Every screen, the design tokens and components |
-| `iOS/` | App entry, `CallKitBridge` (PushKit + CallKit), the route picker |
+| `iOS/` | App entry, `CallKitBridge` (PushKit + CallKit), the speaker control (earpiece/speaker on iPhone, always speaker on iPad) |
 | `macOS/` | App entry, menu bar, `MacCallSystem` (ringing panel, notification, ringtone), login item |
 
 ## Build

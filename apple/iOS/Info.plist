@@ -39,6 +39,10 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Ring uses the microphone so the people and silicons you call can hear you.</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INStartCallIntent</string>
+	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Ring connects to a Ring server on your local network during development.</string>
 	<key>UIAppFonts</key>

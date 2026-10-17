@@ -63,9 +63,7 @@ final class MacCallSystem: CallSystem {
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "missed-\(ringid)", content: content, trigger: nil))
     }
 
-    func ownsRing(_ ring: IncomingRing) -> Bool { false }
-
-    func answer(_ ring: IncomingRing) {}
+    func answer(_ ring: IncomingRing) -> Bool { false }
 
     func began(_ session: CallSession) {
         if let invitationID = session.invitationID { dismiss(invitationID) }

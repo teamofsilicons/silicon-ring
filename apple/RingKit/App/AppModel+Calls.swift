@@ -107,11 +107,8 @@ extension AppModel {
     }
 
     func answer(_ ring: IncomingRing) {
-        DevLog.log("answer requested \(ring.ringid) ownedBySystem=\(callSystem?.ownsRing(ring) ?? false)")
-        if let system = callSystem, system.ownsRing(ring) {
-            system.answer(ring)
-            return
-        }
+        DevLog.log("answer requested \(ring.ringid)")
+        if callSystem?.answer(ring) == true { return }
         Task {
             if await performAnswer(ring), let session = activeCall {
                 callSystem?.began(session)

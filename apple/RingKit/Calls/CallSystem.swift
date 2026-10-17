@@ -24,9 +24,10 @@ protocol CallSystem: AnyObject {
     /// so a platform only needs this where that push cannot arrive.
     func missedCall(from caller: Account, ringid: String)
 
-    /// When the system UI owns a ring, answering must go through it so its state stays consistent.
-    func ownsRing(_ ring: IncomingRing) -> Bool
-    func answer(_ ring: IncomingRing)
+    /// Answers through the system call UI, which then calls back into `performAnswer`, so the system
+    /// knows the call was answered (CallKit logs it in Recents). Returns false when the app should
+    /// answer by itself.
+    func answer(_ ring: IncomingRing) -> Bool
 
     /// This device started carrying a call: outgoing, answered in-app, or moved here.
     func began(_ session: CallSession)
