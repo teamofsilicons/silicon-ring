@@ -153,10 +153,14 @@ struct HomeView: View {
                             Button {
                                 dialer = .call
                             } label: {
-                                Label("New call", systemImage: "phone")
-                                    .labelStyle(.titleAndIcon)
-                                    .font(RingFont.ui(14, .medium))
+                                // Not a Label: an iPad toolbar shows a Label as its icon alone.
+                                HStack(spacing: 6) {
+                                    Image(systemName: "phone")
+                                    Text("New call")
+                                }
+                                .font(RingFont.ui(14, .medium))
                             }
+                            .accessibilityLabel("New call")
                             .toolbarProminentStyle()
                             .keyboardShortcut("n", modifiers: .command)
                         }
