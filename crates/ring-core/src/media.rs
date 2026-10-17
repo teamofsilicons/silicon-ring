@@ -1,6 +1,8 @@
 //! Call audio through LiveKit (feature `media`): one microphone track published, every remote
 //! audio track played. Uses LiveKit's `PlatformAudio` (WASAPI on Windows, PulseAudio/ALSA on
-//! Linux, CoreAudio on macOS) with WebRTC echo cancellation, noise suppression and AGC.
+//! Linux, CoreAudio on macOS) with WebRTC echo cancellation, noise suppression and AGC. The
+//! platform module captures at the device's own rate and WebRTC encodes mono Opus at 48 kHz;
+//! the SDK has no capture-rate setting.
 //!
 //! With the platform audio device module active, WebRTC itself mixes every subscribed remote
 //! audio track into the selected output device, so playout needs no code here: subscribing is
@@ -16,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use livekit::options::TrackPublishOptions;
+use livekit::options::{AudioEncoding, TrackPublishOptions};
 use livekit::prelude::*;
 use livekit::webrtc::stats::RtcStats;
 use tokio::sync::mpsc;
@@ -80,6 +82,11 @@ pub enum MediaEvent {
 /// How often the microphone level is sampled for [`MediaEvent::LocalLevel`].
 const LEVEL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Opus bitrate for the microphone: full-band mono speech, above LiveKit's 24 kbps `SPEECH`
+/// preset. Unset, the SDK would use its 48 kbps music preset, which RED's redundant copy doubles
+/// on the wire for little gain in speech.
+const MICROPHONE_BITRATE: u64 = 32_000;
+
 /// A connected call. Dropping it disconnects.
 pub struct CallMedia {
     pub(crate) inner: Option<Inner>,
@@ -128,9 +135,15 @@ impl CallMedia {
         if options.muted {
             track.mute();
         }
+        // RED carries each frame again in the next packet, so a lost packet is rebuilt rather
+        // than concealed. DTX stays off: it stops sending in pauses and clips the first syllable
+        // when speech resumes, which the transcript, the representative and the recording hear.
         let publish = TrackPublishOptions {
             source: TrackSource::Microphone,
-            dtx: true,
+            audio_encoding: Some(AudioEncoding {
+                max_bitrate: MICROPHONE_BITRATE,
+            }),
+            dtx: false,
             red: true,
             ..Default::default()
         };

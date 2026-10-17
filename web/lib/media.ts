@@ -52,7 +52,15 @@ export class CallMedia {
       adaptiveStream: false,
       dynacast: false,
       disconnectOnPageLeave: true,
-      audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      // Mono speech at 48 kHz through the browser's echo cancellation, noise suppression and gain control. Voice
+      // isolation (LiveKit turns it on by default) replaces noise suppression with a much stronger filter where the
+      // browser has one; it stays off so quiet syllables reach the transcript and the representative.
+      audioCaptureDefaults: {
+        echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceIsolation: false, channelCount: 1, sampleRate: 48_000,
+      },
+      // Opus at 32 kbps (above LiveKit's 24 kbps speech preset) with RED, so a lost packet is rebuilt from the next one.
+      // DTX stays off: it stops sending in pauses and clips the first syllable when speech resumes.
+      publishDefaults: { audioPreset: { maxBitrate: 32_000 }, dtx: false, red: true },
     });
     this.room = room;
     room
