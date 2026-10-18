@@ -116,9 +116,11 @@ Participants are the people who have joined. Callers join at creation; callees j
 
 ### MediaGrant
 ```json
-{"url":"wss://backend.ring.teamofsilicons.com","token":"<LiveKit JWT>","room":"ring_…","identity":"carbon:<uuid>:dev_…","expires_at":"…"}
+{"url":"wss://backend.ring.teamofsilicons.com","token":"<LiveKit JWT>","room":"ring_…","identity":"carbon:<uuid>:dev_…","expires_at":"…","preroll_to":"ring:recorder"}
 ```
 Connect with any LiveKit SDK using `url` and `token`. Publish exactly one microphone track and subscribe to all audio. The token is valid for joining for 10 minutes.
+
+`preroll_to` is present when the call is already in progress (an answer, or a rejoin). The device should then start its microphone as it connects. Before publishing the track, it opens a LiveKit byte stream to that identity on topic `lk.agent.pre-connect-audio-buffer`, with attributes `sampleRate` and `channels`. It streams the microphone's 16-bit little-endian PCM there, from the moment it answered until its track is first subscribed plus 0.6 s, or at most 4 s after publishing. Ring puts that audio in front of the track in the recording, the transcript and what a silicon's representative hears, so first words are not lost while the call connects. A muted device sends none.
 
 ### TranscriptEntry
 ```json

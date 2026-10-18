@@ -17,13 +17,30 @@ use livekit::{
 };
 use tokio::{sync::Notify, sync::mpsc::UnboundedReceiver, task::JoinHandle};
 
-use crate::audio::Feeds;
+use crate::{audio::Feeds, preroll};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
-pub async fn join(url: &str, token: &str) -> Result<(Room, UnboundedReceiver<RoomEvent>)> {
+/// How a participant's connection is set up.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Joining {
+    /// Publishes as well as subscribes.
+    Speaker,
+    /// Only subscribes (the recorder). On LiveKit's single peer connection every new
+    /// subscription waits for the participant to renegotiate, which the SDK debounces by 150 ms
+    /// unless it may publish, so the first 150 ms of each new track would never arrive. With a
+    /// separate subscriber connection the server offers each new track itself, within 10 ms.
+    Listener,
+}
+
+pub async fn join(
+    url: &str,
+    token: &str,
+    joining: Joining,
+) -> Result<(Room, UnboundedReceiver<RoomEvent>)> {
     let mut options = RoomOptions::default();
     options.auto_subscribe = true;
+    options.single_peer_connection = joining == Joining::Speaker;
     let (room, events) = tokio::time::timeout(CONNECT_TIMEOUT, Room::connect(url, token, options))
         .await
         .context("timed out joining the LiveKit room")?
@@ -51,11 +68,25 @@ pub fn apply(feeds: &mut Feeds, event: RoomEvent) -> Change {
             publication,
             participant,
         } => {
+            let announced = publication
+                .audio_features()
+                .contains(&AudioTrackFeature::TfPreconnectBuffer);
             feeds.add(
                 publication.sid().to_string(),
                 participant.identity().to_string(),
                 track,
+                announced,
             );
+            Change::None
+        }
+        RoomEvent::ByteStreamOpened {
+            reader,
+            topic,
+            participant_identity,
+        } if topic == preroll::TOPIC => {
+            if let Some(reader) = reader.take() {
+                feeds.receive_preroll(participant_identity.as_str(), reader);
+            }
             Change::None
         }
         RoomEvent::TrackUnsubscribed { publication, .. } => {

@@ -623,6 +623,12 @@ pub struct MediaGrant {
     pub room: String,
     pub identity: String,
     pub expires_at: Time,
+    /// The LiveKit identity to stream the microphone's pre-roll to: what it captured from the
+    /// moment the device answered until its track was first subscribed, as LiveKit pre-connect
+    /// audio (topic `lk.agent.pre-connect-audio-buffer`). Absent when nobody would use it, as
+    /// for a caller whose call is still ringing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preroll_to: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

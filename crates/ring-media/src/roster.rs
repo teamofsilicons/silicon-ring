@@ -75,7 +75,7 @@ impl Roster {
 }
 
 /// `carbon:<uuid>:<device>` → `<uuid>`.
-fn carbon_account(identity: &str) -> Option<&str> {
+pub fn carbon_account(identity: &str) -> Option<&str> {
     let rest = identity.strip_prefix("carbon:")?;
     Some(rest.split_once(':').map_or(rest, |(uuid, _)| uuid))
 }

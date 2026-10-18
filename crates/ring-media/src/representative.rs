@@ -18,6 +18,7 @@ use crate::{
     audio::{self, Buffering, Clock, Feeds, LIVE_RATE},
     link::Reporter,
     live::{self, Event, Live, SILENCE_LIMIT},
+    preroll::Prerolls,
     room::{self, Change, Voice},
     roster::{Roster, describe},
     stt::new_segment_id,
@@ -52,6 +53,9 @@ const UPDATE_AFTER_ANSWER: Duration = Duration::from_secs(10);
 /// At most one progress update in this long. Other delegations due within it are covered by
 /// the same update rather than repeating "still checking".
 const UPDATE_SPACING: Duration = Duration::from_secs(10);
+/// The longest a new voice is held back from GPT-Live waiting for its pre-roll, the words its
+/// client heard before the track arrived. It usually lines up within half a second.
+const PREROLL_HOLD: Duration = Duration::from_secs(2);
 /// The longest the representative waits for someone else in the room to hear it. A silicon
 /// caller's representative starts while the call rings (at most 60 s), so it is ready the
 /// moment the callee answers.
@@ -130,7 +134,11 @@ async fn serve(
     // Not cancellable: a half-finished join would leave a participant behind in the room.
     let (live, joined) = tokio::join!(
         Live::connect(&api_key, &p.voice, &instructions, opening.as_deref()),
-        room::join(&supervisor.config.livekit_url, &p.token),
+        room::join(
+            &supervisor.config.livekit_url,
+            &p.token,
+            room::Joining::Speaker
+        ),
     );
     let (mut live, (room, events)) = match (live, joined) {
         (Ok(live), Ok(joined)) => (live, joined),
@@ -153,6 +161,7 @@ async fn serve(
     let joined_at = Instant::now();
     let mut bridge = Bridge {
         reporter: supervisor.reporter.clone(),
+        prerolls: supervisor.prerolls.clone(),
         ringid: p.ringid.clone(),
         silicon: p.silicon.clone(),
         api_key,
@@ -441,6 +450,7 @@ fn is_system(identity: &str) -> bool {
 
 struct Bridge {
     reporter: Reporter,
+    prerolls: Arc<Prerolls>,
     ringid: String,
     silicon: Account,
     /// What a replacement GPT-Live session needs.
@@ -499,7 +509,11 @@ impl Bridge {
         tracing::info!(ringid = %self.ringid, silicon = %self.silicon.id, "representative live");
 
         let me = room.local_participant().identity().to_string();
-        let mut feeds = Feeds::new(LIVE_RATE, Buffering::INTERACTIVE);
+        let mut feeds = Feeds::new(LIVE_RATE, Buffering::INTERACTIVE).with_prerolls(
+            self.prerolls.clone(),
+            &self.ringid,
+            PREROLL_HOLD,
+        );
         let mut clock = Clock::new(LIVE_RATE);
         let mut tick = audio::tick_interval();
         let mut housekeeping = tokio::time::interval(Duration::from_millis(100));
@@ -509,7 +523,7 @@ impl Bridge {
             // is a GPT-Live failure, which a fresh session can recover from.
             let outcome = tokio::select! {
                 _ = session.stop.cancelled() => return Ok(()),
-                _ = tick.tick() => self.listen(live, &feeds, &mut clock, &me).await,
+                _ = tick.tick() => self.listen(live, &mut feeds, &mut clock, &me).await,
                 event = live.next_event() => {
                     heard_from_live = Instant::now();
                     match event {
@@ -774,14 +788,23 @@ impl Bridge {
         text
     }
 
-    /// Sends GPT-Live the next slice of what everyone else is saying.
+    /// Sends GPT-Live the next slice of what everyone else is saying. A voice that just arrived
+    /// goes first with what its client heard before the track did, at once.
     async fn listen(
         &self,
         live: &mut Live,
-        feeds: &Feeds,
+        feeds: &mut Feeds,
         clock: &mut Clock,
         me: &str,
     ) -> Result<()> {
+        for late in feeds.take_prerolls(clock) {
+            if late.identity != me
+                && !is_system(&late.identity)
+                && self.roster.audible(&late.identity)
+            {
+                live.append_audio(&late.samples).await?;
+            }
+        }
         let (n, pulled) = feeds.pull(clock, usize::MAX);
         if n == 0 {
             return Ok(());

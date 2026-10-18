@@ -13,9 +13,9 @@ use ring_proto::internal::{FromMedia, RosterMember};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    audio::{self, Buffering, Clock, Feeds, RECORD_RATE, WavWriter},
+    audio::{self, Buffering, Clock, Feeds, Late, RECORD_RATE, WavWriter},
     room::{self, Change},
-    roster::Roster,
+    roster::{self, Roster},
     stt,
     supervisor::{RecControl, Session, Supervisor},
 };
@@ -29,6 +29,9 @@ pub struct Params {
 
 /// About ten seconds of 20 ms chunks; Deepgram falling further behind than that drops audio.
 const STT_QUEUE: usize = 500;
+/// The longest a new track's audio waits for its pre-roll before it is transcribed. It is in
+/// the recording either way: late audio is mixed in where it belongs.
+const PREROLL_HOLD: Duration = Duration::from_secs(4);
 
 pub async fn run(supervisor: Arc<Supervisor>, params: Params, mut session: Session<RecControl>) {
     tracing::info!(ringid = %params.ringid, "recorder starting");
@@ -91,7 +94,12 @@ async fn record(
     p: &Params,
     session: &mut Session<RecControl>,
 ) -> Result<(PathBuf, u64)> {
-    let (room, events) = room::join(&supervisor.config.livekit_url, &p.token).await?;
+    let (room, events) = room::join(
+        &supervisor.config.livekit_url,
+        &p.token,
+        room::Joining::Listener,
+    )
+    .await?;
     if session.stop.is_cancelled() {
         let _ = room.close().await;
         anyhow::bail!("stopped before the recorder joined the call");
@@ -162,13 +170,22 @@ impl Recorder<'_> {
         session: &mut Session<RecControl>,
         wav: &mut WavWriter,
     ) -> Result<()> {
-        let mut feeds = Feeds::new(RECORD_RATE, Buffering::RECORDING).reporting(&self.ringid);
+        let mut feeds = Feeds::new(RECORD_RATE, Buffering::RECORDING)
+            .reporting(&self.ringid)
+            .with_prerolls(self.supervisor.prerolls.clone(), &self.ringid, PREROLL_HOLD);
         let mut clock = Clock::new(RECORD_RATE);
+        // Where this run's timeline starts in the file, which may continue an earlier one.
+        let base = wav.samples();
         let mut tick = audio::tick_interval();
         loop {
             tokio::select! {
                 _ = session.stop.cancelled() => break,
                 _ = tick.tick() => {
+                    for late in feeds.take_prerolls(&clock) {
+                        if let Err(e) = self.place(&feeds, late, base, wav) {
+                            tracing::warn!(ringid = %self.ringid, "pre-roll not recorded: {e:#}");
+                        }
+                    }
                     let position_ms = clock.position_ms();
                     let (n, pulled) = feeds.pull(&mut clock, usize::MAX);
                     if n > 0 {
@@ -222,6 +239,50 @@ impl Recorder<'_> {
         }
         wav.write(&audio::clip(&mix))?;
         self.transcribe(feeds, pulled, position_ms, n);
+        Ok(())
+    }
+
+    /// Puts audio that belongs before what is already recorded where it belongs: a carbon's
+    /// pre-roll, and their live audio held back while it was awaited. It also opens the
+    /// carbon's transcript, unless their speech is already being transcribed from another
+    /// device, whose stream cannot go back in time.
+    fn place(&mut self, feeds: &Feeds, late: Late, base: u64, wav: &mut WavWriter) -> Result<()> {
+        if !self.roster.audible(&late.identity) {
+            return Ok(());
+        }
+        // Whatever came before the recording began is left out.
+        let skip = usize::try_from(-late.start).unwrap_or(0);
+        let Some(samples) = late.samples.get(skip..).filter(|s| !s.is_empty()) else {
+            return Ok(());
+        };
+        let start = late.start.max(0) as u64;
+        wav.mix_at(base + start, samples)?;
+        let Some(uuid) = roster::carbon_account(&late.identity) else {
+            return Ok(());
+        };
+        let current = self.roster.resolve(uuid, feeds.identities());
+        if self.transcribers.contains_key(uuid)
+            || current.as_deref() != Some(late.identity.as_str())
+            || !self.roster.carbons().any(|m| m.uuid == uuid)
+        {
+            return Ok(());
+        }
+        let Some(transcriber) = self.start_transcriber(uuid) else {
+            return Ok(());
+        };
+        let chunk = (RECORD_RATE as u128 * audio::TICK.as_millis() / 1000) as usize;
+        for (i, piece) in samples.chunks(chunk).enumerate() {
+            let position = start + (i * chunk) as u64;
+            let sent = transcriber.audio.try_send(stt::Chunk {
+                position_ms: (position * 1000 / RECORD_RATE as u64) as i64,
+                samples: piece.to_vec(),
+            });
+            if sent.is_err() {
+                tracing::debug!(ringid = %self.ringid, "speech-to-text is behind; dropped late audio");
+                break;
+            }
+        }
+        self.transcribers.insert(uuid.to_owned(), transcriber);
         Ok(())
     }
 

@@ -20,7 +20,8 @@ use tokio::sync::mpsc;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::{
-    config::Config, link::Reporter, recorder, representative, services::Services, voicemail,
+    config::Config, link::Reporter, preroll::Prerolls, recorder, representative,
+    services::Services, voicemail,
 };
 
 /// The error reported for a session that panicked.
@@ -96,6 +97,8 @@ pub struct Supervisor {
     pub reporter: Reporter,
     pub services: Services,
     pub greetings: voicemail::Greetings,
+    /// Clients' pre-roll audio, shared by the sessions of each call.
+    pub prerolls: Arc<Prerolls>,
     /// Cancelled on SIGTERM: every session finishes its work and ends.
     pub shutdown: CancellationToken,
     pub tracker: TaskTracker,
@@ -108,6 +111,7 @@ impl Supervisor {
         Self {
             services: Services::new(config.clone()),
             greetings: voicemail::Greetings::default(),
+            prerolls: Arc::default(),
             config,
             reporter,
             shutdown,

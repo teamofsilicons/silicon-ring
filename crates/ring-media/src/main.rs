@@ -6,6 +6,7 @@ mod audio;
 mod config;
 mod link;
 mod live;
+mod preroll;
 mod recorder;
 mod representative;
 mod room;

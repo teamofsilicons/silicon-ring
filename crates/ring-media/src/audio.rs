@@ -13,6 +13,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use livekit::{
+    data_stream::api::ByteStreamReader,
     prelude::RemoteAudioTrack,
     webrtc::{
         audio_stream::native::{NativeAudioStream, NativeAudioStreamOptions},
@@ -20,6 +21,8 @@ use livekit::{
     },
 };
 use tokio::task::JoinHandle;
+
+use crate::preroll::{self, Converted, Preroll, Prerolls};
 
 /// GPT-Live's audio format and the representative's published track.
 pub const LIVE_RATE: u32 = 24_000;
@@ -91,6 +94,13 @@ struct FeedBuffer {
     dropped: u64,
     /// libwebrtc's latest receive statistics for the track, when they are being reported.
     reception: Option<Reception>,
+    /// Held back from the mix while the track's pre-roll is awaited, up to `hold_cap` samples.
+    held: bool,
+    hold_cap: usize,
+    /// When the track's first audio arrived.
+    first_at: Option<Instant>,
+    /// Where on the timeline a held track would have started playing.
+    due_at: Option<u64>,
 }
 
 impl FeedBuffer {
@@ -106,22 +116,52 @@ impl FeedBuffer {
             trimmed: 0,
             dropped: 0,
             reception: None,
+            held: false,
+            hold_cap: 0,
+            first_at: None,
+            due_at: None,
         }
     }
 
     fn push(&mut self, data: &[i16]) {
+        self.first_at.get_or_insert_with(Instant::now);
         self.samples.extend(data);
-        let excess = self.samples.len().saturating_sub(self.cap);
+        let cap = if self.held { self.hold_cap } else { self.cap };
+        let excess = self.samples.len().saturating_sub(cap);
         self.samples.drain(..excess);
         self.dropped += excess as u64;
     }
 
-    /// A track plays (and is waited for) once `prime` is buffered.
-    fn ready(&mut self) -> Option<usize> {
+    /// A track plays (and is waited for) once `prime` is buffered. A held track notes where it
+    /// would have started, at timeline position `mixed`, and is not played yet.
+    fn ready(&mut self, mixed: u64) -> Option<usize> {
+        if self.held {
+            if self.due_at.is_none() && self.samples.len() >= self.prime {
+                self.due_at = Some(mixed);
+            }
+            return None;
+        }
         if !self.primed && self.samples.len() >= self.prime {
             self.primed = true;
         }
         self.primed.then_some(self.samples.len())
+    }
+
+    /// Ends a hold. Returns the timeline position where `prefix` (the pre-roll that came before
+    /// the live audio) starts, and `prefix` followed by the held audio that is already due at
+    /// `mixed`. The rest stays queued and plays on from there.
+    fn release(&mut self, prefix: Vec<i16>, mixed: u64) -> (i64, Vec<i16>) {
+        self.held = false;
+        let due = self.due_at.take().unwrap_or(mixed).min(mixed);
+        let start = due as i64 - prefix.len() as i64;
+        let overdue = ((mixed - due) as usize).min(self.samples.len());
+        let mut samples = prefix;
+        samples.extend(self.samples.drain(..overdue));
+        self.primed = true;
+        let excess = self.samples.len().saturating_sub(self.cap);
+        self.samples.drain(..excess);
+        self.dropped += excess as u64;
+        (start, samples)
     }
 
     /// Adds the next `out.len()` samples into `out`. Returns whether any audio was taken.
@@ -233,6 +273,45 @@ struct Feed {
     identity: String,
     buffer: Arc<Mutex<FeedBuffer>>,
     reader: JoinHandle<()>,
+    /// Set while the track is held for its pre-roll.
+    pending: Option<Pending>,
+}
+
+/// A track waiting for its pre-roll.
+struct Pending {
+    since: Instant,
+    preroll: Option<Converted>,
+    /// The pre-roll and live lengths at the last alignment attempt.
+    tried: (usize, usize),
+}
+
+/// Where a session finds the pre-rolls of its call.
+struct PrerollSource {
+    prerolls: Arc<Prerolls>,
+    ringid: String,
+    /// The longest a track is held back waiting for its pre-roll.
+    hold: Duration,
+    /// The pre-rolls this session has put in front of a track already.
+    used: Vec<Arc<Preroll>>,
+}
+
+impl PrerollSource {
+    fn find(&mut self, identity: &str, track_sid: &str) -> Option<Arc<Preroll>> {
+        let preroll = self
+            .prerolls
+            .find(&self.ringid, identity, track_sid, &self.used)?;
+        self.used.push(preroll.clone());
+        Some(preroll)
+    }
+}
+
+/// Audio that belongs before what is already mixed: a track's pre-roll and the live audio held
+/// back while it was awaited, which together start at `start` on the session's timeline
+/// (negative when they begin before it).
+pub struct Late {
+    pub identity: String,
+    pub start: i64,
+    pub samples: Vec<i16>,
 }
 
 /// Every subscribed remote audio track of one room, decoded and resampled by libwebrtc to `rate`.
@@ -242,6 +321,7 @@ pub struct Feeds {
     feeds: HashMap<String, Feed>,
     /// The call whose tracks' reception is logged when they go away.
     report: Option<String>,
+    prerolls: Option<PrerollSource>,
 }
 
 impl Feeds {
@@ -251,6 +331,7 @@ impl Feeds {
             buffering,
             feeds: HashMap::new(),
             report: None,
+            prerolls: None,
         }
     }
 
@@ -260,9 +341,52 @@ impl Feeds {
         self
     }
 
-    pub fn add(&mut self, track_sid: String, identity: String, track: RemoteAudioTrack) {
+    /// Puts each new track's pre-roll in front of it, holding the track back for at most `hold`
+    /// while its pre-roll is on its way (see [`Feeds::take_prerolls`]).
+    pub fn with_prerolls(mut self, prerolls: Arc<Prerolls>, ringid: &str, hold: Duration) -> Self {
+        self.prerolls = Some(PrerollSource {
+            prerolls,
+            ringid: ringid.to_owned(),
+            hold,
+            used: Vec::new(),
+        });
+        self
+    }
+
+    /// Files a pre-roll stream sent to this participant, for every session of the call.
+    pub fn receive_preroll(&self, identity: &str, reader: ByteStreamReader) {
+        if let Some(source) = &self.prerolls {
+            source.prerolls.receive(&source.ringid, identity, reader);
+        }
+    }
+
+    /// Adds a subscribed track. It is held back until its pre-roll is lined up with it when the
+    /// pre-roll is already arriving, or when `announced`: its publisher said one comes with it
+    /// (LiveKit's pre-connect buffer track feature).
+    pub fn add(
+        &mut self,
+        track_sid: String,
+        identity: String,
+        track: RemoteAudioTrack,
+        announced: bool,
+    ) {
         self.remove(&track_sid);
-        let buffer = Arc::new(Mutex::new(FeedBuffer::new(self.rate, self.buffering)));
+        let mut buffer = FeedBuffer::new(self.rate, self.buffering);
+        let rate = self.rate;
+        let pending = self.prerolls.as_mut().and_then(|source| {
+            let preroll = source.find(&identity, &track_sid);
+            if preroll.is_none() && !announced {
+                return None;
+            }
+            buffer.held = true;
+            buffer.hold_cap = buffer.cap + samples_for(rate, source.hold);
+            Some(Pending {
+                since: Instant::now(),
+                preroll: preroll.map(|p| Converted::new(p, rate)),
+                tried: (0, 0),
+            })
+        });
+        let buffer = Arc::new(Mutex::new(buffer));
         let sink = buffer.clone();
         // libwebrtc's own queue (10 ms frames, oldest dropped when full) holds as much as the
         // buffer does, so a burst after a stall reaches it whole.
@@ -290,15 +414,93 @@ impl Feeds {
                 }
             }
         });
-        tracing::debug!(%identity, track = %track_sid, "subscribed audio");
+        tracing::debug!(%identity, track = %track_sid, held = pending.is_some(), "subscribed audio");
         self.feeds.insert(
             track_sid,
             Feed {
                 identity,
                 buffer,
                 reader,
+                pending,
             },
         );
+    }
+
+    /// Ends the holds whose pre-roll is lined up with the live audio, has finished without
+    /// lining up, or ran out of time, and returns what each such track contributes before the
+    /// audio already mixed: its pre-roll up to where the live audio starts, then the live audio
+    /// held back meanwhile that is due on `clock`. Call once per tick, before [`Feeds::pull`].
+    pub fn take_prerolls(&mut self, clock: &Clock) -> Vec<Late> {
+        let Some(source) = self.prerolls.as_mut() else {
+            return Vec::new();
+        };
+        let mut late = Vec::new();
+        for (track_sid, feed) in &mut self.feeds {
+            let Some(pending) = feed.pending.as_mut() else {
+                continue;
+            };
+            if pending.preroll.is_none() {
+                pending.preroll = source
+                    .find(&feed.identity, track_sid)
+                    .map(|p| Converted::new(p, self.rate));
+            }
+            let mut buffer = feed.buffer.lock().unwrap();
+            let expired = pending.since.elapsed() >= source.hold;
+            let mut aligned = None;
+            let prefix = match pending.preroll.as_mut() {
+                None => expired.then(Vec::new),
+                Some(preroll) => {
+                    let progress = preroll.update();
+                    let lengths = (preroll.samples.len(), buffer.samples.len());
+                    // Alignment is retried as either side grows by a tenth of a second.
+                    let grown = lengths.0 >= pending.tried.0 + self.rate as usize / 10
+                        || lengths.1 >= pending.tried.1 + self.rate as usize / 10;
+                    if grown || progress.finished || expired {
+                        pending.tried = lengths;
+                        let live: Vec<i16> = buffer.samples.iter().copied().collect();
+                        aligned = preroll::align(&preroll.samples, &live, self.rate);
+                    }
+                    match aligned {
+                        Some((at, _)) => Some(preroll.samples[..at].to_vec()),
+                        None if progress.finished || expired => {
+                            // Unmatched (silence, or no overlap): the pre-roll ran until about
+                            // as long after the live audio's first frame as its last chunk
+                            // arrived after that frame.
+                            let overlap = match (progress.last_at, buffer.first_at) {
+                                (Some(last), Some(first)) => {
+                                    samples_for(self.rate, last.saturating_duration_since(first))
+                                }
+                                _ => 0,
+                            };
+                            let at = preroll.samples.len().saturating_sub(overlap);
+                            Some(preroll.samples[..at].to_vec())
+                        }
+                        None => None,
+                    }
+                }
+            };
+            let Some(prefix) = prefix else { continue };
+            let prefix_ms = prefix.len() as u64 * 1000 / self.rate as u64;
+            let (start, samples) = buffer.release(prefix, clock.mixed);
+            // `correlation` is absent when the pre-roll was placed by timing, not by matching.
+            tracing::info!(
+                ringid = %source.ringid,
+                identity = %feed.identity,
+                prefix_ms,
+                held_ms = pending.since.elapsed().as_millis() as u64,
+                correlation = aligned.map(|(_, c)| (c * 100.0).round() / 100.0),
+                "pre-roll placed"
+            );
+            feed.pending = None;
+            if !samples.is_empty() {
+                late.push(Late {
+                    identity: feed.identity.clone(),
+                    start,
+                    samples,
+                });
+            }
+        }
+        late
     }
 
     pub fn remove(&mut self, track_sid: &str) {
@@ -345,7 +547,10 @@ impl Feeds {
             .map(|f| (f, f.buffer.lock().unwrap()))
             .collect();
         // Follow the slowest playing track, but no further behind the wall clock than `patience`.
-        let ready = buffers.iter_mut().filter_map(|(_, b)| b.ready()).min();
+        let ready = buffers
+            .iter_mut()
+            .filter_map(|(_, b)| b.ready(clock.mixed))
+            .min();
         let patience = samples_for(self.rate, self.buffering.patience);
         let n = match ready {
             Some(ready) => behind.min(ready).max(behind.saturating_sub(patience)),
@@ -524,9 +729,15 @@ impl WavWriter {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let mut file = BufWriter::new(
-            File::create(path).with_context(|| format!("cannot create {}", path.display()))?,
-        );
+        // Readable too: audio that arrives late is mixed into what was already written.
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .with_context(|| format!("cannot create {}", path.display()))?;
+        let mut file = BufWriter::new(file);
         file.write_all(&wav_header(rate, 0))?;
         Ok(Self {
             file,
@@ -540,6 +751,32 @@ impl WavWriter {
         self.file.write_all(&pcm_bytes(samples))?;
         self.samples += samples.len() as u64;
         Ok(())
+    }
+
+    /// Mixes `samples` into the audio already written from sample `position` on.
+    pub fn mix_at(&mut self, position: u64, samples: &[i16]) -> Result<()> {
+        if position + samples.len() as u64 > self.samples {
+            bail!("late audio runs past the end of the recording");
+        }
+        self.file.flush()?;
+        let file = self.file.get_mut();
+        let offset = 44 + position * 2;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0u8; samples.len() * 2];
+        file.read_exact(&mut bytes)?;
+        let mut mixed: Vec<i32> = pcm_samples(&bytes).into_iter().map(i32::from).collect();
+        mixed
+            .iter_mut()
+            .zip(samples)
+            .for_each(|(m, &s)| *m += s as i32);
+        file.seek(SeekFrom::Start(offset))?;
+        file.write_all(&pcm_bytes(&clip(&mixed)))?;
+        file.seek(SeekFrom::End(0))?;
+        Ok(())
+    }
+
+    pub fn samples(&self) -> u64 {
+        self.samples
     }
 
     /// Appends the audio of a file this writer produced earlier, including one whose header was

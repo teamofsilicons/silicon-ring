@@ -542,6 +542,7 @@ pub unsafe extern "C" fn ring_media_connect(
             room: options.room.unwrap_or_default(),
             identity: options.identity.unwrap_or_default(),
             expires_at: Time::now(),
+            preroll_to: None,
         };
 
         let (sink, events) = Sink::start(Target {

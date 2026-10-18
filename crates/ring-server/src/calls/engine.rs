@@ -602,7 +602,8 @@ pub async fn create(app: &AppState, auth: &Auth, req: CreateCall) -> ApiResult<C
     } else {
         Some(
             app.livekit
-                .device_grant(&ringid, &caller, auth.device_id())
+                // The call only rings: nobody records the caller's first words yet.
+                .device_grant(&ringid, &caller, auth.device_id(), false)
                 .map_err(|error| {
                     tracing::error!(%error, "could not mint a media grant");
                     ApiError::internal()
@@ -820,7 +821,7 @@ pub async fn accept(
     } else {
         Some(
             app.livekit
-                .device_grant(ringid, &account, auth.device_id())
+                .device_grant(ringid, &account, auth.device_id(), true)
                 .map_err(|error| {
                     tracing::error!(%error, "could not mint a media grant");
                     ApiError::internal()
@@ -1241,7 +1242,12 @@ pub async fn media(app: &AppState, auth: &Auth, ringid: &str) -> ApiResult<CallW
         .clone();
     let grant = app
         .livekit
-        .device_grant(ringid, &account, &device_id)
+        .device_grant(
+            ringid,
+            &account,
+            &device_id,
+            data.call.state == CallState::Active,
+        )
         .map_err(|error| {
             tracing::error!(%error, "could not mint a media grant");
             ApiError::internal()

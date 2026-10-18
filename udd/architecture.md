@@ -39,8 +39,15 @@
   - Delegations, start text, roster changes ("X joined", "X left") and thinking/commentary messages are relayed through GPT-Live events.
   - A delegation with no commentary gets a "still checking" prompt at 12 s and a "will follow up" prompt at 35 s. Thinking restarts the clock. Commentary clears it for that delegation and every earlier one, as does commentary with no id or a new GPT-Live session. A prompt names what was asked. It waits until GPT-Live has been quiet for 1.5 s and the silicon's last commentary is at least 10 s old, because a prompt that lands mid-reply can displace an answer that has just arrived. At most one prompt goes out every 10 s, oldest delegation first; other delegations due within that window are covered by the same prompt.
 - **Recorder.** A hidden participant `ring:recorder`. It subscribes to all audio, mixes it to a 48 kHz mono WAV, and uploads it to S3 when the call ends. 48 kHz is the rate Opus decodes at, so nothing a microphone sent is resampled away.
+  - It joins with a separate subscriber connection. On LiveKit's single peer connection, every new track waits for the participant to renegotiate, and the SDK debounces that by 150 ms unless the participant may publish, which the recorder may not. With its own subscriber connection, LiveKit offers each new track itself and forwards it within about 20 ms of its first packet, instead of about 170 ms.
   - When a track goes away (or the call ends), the recorder logs its `audio reception`: codec, seconds and average bitrate received, packets received (50 a second without DTX) and lost, network jitter, libwebrtc's jitter-buffer delay, the share of audio it concealed, how much it time-stretched, and the mixer's own `late_ms`/`trimmed_ms`/`dropped_ms`. Concealment and stretching happen before the mixer, so this tells a lossy network or sender apart from a struggling server. Voicemail sessions log the same.
 - **STT.** Each carbon's authoritative track is streamed to Deepgram live (`nova-3`, `language=multi`) as the recorder's own 48 kHz linear PCM. Speakers are attributed exactly, one track per person. A silicon's speech text comes from its representative's output transcript.
+- **Pre-roll.** A track reaches ring-media only after the client has connected, published it, and LiveKit has offered it to each subscriber. That takes 1 to 3 s after a phone answers: production showed 0.8 to 2.7 s between an iPhone's connection coming up and its first packet. Whatever the carbon says meanwhile, typically their first words, never arrives as RTP. Clients therefore start the microphone when they connect and stream what it hears to `MediaGrant.preroll_to` (the recorder). This uses LiveKit's pre-connect audio format: a byte stream on `lk.agent.pre-connect-audio-buffer` with `sampleRate` and `channels` attributes, carrying 16-bit little-endian PCM at 24 kHz.
+  - The client opens the stream before publishing, keeps streaming until its track is first subscribed plus 0.6 s, and stops 4 s after publishing in any case (LiveKit does not tell a publisher about the hidden recorder).
+  - The recorder files each pre-roll for every session of the call (`preroll::Prerolls`). An unnamed one belongs to its sender's next new track; one naming a `trackId`, as LiveKit's own SDKs send it, belongs to that track. Only carbons' PCM is accepted, at most 15 s of it.
+  - A session holds a new track back from its mix while the track's pre-roll is arriving, or while the track carries LiveKit's pre-connect flag. The hold lasts at most 4 s for the recorder and 2 s for a representative. The session matches the start of the live audio inside the pre-roll by cross-correlation: 300 ms windows at 4 kHz, at least 0.5 correlation and clearly better than any other lag, confirmed by a second window. This usually succeeds about 0.45 s after the track arrives. If nothing matches (silence), the session places the pre-roll by its timing.
+  - The recorder mixes the part of the pre-roll that came before the live audio into the WAV where it belongs, and starts that carbon's Deepgram stream with it. A representative sends it to GPT-Live in one burst, followed by the live audio it held back.
+  - Each placement logs `pre-roll placed`, with `prefix_ms`, `held_ms` and `correlation`, which is absent when the pre-roll was placed by timing.
 - **Mixing.** libwebrtc decodes every subscribed track (Opus, with its adaptive jitter buffer and loss concealment) and delivers 10 ms frames on one playout clock, resampled to the session's rate. Each session keeps a small buffer per track (40 ms for a representative, 200 ms for the recorder and voicemail) and mixes on a 20 ms tick that follows the audio, not the wall clock.
   - When frames arrive late, on a busy host, the mix waits for them, up to 300 ms for a representative and 3 s for the recorder and voicemail. It then catches up, so a stall delays words instead of cutting holes into them. Only audio later than that is mixed as silence.
   - Latency left over after such a gap is shed by skipping quiet 10 ms blocks, never speech, while a track holds more than 100 ms (representative) or 1.2 s (recorder) of audio.
@@ -67,6 +74,13 @@ A single binary pinned to v1.13.10, run by systemd with no Redis. Its configurat
 
 Every client publishes one mono microphone track to the same spec: platform echo cancellation, noise suppression and gain control on, capture at 48 kHz where the platform allows it (Bluetooth HFP runs at 16 kHz), and Opus at up to 32 kbps with DTX off (so quiet word onsets are never dropped) and RED on (redundant frames against uplink loss).
 
+When the media grant names `preroll_to`, the Apple, Android and web clients start that microphone track as they connect, not after, and stream its pre-roll (see ring-media) before and while publishing it:
+- **Apple:** a `LocalAudioTrackRecorder` on the track; on iOS only once CallKit has activated the audio session.
+- **Android:** a sink on the prewarmed default track, halved from 48 kHz.
+- **Web:** an AudioWorklet in a 24 kHz `AudioContext`.
+
+A device that starts muted sends none, and muting stops it. The desktop apps (`ring-core`) do not send a pre-roll yet.
+
 Shared Rust crates:
 - **`ring-proto`:** wire types.
 - **`ring-core`:** client SDK, with the HTTP API, the realtime WebSocket, and LiveKit call media behind the `media` feature. Used by the CLI (API only), the Linux app and `ring-ffi`.
@@ -88,7 +102,7 @@ Shared Rust crates:
    - Atomically claims the invitation (and the device, for a carbon).
    - The call becomes `active`.
    - Ringing stops everywhere else: `call.ringing_stopped`, cancel pushes, and the CallKit/Telecom call ends with "answered elsewhere".
-   - A carbon device gets a media grant and joins.
+   - A carbon device gets a media grant and joins. From here on (and for a rejoin during an active call), the grant names the recorder as `preroll_to` and allows the device to send data, for its pre-roll. A ringing caller's grant does neither.
    - For each silicon participant whose representative is not already running, ring-media starts one, which speaks the start text first. A silicon caller's pre-started representative is told who answered (`roster.changed`) and then speaks its start text.
    - The recorder and STT start.
 4. **During the call.**

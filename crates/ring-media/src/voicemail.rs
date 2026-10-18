@@ -129,7 +129,11 @@ async fn record(
     // The join itself is not cancelled: a half-finished join would leave a participant behind.
     let (greeting, joined) = tokio::join!(
         greeting,
-        room::join(&supervisor.config.livekit_url, &p.token)
+        room::join(
+            &supervisor.config.livekit_url,
+            &p.token,
+            room::Joining::Speaker
+        )
     );
     let (room, events) = joined?;
     let Some(greeting) = greeting.filter(|_| !stop.is_cancelled()) else {

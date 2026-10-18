@@ -65,11 +65,14 @@ impl LiveKit {
     }
 
     /// A grant for one carbon device: join `room`, publish only a microphone, subscribe to audio.
+    /// With `preroll`, the device joins a call in progress, where the recorder is listening: it
+    /// may also send data, to stream its microphone's pre-roll to the recorder.
     pub fn device_grant(
         &self,
         room: &str,
         account: &Account,
         device_id: &str,
+        preroll: bool,
     ) -> Result<MediaGrant, String> {
         let identity = carbon_identity(&account.uuid, device_id);
         let grants = VideoGrants {
@@ -77,7 +80,7 @@ impl LiveKit {
             room: room.to_string(),
             can_publish: Some(true),
             can_subscribe: Some(true),
-            can_publish_data: Some(false),
+            can_publish_data: Some(preroll),
             can_publish_sources: vec!["microphone".into()],
             can_update_own_metadata: Some(false),
             ..Default::default()
@@ -101,6 +104,7 @@ impl LiveKit {
                 chrono::Utc::now()
                     + chrono::Duration::from_std(DEVICE_TOKEN_TTL).unwrap_or_default(),
             ),
+            preroll_to: preroll.then(|| RECORDER_IDENTITY.to_owned()),
         })
     }
 
