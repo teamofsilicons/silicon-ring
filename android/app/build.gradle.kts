@@ -60,7 +60,7 @@ android {
         applicationId = "com.teamofsilicons.ring"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1_000_000
+        versionCode = 1_000_003
         versionName = "1.0.0"
         buildConfigField("String", "ACCOUNTS_URL", "\"https://accounts.teamofsilicons.com\"")
         buildConfigField("String", "SOURCE_URL", "\"https://github.com/teamofsilicons/silicon-ring\"")
