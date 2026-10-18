@@ -459,10 +459,13 @@ struct MediaGrant: Codable, Sendable, Hashable {
     var room: String
     var identity: String
     var expiresAt: Date
+    /// Where the microphone's pre-roll goes (see `CallMedia`); absent when nobody would use it.
+    var prerollTo: String?
 
     enum CodingKeys: String, CodingKey {
         case url, token, room, identity
         case expiresAt = "expires_at"
+        case prerollTo = "preroll_to"
     }
 }
 

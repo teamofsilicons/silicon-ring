@@ -1,6 +1,8 @@
 import {
-  DisconnectReason, type Participant, type RemoteTrack, Room, RoomEvent, Track,
+  type AudioCaptureOptions, createLocalAudioTrack, DisconnectReason, type LocalAudioTrack, type Participant,
+  type RemoteTrack, Room, RoomEvent, Track,
 } from 'livekit-client';
+import { Preroll } from './preroll';
 import type { MediaGrant } from './types';
 
 export type MediaStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
@@ -24,6 +26,13 @@ function microphoneMessage(error: unknown) {
   return 'Your microphone could not be started.';
 }
 
+// Mono speech at 48 kHz through the browser's echo cancellation, noise suppression and gain control. Voice isolation
+// (LiveKit turns it on by default) replaces noise suppression with a much stronger filter where the browser has one;
+// it stays off so quiet syllables reach the transcript and the representative.
+const CAPTURE: AudioCaptureOptions = {
+  echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceIsolation: false, channelCount: 1, sampleRate: 48_000,
+};
+
 /**
  * The LiveKit side of one call on this browser: join with the server's media grant, publish exactly one microphone
  * track, play every remote audio track, and report who is speaking by LiveKit identity (matched to participants'
@@ -32,6 +41,8 @@ function microphoneMessage(error: unknown) {
 export class CallMedia {
   private room: Room | null = null;
   private leaving = false;
+  private muted = false;
+  private preroll: Preroll | null = null;
   private readonly sink: HTMLDivElement;
 
   constructor(private readonly handlers: MediaHandlers) {
@@ -48,16 +59,12 @@ export class CallMedia {
   async connect(grant: MediaGrant, muted: boolean) {
     this.disconnect();
     this.leaving = false;
+    this.muted = muted;
     const room = new Room({
       adaptiveStream: false,
       dynacast: false,
       disconnectOnPageLeave: true,
-      // Mono speech at 48 kHz through the browser's echo cancellation, noise suppression and gain control. Voice
-      // isolation (LiveKit turns it on by default) replaces noise suppression with a much stronger filter where the
-      // browser has one; it stays off so quiet syllables reach the transcript and the representative.
-      audioCaptureDefaults: {
-        echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceIsolation: false, channelCount: 1, sampleRate: 48_000,
-      },
+      audioCaptureDefaults: CAPTURE,
       // Opus at 32 kbps (above LiveKit's 24 kbps speech preset) with RED, so a lost packet is rebuilt from the next one.
       // DTX stays off: it stops sending in pauses and clips the first syllable when speech resumes.
       publishDefaults: { audioPreset: { maxBitrate: 32_000 }, dtx: false, red: true },
@@ -91,19 +98,68 @@ export class CallMedia {
       });
 
     this.handlers.onStatus('connecting');
-    await room.connect(grant.url, grant.token, { autoSubscribe: true });
-    if (this.room !== room) return;
+    // The microphone starts while the room is joined rather than after: what it hears meanwhile (often the first words
+    // after answering) is the pre-roll, which ring-media puts in front of the published track. Joining does not wait
+    // for it, nor for a permission prompt.
+    const starting = !muted && grant.preroll_to ? this.startMicrophone() : Promise.resolve(null);
+    try {
+      await room.connect(grant.url, grant.token, { autoSubscribe: true });
+    } catch (error) {
+      void starting.then(early => this.stopMicrophone(early));
+      throw error;
+    }
+    if (this.room !== room) {
+      void starting.then(early => this.stopMicrophone(early));
+      return;
+    }
     this.handlers.onStatus('connected');
     this.handlers.onAudioBlocked(!room.canPlaybackAudio);
+    const early = await starting;
+    if (this.room !== room) {
+      this.stopMicrophone(early);
+      return;
+    }
+    this.preroll = early?.preroll ?? null;
     try {
-      await room.localParticipant.setMicrophoneEnabled(!muted);
+      if (early && grant.preroll_to) {
+        await early.preroll?.open(room, grant.preroll_to);
+        if (this.muted) {
+          early.preroll?.stop();
+          await early.track.mute();
+        }
+        await room.localParticipant.publishTrack(early.track, { source: Track.Source.Microphone });
+        early.preroll?.published(room);
+      } else {
+        await room.localParticipant.setMicrophoneEnabled(!this.muted);
+      }
       this.handlers.onMicrophoneError(null);
     } catch (error) {
+      this.stopMicrophone(early);
       this.handlers.onMicrophoneError(microphoneMessage(error));
     }
   }
 
+  /** The microphone track, already listening for the pre-roll; null when it cannot start yet (the published
+   * track then starts the usual way, and reports why it cannot). */
+  private async startMicrophone() {
+    const [track, preroll] = await Promise.all([createLocalAudioTrack(CAPTURE).catch(() => null), Preroll.prepare()]);
+    if (!track) {
+      preroll?.stop();
+      return null;
+    }
+    preroll?.listen(track.mediaStreamTrack);
+    return { track, preroll };
+  }
+
+  private stopMicrophone(early: { track: LocalAudioTrack; preroll: Preroll | null } | null) {
+    early?.preroll?.stop();
+    void early?.track.stop();
+  }
+
   async setMuted(muted: boolean) {
+    this.muted = muted;
+    // Nothing more is heard once muted, pre-roll included.
+    if (muted) this.preroll?.stop();
     const room = this.room;
     if (!room) return;
     try {
@@ -122,6 +178,8 @@ export class CallMedia {
   }
 
   disconnect() {
+    this.preroll?.stop();
+    this.preroll = null;
     const room = this.room;
     if (!room) return;
     this.leaving = true;

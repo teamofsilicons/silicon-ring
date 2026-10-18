@@ -121,6 +121,8 @@ export interface MediaGrant {
   room: string;
   identity: string;
   expires_at: string;
+  /** Where the microphone's pre-roll goes (see `Preroll`); absent when nobody would use it. */
+  preroll_to?: string | null;
 }
 
 export interface CreatedCall {

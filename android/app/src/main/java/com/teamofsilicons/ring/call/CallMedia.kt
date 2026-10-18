@@ -60,6 +60,7 @@ class CallMedia(
     private var events: Job? = null
     private var closing = false
     private var muted = false
+    private var preroll: Preroll? = null
     private var focus: AudioFocusRequest? = null
     private val localRoutes = LocalRoutes(context.getSystemService(AudioManager::class.java))
 
@@ -137,8 +138,16 @@ class CallMedia(
             }
         }
         return try {
+            // The microphone starts now rather than once the room is joined: what it hears meanwhile
+            // (often the first words after answering) is the pre-roll, which ring-media puts in
+            // front of the published track.
+            val prerollTo = grant.prerollTo?.takeIf { !startMuted }
+            val preroll = prerollTo?.let { Preroll.start(room, scope) }
+            this.preroll = preroll
             room.connect(grant.url, grant.token)
+            if (prerollTo != null) preroll?.open(room, prerollTo)
             publishMicrophone(room)
+            preroll?.published(room)
             _status.value = Status.Connected
             true
         } catch (e: Exception) {
@@ -165,6 +174,8 @@ class CallMedia(
 
     suspend fun setMuted(value: Boolean) {
         muted = value
+        // Nothing more is heard once muted, pre-roll included.
+        if (value) preroll?.stop()
         runCatching { room?.localParticipant?.setMicrophoneEnabled(!value) }
             .onFailure { Log.w(TAG, "Mute change failed", it) }
     }
@@ -180,6 +191,8 @@ class CallMedia(
     }
 
     private fun disconnectRoom() {
+        preroll?.stop()
+        preroll = null
         events?.cancel()
         events = null
         room?.let {

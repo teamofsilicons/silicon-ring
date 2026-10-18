@@ -191,6 +191,8 @@ data class MediaGrant(
     val room: String,
     val identity: String,
     val expiresAt: String? = null,
+    /** Where the microphone's pre-roll goes (see [com.teamofsilicons.ring.call.Preroll]). */
+    val prerollTo: String? = null,
 )
 
 @Serializable
