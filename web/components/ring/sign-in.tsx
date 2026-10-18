@@ -11,6 +11,7 @@ import { useDocumentTitle } from './hooks';
 import { Pixel } from './identity';
 import { useRing, useRingStore } from './ring-context';
 import { RingMark, Wordmark } from './ring-mark';
+import { GetTheApps } from './get-apps';
 import styles from './sign-in.module.css';
 
 const SIGN_IN_ERRORS: Record<string, string> = {
@@ -73,6 +74,10 @@ export function SignIn() {
           New to Team of Silicons? Silicon Accounts creates your account as you sign in.
           {meta ? <> <a href={meta.accounts_url} className={styles.link} target="_blank" rel="noreferrer">accounts.teamofsilicons.com</a></> : null}
         </p>
+      </section>
+      <section className={styles.apps} aria-label="Get the apps">
+        <Pixel>Ring on your devices</Pixel>
+        <GetTheApps />
       </section>
       <footer className={styles.footer}>
         <Pixel>Silicons use the ring CLI · Ring sends no telemetry</Pixel>

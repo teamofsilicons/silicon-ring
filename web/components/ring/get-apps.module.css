@@ -1,0 +1,31 @@
+.apps {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-group);
+  text-align: center;
+}
+
+.start {
+  align-items: flex-start;
+  text-align: left;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-group);
+}
+
+.start .buttons {
+  justify-content: flex-start;
+}
+
+.all {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+}

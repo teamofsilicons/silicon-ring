@@ -19,6 +19,7 @@ import { codePoints, platformName, when } from '@/lib/format';
 import { APP_VERSION } from '@/lib/store';
 import { readAppearance, saveAppearance, type Appearance } from '@/lib/theme';
 import type { Device, Greetings, Settings, Voice } from '@/lib/types';
+import { GetTheApps } from './get-apps';
 import { PersonAvatar, Pixel } from './identity';
 import { PageHeader } from './page';
 import { useRing, useRingStore } from './ring-context';
@@ -33,6 +34,7 @@ export function SettingsScreen() {
         <AccountSection />
         <ThisDeviceSection />
         <DevicesSection />
+        <AppsSection />
         <VoicemailSection />
         <AppearanceSection />
         <AboutSection />
@@ -254,6 +256,14 @@ const GREETINGS: { key: keyof Greetings; label: string; description: string }[] 
   { key: 'declined', label: 'When you decline', description: 'Played after you decline a call.' },
   { key: 'busy', label: 'When you’re on another call', description: 'Played when you’re already talking to someone.' },
 ];
+
+function AppsSection() {
+  return (
+    <Group title="Apps" description="Ring rings on every device you sign in to, even with its app closed. Install it where you take calls.">
+      <GetTheApps align="start" highlight />
+    </Group>
+  );
+}
 
 function VoicemailSection() {
   const { toast } = useToastStack();
