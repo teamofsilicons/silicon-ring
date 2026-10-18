@@ -53,7 +53,9 @@ struct AudioRouteButton: View {
 
 /// Where this device plays the call. CallKit owns the audio session, so the speaker is an output
 /// override, and iOS drops an override whenever the session is reconfigured (CallKit activating it,
-/// LiveKit starting its voice-processing engine): the person's choice is kept here and put back.
+/// LiveKit starting its voice-processing engine): the person's choice is kept here and put back
+/// right after those moments. At any other time a route change is someone choosing (the speaker
+/// button on the system call screen, Control Center), and the choice follows it.
 @MainActor
 @Observable
 final class CallAudioRoute {
@@ -77,6 +79,9 @@ final class CallAudioRoute {
     private(set) var choices: [Choice] = []
     /// What the person chose for this call.
     private var speakerOn = false
+    /// Until then, a route change that undoes `speakerOn` is the session being reconfigured.
+    private var reassertUntil = Date.distantPast
+    private static let reconfiguring: TimeInterval = 3
     @ObservationIgnored private var observer: NSObjectProtocol?
 
     private init() {
@@ -139,7 +144,14 @@ final class CallAudioRoute {
     }
 
     func sessionActivated() {
+        reassertUntil = Date().addingTimeInterval(Self.reconfiguring)
         apply()
+    }
+
+    /// The microphone started or changed, so LiveKit is reconfiguring the session.
+    func sessionReconfigured() {
+        reassertUntil = Date().addingTimeInterval(Self.reconfiguring)
+        if hasReceiver, speakerOn != isSpeaker { apply() }
     }
 
     func sessionDeactivated() {
@@ -172,9 +184,14 @@ final class CallAudioRoute {
         case .oldDeviceUnavailable:
             break
         default:
-            // CallKit or LiveKit reconfigured the session, which drops the override: put it back.
-            if speakerOn != isSpeaker, AVAudioSession.sharedInstance().category == .playAndRecord {
-                apply()
+            if Date() < reassertUntil {
+                // CallKit or LiveKit reconfigured the session, which drops the override: put it back.
+                if speakerOn != isSpeaker, AVAudioSession.sharedInstance().category == .playAndRecord {
+                    apply()
+                }
+            } else {
+                // Someone moved the call (the system call screen, Control Center): follow them.
+                speakerOn = isSpeaker
             }
         }
     }

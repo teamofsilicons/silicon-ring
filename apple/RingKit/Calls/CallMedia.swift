@@ -29,6 +29,9 @@ final class CallMedia: NSObject {
     private static weak var current: CallMedia?
     #if os(iOS)
     private static var audioReady = false
+    /// Told after the microphone starts or changes: LiveKit's voice processing reconfigures the
+    /// audio session then, which drops a speaker override.
+    static var microphoneChanged: (@MainActor () -> Void)?
     #else
     private static let audioReady = true
     #endif
@@ -107,6 +110,9 @@ final class CallMedia: NSObject {
     private func publishMicrophone(_ room: Room, muted: Bool) async throws {
         try await room.localParticipant.setMicrophone(enabled: true)
         if muted { try await room.localParticipant.setMicrophone(enabled: false) }
+        #if os(iOS)
+        Self.microphoneChanged?()
+        #endif
     }
 
     private func publishPendingMicrophone() async {
@@ -127,6 +133,9 @@ final class CallMedia: NSObject {
         }
         guard let room else { return }
         _ = try? await room.localParticipant.setMicrophone(enabled: !muted)
+        #if os(iOS)
+        Self.microphoneChanged?()
+        #endif
     }
 
     func disconnect() async {

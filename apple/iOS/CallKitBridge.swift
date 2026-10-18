@@ -44,6 +44,7 @@ final class CallKitBridge: NSObject {
     func install(model: AppModel) {
         self.model = model
         model.callSystem = self
+        CallMedia.microphoneChanged = { CallAudioRoute.shared.sessionReconfigured() }
         let registry = PKPushRegistry(queue: .main)
         registry.delegate = self
         registry.desiredPushTypes = [.voIP]
