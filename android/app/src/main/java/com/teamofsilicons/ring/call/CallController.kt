@@ -192,6 +192,9 @@ class CallController(
         if (rt.incoming && !rt.accepted) {
             val invitation = call.invitations.firstOrNull { it.invitationId == rt.invitationId } ?: call.latestInvitationFor(me)
             when {
+                // This device's own accept, reported before its response arrived: accept() finishes
+                // it (and ends the call itself if another device won the race).
+                invitation != null && invitation.state == InvitationState.ACCEPTED && rt.phase == CallPhase.Connecting -> {}
                 invitation != null && !invitation.ringing -> {
                     val (cause, text) = endingFor(invitation.state)
                     end(rt, cause, text)
