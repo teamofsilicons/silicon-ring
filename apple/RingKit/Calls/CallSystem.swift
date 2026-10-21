@@ -13,6 +13,10 @@ enum CallEndCause: Sendable {
 /// AppModel drives it; it calls back into AppModel for actions the system UI performs.
 @MainActor
 protocol CallSystem: AnyObject {
+    /// The platform still shows a pending ring of its own that the app's ringtone belongs to (the
+    /// Mac's call banners), so the app must not stop the ringtone yet.
+    var keepsRinging: Bool { get }
+
     /// Starts ringing for an incoming call. Returns true when the platform shows its own ringing UI,
     /// false when the app should show its in-app incoming screen.
     func ring(_ ring: IncomingRing) -> Bool
@@ -39,4 +43,8 @@ protocol CallSystem: AnyObject {
     /// Routes a user hang-up or mute through the system. Returns true when the system will call back.
     func requestHangUp(_ session: CallSession) -> Bool
     func requestMute(_ session: CallSession, muted: Bool) -> Bool
+}
+
+extension CallSystem {
+    var keepsRinging: Bool { false }
 }

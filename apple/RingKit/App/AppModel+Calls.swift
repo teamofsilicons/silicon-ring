@@ -79,15 +79,21 @@ extension AppModel {
     func ringMovedToSystem(_ invitationID: String) {
         guard inAppRingIDs.contains(invitationID) else { return }
         inAppRingIDs.removeAll { $0 == invitationID }
-        if inAppRingIDs.isEmpty { Tones.shared.stopRingtone() }
+        stopRingtoneIfIdle()
     }
 
     func stopRing(_ ring: IncomingRing, cause: CallEndCause) {
         rings[ring.invitationID] = nil
         cancelExpiry(ring.invitationID)
         inAppRingIDs.removeAll { $0 == ring.invitationID }
-        if inAppRingIDs.isEmpty { Tones.shared.stopRingtone() }
+        stopRingtoneIfIdle()
         callSystem?.stopRinging(ring, cause: cause)
+    }
+
+    /// Stops the ringtone once nothing rings here any more: no in-app ring, and no pending ring the
+    /// platform still shows itself.
+    func stopRingtoneIfIdle() {
+        if inAppRing == nil, callSystem?.keepsRinging != true { Tones.shared.stopRingtone() }
     }
 
     func ring(forCallUUID uuid: UUID) -> IncomingRing? {
@@ -125,7 +131,7 @@ extension AppModel {
         rings[ring.invitationID] = nil
         cancelExpiry(ring.invitationID)
         inAppRingIDs.removeAll { $0 == ring.invitationID }
-        if inAppRingIDs.isEmpty { Tones.shared.stopRingtone() }
+        stopRingtoneIfIdle()
         if let current = activeCall, current.isLive, current.ringid != ring.ringid {
             await performHangUp(current)
         }

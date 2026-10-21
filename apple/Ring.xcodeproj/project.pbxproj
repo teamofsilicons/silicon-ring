@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0663B244B115843467C65288 /* CallBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = F35D42E2243AD13162B62F3B /* CallBanner.swift */; };
 		071CE789B128F78A35CADD18 /* DialerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AEB7BE945B126DF9EE2467A /* DialerView.swift */; };
 		08972A4BA429F7B3D3E04EFF /* RecentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D31B1C20977CE57E585A7DB5 /* RecentsView.swift */; };
 		0A3C3186C12804F55264ACEE /* SignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D3952D33BC8BFA76A14B91A /* SignIn.swift */; };
@@ -184,6 +185,7 @@
 		E5B9A7F03C8B00D53E48EFA1 /* Formatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Formatting.swift; sourceTree = "<group>"; };
 		EB0FA2218B76C1B373A0CD63 /* BDOGrotesk-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BDOGrotesk-Regular.ttf"; sourceTree = "<group>"; };
 		EC69CC022F25B2F4B7E0ED17 /* RingApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RingApp.swift; sourceTree = "<group>"; };
+		F35D42E2243AD13162B62F3B /* CallBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallBanner.swift; sourceTree = "<group>"; };
 		F67DB98E34A8BF7C3D388062 /* Ring.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Ring.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -349,6 +351,7 @@
 			isa = PBXGroup;
 			children = (
 				82EEC0AE6B7852A8C281F9B7 /* Assets.xcassets */,
+				F35D42E2243AD13162B62F3B /* CallBanner.swift */,
 				D8932B7E2F0D70FDEFB526EC /* Info.plist */,
 				6EFDEB6253FACF55B08A2C8D /* MacAppDelegate.swift */,
 				E0E96286B63BA4B2BA503E19 /* MacCallSystem.swift */,
@@ -556,6 +559,7 @@
 				2E0EA011EBF8E064B188BD71 /* AppModel+Realtime.swift in Sources */,
 				3603844081A39E4775872B94 /* AppModel.swift in Sources */,
 				FE4BE71B6B04BA198B517FA1 /* AudioPlayerView.swift in Sources */,
+				0663B244B115843467C65288 /* CallBanner.swift in Sources */,
 				C8E3748C7A65BE6E736C88EC /* CallMedia.swift in Sources */,
 				B3EE64F62888D2B3F626EEB1 /* CallScreen.swift in Sources */,
 				4E6C707165D97574D750CAE5 /* CallSession.swift in Sources */,

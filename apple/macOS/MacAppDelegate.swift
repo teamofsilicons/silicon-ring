@@ -98,7 +98,7 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
         let type = notification.request.content.userInfo["type"] as? String
         if isRemote && type == "call.incoming" {
             // The server only sends this while it thinks the Mac is offline. Ring is running, so
-            // reconnect and let the ringing panel (with its own notification) take over.
+            // reconnect and let the call banner take over.
             await MainActor.run { AppModel.shared.resume() }
             return []
         }
