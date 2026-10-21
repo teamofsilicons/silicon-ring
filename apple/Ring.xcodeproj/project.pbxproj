@@ -48,6 +48,7 @@
 		77B45897DDBE96C4A6B865CB /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C31251185CE7722326B9D14 /* RootView.swift */; };
 		789B3813D12E6B7541C4B859 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0E184BB529EFF8CB911A99 /* SessionStore.swift */; };
 		7DA54B6994CC9339FD7FE17F /* Colors.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6806898E24ADDB3ED5A4D494 /* Colors.xcassets */; };
+		80800C7371C070AE55C11E31 /* CallHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = A773C29F8CA16C92EDE499C3 /* CallHUD.swift */; };
 		8088E1996D830D53D49C633B /* BDOGrotesk-Medium.ttf in CopyFiles */ = {isa = PBXBuildFile; fileRef = CB2ADC6B5BB9AADA6E5F4C8B /* BDOGrotesk-Medium.ttf */; };
 		840A5E413253EA1B177FE3BE /* RealtimeConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC8265CF789A840B01F46ED /* RealtimeConnection.swift */; };
 		878009CD0A216A5A56DE735B /* connected.wav in Resources */ = {isa = PBXBuildFile; fileRef = 7C3A0ED84AA4E6B78AF41932 /* connected.wav */; };
@@ -171,6 +172,7 @@
 		9CB84A8B5D9AD0BE88661B1B /* Tones.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tones.swift; sourceTree = "<group>"; };
 		9CEA2BDFFE859B8E15D88C12 /* CallMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallMedia.swift; sourceTree = "<group>"; };
 		A47DEB74F973B9763904301F /* RingMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RingMacApp.swift; sourceTree = "<group>"; };
+		A773C29F8CA16C92EDE499C3 /* CallHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallHUD.swift; sourceTree = "<group>"; };
 		B0B30BCC6AA0056EB9541A87 /* Events.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Events.swift; sourceTree = "<group>"; };
 		B52B5BD35251948095CE24D5 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B6DE62C385D4794718E864E5 /* CallScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallScreen.swift; sourceTree = "<group>"; };
@@ -352,6 +354,7 @@
 			children = (
 				82EEC0AE6B7852A8C281F9B7 /* Assets.xcassets */,
 				F35D42E2243AD13162B62F3B /* CallBanner.swift */,
+				A773C29F8CA16C92EDE499C3 /* CallHUD.swift */,
 				D8932B7E2F0D70FDEFB526EC /* Info.plist */,
 				6EFDEB6253FACF55B08A2C8D /* MacAppDelegate.swift */,
 				E0E96286B63BA4B2BA503E19 /* MacCallSystem.swift */,
@@ -560,6 +563,7 @@
 				3603844081A39E4775872B94 /* AppModel.swift in Sources */,
 				FE4BE71B6B04BA198B517FA1 /* AudioPlayerView.swift in Sources */,
 				0663B244B115843467C65288 /* CallBanner.swift in Sources */,
+				80800C7371C070AE55C11E31 /* CallHUD.swift in Sources */,
 				C8E3748C7A65BE6E736C88EC /* CallMedia.swift in Sources */,
 				B3EE64F62888D2B3F626EEB1 /* CallScreen.swift in Sources */,
 				4E6C707165D97574D750CAE5 /* CallSession.swift in Sources */,

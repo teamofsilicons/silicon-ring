@@ -408,23 +408,7 @@ struct OutgoingCallView: View {
         .background(Palette.background.ignoresSafeArea())
     }
 
-    private var status: String {
-        switch session.phase {
-        case .calling: "Calling…"
-        case .ringing:
-            if session.outgoingInvitation?.state == .busy {
-                "Busy"
-            } else if session.mediaState == .connected {
-                "Ringing"
-            } else {
-                // The callee's devices are being reached while this device joins the room.
-                "Calling…"
-            }
-        case .voicemail: "Leave a message after the beep"
-        case .active: "Connected"
-        case .ended: session.endSummary ?? "Call ended"
-        }
-    }
+    private var status: String { session.statusText }
 }
 
 // MARK: - In call

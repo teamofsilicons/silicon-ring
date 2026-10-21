@@ -28,6 +28,11 @@ final class MacCallSystem: CallSystem {
     /// Banners in the order they arrived, newest at the bottom of the stack.
     private var banners: [(invitationID: String, panel: CallBannerPanel)] = []
     private var observers: [NSObjectProtocol] = []
+    /// The floating call window, shown while a live call is not in front.
+    private var hud: CallHUDPanel?
+    /// A show waiting to see whether Ring's own window comes forward first (answering from a banner
+    /// brings it up a moment later), so the floating window never flashes.
+    private var pendingHUD: DispatchWorkItem?
 
     /// A banner still offers a ring nobody has answered or declined.
     var keepsRinging: Bool {
@@ -40,12 +45,30 @@ final class MacCallSystem: CallSystem {
         model.onSignIn = { DesktopPreferences.enableLoginItemByDefault() }
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { MacCallSystem.shared.layout(animated: false) }
+            MainActor.assumeIsolated {
+                if let hud = MacCallSystem.shared.hud, hud.isVisible { hud.clamp() }
+                MacCallSystem.shared.layout(animated: false)
+            }
         })
+        observers.append(center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { MacCallSystem.shared.updateCallHUD() }
+        })
+        for name in [NSWindow.didDeminiaturizeNotification, NSWindow.didBecomeKeyNotification, NSWindow.didChangeOcclusionStateNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { MacCallSystem.shared.updateCallHUD() }
+            })
+        }
+        observers.append(center.addObserver(forName: CallHUDPanel.didMove, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { MacCallSystem.shared.layout(animated: true) }
+        })
+        observeCall()
         // A ring opened in Ring's window goes back to a banner when the window stops being where
         // the person is looking, so it can always be answered.
         observers.append(center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { MacCallSystem.shared.returnInAppRings() }
+            MainActor.assumeIsolated {
+                MacCallSystem.shared.returnInAppRings()
+                MacCallSystem.shared.updateCallHUD()
+            }
         })
         for name in [NSWindow.willCloseNotification, NSWindow.didMiniaturizeNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { notification in
@@ -53,6 +76,8 @@ final class MacCallSystem: CallSystem {
                 MainActor.assumeIsolated {
                     guard let closing, let main = MainWindow.window, ObjectIdentifier(main) == closing else { return }
                     MacCallSystem.shared.returnInAppRings()
+                    // willClose comes before the window is gone.
+                    Task { @MainActor in MacCallSystem.shared.updateCallHUD(closing: true) }
                 }
             })
         }
@@ -77,7 +102,7 @@ final class MacCallSystem: CallSystem {
         let screen = stackScreen
         banners.append((invitationID, panel))
         if let screen {
-            panel.present(at: CallBannerPanel.frame(size: panel.fittedSize, on: screen, above: stackOffset(before: banners.count - 1)))
+            panel.present(at: targets(on: screen).last ?? CallBannerPanel.frame(size: panel.fittedSize, on: screen, above: 0))
         }
         if model.activeCall?.isLive == true {
             Tones.shared.play(.connected)
@@ -153,6 +178,55 @@ final class MacCallSystem: CallSystem {
         MainWindow.show()
     }
 
+    // MARK: Floating call window
+
+    /// Follows the call this Mac carries: whenever it starts or ends, the floating window updates.
+    private func observeCall() {
+        withObservationTracking {
+            _ = model?.activeCall?.isLive
+        } onChange: {
+            Task { @MainActor in
+                MacCallSystem.shared.updateCallHUD()
+                MacCallSystem.shared.observeCall()
+            }
+        }
+    }
+
+    /// Shows the floating call window while a live call is not in front: Ring is not the active app,
+    /// or its window is closed, minimised or covered.
+    private func updateCallHUD(closing: Bool = false) {
+        guard let model else { return }
+        if model.activeCall?.isLive == true, !callInFront(closing: closing) {
+            guard hud?.isVisible != true, pendingHUD == nil else { return }
+            let show = DispatchWorkItem {
+                MainActor.assumeIsolated {
+                    let system = MacCallSystem.shared
+                    system.pendingHUD = nil
+                    guard let model = system.model, model.activeCall?.isLive == true, !system.callInFront(closing: false) else { return }
+                    if system.hud == nil { system.hud = CallHUDPanel(model: model) }
+                    system.hud?.show()
+                    system.layout(animated: true)
+                }
+            }
+            pendingHUD = show
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: show)
+        } else {
+            pendingHUD?.cancel()
+            pendingHUD = nil
+            if hud?.isVisible == true {
+                hud?.orderOut(nil)
+                layout(animated: true)
+            }
+        }
+    }
+
+    /// Ring's window is in front and showing the call.
+    private func callInFront(closing: Bool) -> Bool {
+        let window = MainWindow.window
+        return !closing && NSApp.isActive && window?.isVisible == true && window?.isMiniaturized == false
+            && window?.occlusionState.contains(.visible) == true
+    }
+
     private func returnInAppRings() {
         guard let model, model.inAppRing != nil, model.activeCall?.isLive != true else { return }
         model.handOffInAppRingsToSystem()
@@ -176,15 +250,28 @@ final class MacCallSystem: CallSystem {
         return CallBannerPanel.activeScreen
     }
 
-    private func stackOffset(before index: Int) -> CGFloat {
-        banners.prefix(index).reduce(0) { $0 + $1.panel.frame.height + CallBannerPanel.spacing }
+    /// Where each banner goes, top down. A banner that would cover the floating call window (and its
+    /// Mute and End buttons) moves below it, and the rest of the stack follows.
+    private func targets(on screen: NSScreen) -> [NSRect] {
+        let avoid = hud.flatMap { $0.isVisible && $0.screen == screen ? $0.frame : nil }
+        var offset: CGFloat = 0
+        var frames: [NSRect] = []
+        for banner in banners {
+            var frame = CallBannerPanel.frame(size: banner.panel.fittedSize, on: screen, above: offset)
+            if let avoid, frame.intersects(avoid) {
+                offset = screen.visibleFrame.maxY - CallBannerPanel.margin - avoid.minY + CallBannerPanel.spacing
+                frame = CallBannerPanel.frame(size: banner.panel.fittedSize, on: screen, above: offset)
+            }
+            frames.append(frame)
+            offset += frame.height + CallBannerPanel.spacing
+        }
+        return frames
     }
 
-    /// Restacks the banners after one leaves or the displays change.
+    /// Restacks the banners after one leaves, the displays change or the floating window moves.
     private func layout(animated: Bool) {
         guard let screen = stackScreen else { return }
-        for (index, banner) in banners.enumerated() {
-            let target = CallBannerPanel.frame(size: banner.panel.fittedSize, on: screen, above: stackOffset(before: index))
+        for (banner, target) in zip(banners, targets(on: screen)) {
             if animated { banner.panel.move(to: target) } else { banner.panel.setFrame(target, display: true) }
         }
     }

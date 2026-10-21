@@ -108,6 +108,25 @@ final class CallSession: Identifiable {
 
     var answeredAt: Date? { call.answeredAt }
 
+    /// Where an outgoing call stands before it is answered, as the call screen says it.
+    var statusText: String {
+        switch phase {
+        case .calling: "Calling…"
+        case .ringing:
+            if outgoingInvitation?.state == .busy {
+                "Busy"
+            } else if mediaState == .connected {
+                "Ringing"
+            } else {
+                // The callee's devices are being reached while this device joins the room.
+                "Calling…"
+            }
+        case .voicemail: "Leave a message after the beep"
+        case .active: "Connected"
+        case .ended: endSummary ?? "Call ended"
+        }
+    }
+
     var isLive: Bool { phase != .ended }
 
     /// The invitation this outgoing call is waiting on.

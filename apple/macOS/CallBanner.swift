@@ -206,19 +206,26 @@ private struct BannerPressStyle: ButtonStyle {
     }
 }
 
-/// Liquid Glass on macOS 26, the notification material before it; both blur what is behind the window.
-private struct BannerBackground: View {
+/// The glass behind the call banner and the floating call window: Liquid Glass on macOS 26, in its
+/// clear variant (less frosted than the regular one) with a light tint that keeps the text legible
+/// over busy content; the notification material on earlier systems.
+struct BannerBackground: View {
     var radius: CGFloat
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         if #available(macOS 26, *) {
             Color.clear
-                .glassEffect(.regular, in: .rect(cornerRadius: radius))
+                .glassEffect(.clear.tint(tint), in: .rect(cornerRadius: radius))
         } else {
             BehindWindowBlur()
                 .clipShape(.rect(cornerRadius: radius))
                 .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
         }
+    }
+
+    private var tint: Color {
+        colorScheme == .dark ? Color.black.opacity(0.32) : Color.white.opacity(0.38)
     }
 }
 
