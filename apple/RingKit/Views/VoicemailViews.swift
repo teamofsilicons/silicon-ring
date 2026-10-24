@@ -5,6 +5,7 @@ struct VoicemailListView: View {
     @State private var playback = AudioPlayback()
     @State private var playingID: String?
     @State private var loadingID: String?
+    @State private var confirmBlock: Account?
 
     var body: some View {
         ScrollView {
@@ -37,6 +38,9 @@ struct VoicemailListView: View {
         .refreshable { await model.refreshVoicemails() }
         .homeScreenChrome()
         .navigationTitle("Voicemail")
+        .blockConfirmation($confirmBlock) { account in
+            Task { await model.block(account) }
+        }
         .onDisappear { playback.stop(); playingID = nil }
     }
 
@@ -96,6 +100,8 @@ struct VoicemailListView: View {
         .contextMenu {
             Button("Call back", systemImage: "phone") { model.placeCall(to: voicemail.from.uuid) }
             Button("Delete", systemImage: "trash", role: .destructive) { Task { await model.delete(voicemail) } }
+            Divider()
+            PersonSafetyActions(account: voicemail.from, ringid: voicemail.ringid, confirmBlock: $confirmBlock)
         }
     }
 

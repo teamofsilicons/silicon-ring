@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		04783A7DAB6D858425BAFFE9 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 0242D44553A456C76F745830 /* PrivacyInfo.xcprivacy */; };
 		0663B244B115843467C65288 /* CallBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = F35D42E2243AD13162B62F3B /* CallBanner.swift */; };
 		071CE789B128F78A35CADD18 /* DialerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AEB7BE945B126DF9EE2467A /* DialerView.swift */; };
 		08972A4BA429F7B3D3E04EFF /* RecentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D31B1C20977CE57E585A7DB5 /* RecentsView.swift */; };
@@ -23,7 +24,9 @@
 		28BF384E6CB99D2D4FE5D7C7 /* ringback.wav in Resources */ = {isa = PBXBuildFile; fileRef = 98401F51B4114051CCAEF59C /* ringback.wav */; };
 		2E0EA011EBF8E064B188BD71 /* AppModel+Realtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E8C22399A7B5E3D73784712 /* AppModel+Realtime.swift */; };
 		3055129CC3A50793BF8EBB31 /* AudioRouteButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74953904432DB08FCF775742 /* AudioRouteButton.swift */; };
+		3384AF1CBD995683C26B11FB /* RecordingNoticeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72A716985EE5AF52D6E4D748 /* RecordingNoticeView.swift */; };
 		3406F8D1698D0F18E9DA4E55 /* MacCallSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0E96286B63BA4B2BA503E19 /* MacCallSystem.swift */; };
+		35D538049B4C5ECF0B1DA169 /* Labels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97A1F5DC576DD3245D2D6554 /* Labels.swift */; };
 		3603844081A39E4775872B94 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E5C182E107AAE0B0CE4F6AE /* AppModel.swift */; };
 		3C127C0D2882AC263D16D70C /* AppModel+Calls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83C329610AFA54DF56ACEC87 /* AppModel+Calls.swift */; };
 		3CCB831610C768A1A1A3E075 /* RealtimeConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC8265CF789A840B01F46ED /* RealtimeConnection.swift */; };
@@ -33,6 +36,7 @@
 		3FACB9091E36121066317B12 /* ringback.wav in Resources */ = {isa = PBXBuildFile; fileRef = 98401F51B4114051CCAEF59C /* ringback.wav */; };
 		4587E1073D977D965AC5155C /* RecentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D31B1C20977CE57E585A7DB5 /* RecentsView.swift */; };
 		4E6C707165D97574D750CAE5 /* CallSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 007364CA765AB152E35C2312 /* CallSession.swift */; };
+		502F2A7A417A7BE8A66CB2D3 /* DemoMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A937381BB127AA452B2B186 /* DemoMode.swift */; };
 		507F9364AFF7380459DEA88E /* MacViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86D87F63E7B405D6EA2CB34E /* MacViews.swift */; };
 		5088F0B60B98FF16BB81055A /* AudioPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 408E0850E752347ABC9E1496 /* AudioPlayerView.swift */; };
 		51BA5D85CCF24D1D65DE781D /* DevLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C1E8BE26559134C6F720AA6 /* DevLog.swift */; };
@@ -42,20 +46,26 @@
 		5B7254D1162386836357A326 /* JSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91FFB21EBFC59454ADBDCB97 /* JSON.swift */; };
 		66BDB776D7BB07A9CA8503DE /* CallMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CEA2BDFFE859B8E15D88C12 /* CallMedia.swift */; };
 		69540176133657AE8C1EC16B /* Formatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B9A7F03C8B00D53E48EFA1 /* Formatting.swift */; };
+		6BB46C5CB32A8668F6B282A1 /* DemoMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A937381BB127AA452B2B186 /* DemoMode.swift */; };
 		6E93A0D9AB0D4072C9FFA494 /* ended.wav in Resources */ = {isa = PBXBuildFile; fileRef = 06CC19CEC1C7821D921F8F10 /* ended.wav */; };
 		749AE1C805B057138E54C649 /* DevHooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75015251521BE7B94FD5EE84 /* DevHooks.swift */; };
 		755CF1ADFDCEBA6CF9CE1BF1 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FBD3A0B6ED2E517A0F50BB9 /* Theme.swift */; };
 		77B45897DDBE96C4A6B865CB /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C31251185CE7722326B9D14 /* RootView.swift */; };
 		789B3813D12E6B7541C4B859 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0E184BB529EFF8CB911A99 /* SessionStore.swift */; };
+		7A479E6135BCD9216C19B58C /* DemoServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0191B36F2638E363DD04BF /* DemoServer.swift */; };
 		7DA54B6994CC9339FD7FE17F /* Colors.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6806898E24ADDB3ED5A4D494 /* Colors.xcassets */; };
 		80800C7371C070AE55C11E31 /* CallHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = A773C29F8CA16C92EDE499C3 /* CallHUD.swift */; };
 		8088E1996D830D53D49C633B /* BDOGrotesk-Medium.ttf in CopyFiles */ = {isa = PBXBuildFile; fileRef = CB2ADC6B5BB9AADA6E5F4C8B /* BDOGrotesk-Medium.ttf */; };
+		810FBB57D4E23351A05B062A /* RecordingNoticeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72A716985EE5AF52D6E4D748 /* RecordingNoticeView.swift */; };
+		81A99918FD541E588B9FC623 /* BlockViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2944B73D65A419AE2E6D3AF1 /* BlockViews.swift */; };
 		840A5E413253EA1B177FE3BE /* RealtimeConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC8265CF789A840B01F46ED /* RealtimeConnection.swift */; };
+		86720C3FE5EE02EB5D2696A5 /* BlockViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2944B73D65A419AE2E6D3AF1 /* BlockViews.swift */; };
 		878009CD0A216A5A56DE735B /* connected.wav in Resources */ = {isa = PBXBuildFile; fileRef = 7C3A0ED84AA4E6B78AF41932 /* connected.wav */; };
 		8A523F7F65F45AECD48E9C00 /* CallSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 007364CA765AB152E35C2312 /* CallSession.swift */; };
 		8F6D196B81060373D87E836E /* AppInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22E6A2BCF1EEE89FF8BAB7A6 /* AppInfo.swift */; };
 		914A35741690165E4ACD6243 /* BDOGrotesk-Medium.ttf in CopyFiles */ = {isa = PBXBuildFile; fileRef = CB2ADC6B5BB9AADA6E5F4C8B /* BDOGrotesk-Medium.ttf */; };
 		914F2F9FF9404C28C6B392D1 /* CallSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = C76EF7DE5507AF4C0069A2C6 /* CallSystem.swift */; };
+		91D8CCE864FF7DDCB6DC7C99 /* RecordingNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2247E9CF7D7F05C22402EE69 /* RecordingNotice.swift */; };
 		97ECCB85755CDACD3CE6CFCA /* DialerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AEB7BE945B126DF9EE2467A /* DialerView.swift */; };
 		9D9A0A9FEE917AD442EA3070 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82FD949A7925969A2F51ECFF /* Models.swift */; };
 		A0081FA7B8977D54E891A26E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2515ADB78EEF17BDE5B59B58 /* Assets.xcassets */; };
@@ -64,6 +74,8 @@
 		A6E385E84F43FF9F096D6F2C /* RingApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC69CC022F25B2F4B7E0ED17 /* RingApp.swift */; };
 		A830EE62247EFE3FAB56055B /* CallScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6DE62C385D4794718E864E5 /* CallScreen.swift */; };
 		AB17E22D4F2F2ECAEBDD8BB1 /* MacAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EFDEB6253FACF55B08A2C8D /* MacAppDelegate.swift */; };
+		AB97A88030EF54F41BC3D57D /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 0242D44553A456C76F745830 /* PrivacyInfo.xcprivacy */; };
+		AC2C6F457A80FB7AE0E91E5C /* DemoFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = B910D87A823B391B3657EFED /* DemoFixtures.swift */; };
 		AC7C1EF14C4BE82F210CB8A4 /* BDOGrotesk-Regular.ttf in CopyFiles */ = {isa = PBXBuildFile; fileRef = EB0FA2218B76C1B373A0CD63 /* BDOGrotesk-Regular.ttf */; };
 		B01AD2632AAE9D2D3E25477B /* DevHooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75015251521BE7B94FD5EE84 /* DevHooks.swift */; };
 		B01E0F6A70D7914CDB55EC1E /* AppInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22E6A2BCF1EEE89FF8BAB7A6 /* AppInfo.swift */; };
@@ -74,11 +86,13 @@
 		BE87A73BC644CD9C4FA65CE9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 82EEC0AE6B7852A8C281F9B7 /* Assets.xcassets */; };
 		C05FCBDDED2A647818F377A7 /* Provisioning.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FBCCD89034603DF2F446EE5 /* Provisioning.swift */; };
 		C60CF26CD9D37345006984CC /* Provisioning.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FBCCD89034603DF2F446EE5 /* Provisioning.swift */; };
+		C67E1B521357F1BDC550B67B /* DemoServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0191B36F2638E363DD04BF /* DemoServer.swift */; };
 		C6AA8824DD20CA643EA2C2B1 /* Tones.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB84A8B5D9AD0BE88661B1B /* Tones.swift */; };
 		C8E3748C7A65BE6E736C88EC /* CallMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CEA2BDFFE859B8E15D88C12 /* CallMedia.swift */; };
 		CAA4ED73ACCDD5AE953CEFD9 /* Events.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0B30BCC6AA0056EB9541A87 /* Events.swift */; };
 		CF56C7E16AA15C164D838365 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D4EC654DC641810D86BB9BB /* APIClient.swift */; };
 		D278C75E6A5772EDDC8F7F57 /* SignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D3952D33BC8BFA76A14B91A /* SignIn.swift */; };
+		D314013F84B3F0C9A764DF41 /* DemoFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = B910D87A823B391B3657EFED /* DemoFixtures.swift */; };
 		D58E4FCEE050A2D8F44E3192 /* Tones.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB84A8B5D9AD0BE88661B1B /* Tones.swift */; };
 		D65107BF14805971D2DB1AD7 /* VoicemailViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 806A3226BB896292C193F723 /* VoicemailViews.swift */; };
 		D7B817C47185F645ED28ACEC /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B52B5BD35251948095CE24D5 /* SettingsView.swift */; };
@@ -91,6 +105,8 @@
 		EB631157DC04D2C922494144 /* VoicemailViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 806A3226BB896292C193F723 /* VoicemailViews.swift */; };
 		ECBAF42529E81BF9AC884302 /* HedvigLettersSerif-Regular.ttf in CopyFiles */ = {isa = PBXBuildFile; fileRef = 10E8FFE1B1B56C0AAC8294B1 /* HedvigLettersSerif-Regular.ttf */; };
 		EE762E01522F60A3B1E99E53 /* BDOGrotesk-Bold.ttf in CopyFiles */ = {isa = PBXBuildFile; fileRef = 54789B32586157FCEC582783 /* BDOGrotesk-Bold.ttf */; };
+		EF6441662F953EA91A7D91C5 /* Labels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97A1F5DC576DD3245D2D6554 /* Labels.swift */; };
+		F282470947DE6F8736F3414A /* RecordingNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2247E9CF7D7F05C22402EE69 /* RecordingNotice.swift */; };
 		F31E98D9DA451D5F94216DB4 /* AppModel+Realtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E8C22399A7B5E3D73784712 /* AppModel+Realtime.swift */; };
 		F4FB9BA505EF3F7148391A4F /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 12E0606367C6ED5A6A1AE7FB /* LiveKit */; };
 		F6D534770904EE93C92CAF63 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D4EC654DC641810D86BB9BB /* APIClient.swift */; };
@@ -133,16 +149,20 @@
 
 /* Begin PBXFileReference section */
 		007364CA765AB152E35C2312 /* CallSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallSession.swift; sourceTree = "<group>"; };
+		0242D44553A456C76F745830 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		06CC19CEC1C7821D921F8F10 /* ended.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = ended.wav; sourceTree = "<group>"; };
 		09454A332C0107D842368393 /* Ring-macOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Ring-macOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		0AEB7BE945B126DF9EE2467A /* DialerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DialerView.swift; sourceTree = "<group>"; };
 		0C31251185CE7722326B9D14 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		0E8C22399A7B5E3D73784712 /* AppModel+Realtime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModel+Realtime.swift"; sourceTree = "<group>"; };
 		10E8FFE1B1B56C0AAC8294B1 /* HedvigLettersSerif-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "HedvigLettersSerif-Regular.ttf"; sourceTree = "<group>"; };
+		1A937381BB127AA452B2B186 /* DemoMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoMode.swift; sourceTree = "<group>"; };
 		1D3952D33BC8BFA76A14B91A /* SignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignIn.swift; sourceTree = "<group>"; };
+		2247E9CF7D7F05C22402EE69 /* RecordingNotice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingNotice.swift; sourceTree = "<group>"; };
 		22E6A2BCF1EEE89FF8BAB7A6 /* AppInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppInfo.swift; sourceTree = "<group>"; };
 		2515ADB78EEF17BDE5B59B58 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		26D610B93F52B1F31AE997AA /* Ring-Debug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Ring-Debug.entitlements"; sourceTree = "<group>"; };
+		2944B73D65A419AE2E6D3AF1 /* BlockViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockViews.swift; sourceTree = "<group>"; };
 		3E5C182E107AAE0B0CE4F6AE /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		3FBD3A0B6ED2E517A0F50BB9 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		408E0850E752347ABC9E1496 /* AudioPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayerView.swift; sourceTree = "<group>"; };
@@ -154,6 +174,7 @@
 		6806898E24ADDB3ED5A4D494 /* Colors.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Colors.xcassets; sourceTree = "<group>"; };
 		685A9AB4720F7A706FD3B93A /* Ring.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Ring.entitlements; sourceTree = "<group>"; };
 		6EFDEB6253FACF55B08A2C8D /* MacAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacAppDelegate.swift; sourceTree = "<group>"; };
+		72A716985EE5AF52D6E4D748 /* RecordingNoticeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingNoticeView.swift; sourceTree = "<group>"; };
 		7328AF1DC01017CE131BFEDD /* ringtone.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = ringtone.wav; sourceTree = "<group>"; };
 		74953904432DB08FCF775742 /* AudioRouteButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRouteButton.swift; sourceTree = "<group>"; };
 		75015251521BE7B94FD5EE84 /* DevHooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevHooks.swift; sourceTree = "<group>"; };
@@ -167,15 +188,18 @@
 		86D87F63E7B405D6EA2CB34E /* MacViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacViews.swift; sourceTree = "<group>"; };
 		8C1E8BE26559134C6F720AA6 /* DevLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevLog.swift; sourceTree = "<group>"; };
 		91FFB21EBFC59454ADBDCB97 /* JSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSON.swift; sourceTree = "<group>"; };
+		97A1F5DC576DD3245D2D6554 /* Labels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Labels.swift; sourceTree = "<group>"; };
 		98401F51B4114051CCAEF59C /* ringback.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = ringback.wav; sourceTree = "<group>"; };
 		9BBA1E3777BB2C757288F48B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9CB84A8B5D9AD0BE88661B1B /* Tones.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tones.swift; sourceTree = "<group>"; };
 		9CEA2BDFFE859B8E15D88C12 /* CallMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallMedia.swift; sourceTree = "<group>"; };
 		A47DEB74F973B9763904301F /* RingMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RingMacApp.swift; sourceTree = "<group>"; };
 		A773C29F8CA16C92EDE499C3 /* CallHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallHUD.swift; sourceTree = "<group>"; };
+		AD0191B36F2638E363DD04BF /* DemoServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoServer.swift; sourceTree = "<group>"; };
 		B0B30BCC6AA0056EB9541A87 /* Events.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Events.swift; sourceTree = "<group>"; };
 		B52B5BD35251948095CE24D5 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B6DE62C385D4794718E864E5 /* CallScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallScreen.swift; sourceTree = "<group>"; };
+		B910D87A823B391B3657EFED /* DemoFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoFixtures.swift; sourceTree = "<group>"; };
 		BF0E184BB529EFF8CB911A99 /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
 		C76EF7DE5507AF4C0069A2C6 /* CallSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallSystem.swift; sourceTree = "<group>"; };
 		CB2ADC6B5BB9AADA6E5F4C8B /* BDOGrotesk-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BDOGrotesk-Medium.ttf"; sourceTree = "<group>"; };
@@ -247,6 +271,7 @@
 			isa = PBXGroup;
 			children = (
 				6806898E24ADDB3ED5A4D494 /* Colors.xcassets */,
+				0242D44553A456C76F745830 /* PrivacyInfo.xcprivacy */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -292,6 +317,7 @@
 				9CEA2BDFFE859B8E15D88C12 /* CallMedia.swift */,
 				007364CA765AB152E35C2312 /* CallSession.swift */,
 				C76EF7DE5507AF4C0069A2C6 /* CallSystem.swift */,
+				2247E9CF7D7F05C22402EE69 /* RecordingNotice.swift */,
 			);
 			path = Calls;
 			sourceTree = "<group>";
@@ -338,9 +364,11 @@
 			isa = PBXGroup;
 			children = (
 				408E0850E752347ABC9E1496 /* AudioPlayerView.swift */,
+				2944B73D65A419AE2E6D3AF1 /* BlockViews.swift */,
 				B6DE62C385D4794718E864E5 /* CallScreen.swift */,
 				0AEB7BE945B126DF9EE2467A /* DialerView.swift */,
 				D31B1C20977CE57E585A7DB5 /* RecentsView.swift */,
+				72A716985EE5AF52D6E4D748 /* RecordingNoticeView.swift */,
 				0C31251185CE7722326B9D14 /* RootView.swift */,
 				B52B5BD35251948095CE24D5 /* SettingsView.swift */,
 				D10EC6B1AF46DFAB9434A139 /* SignInView.swift */,
@@ -417,9 +445,13 @@
 			isa = PBXGroup;
 			children = (
 				22E6A2BCF1EEE89FF8BAB7A6 /* AppInfo.swift */,
+				B910D87A823B391B3657EFED /* DemoFixtures.swift */,
+				1A937381BB127AA452B2B186 /* DemoMode.swift */,
+				AD0191B36F2638E363DD04BF /* DemoServer.swift */,
 				75015251521BE7B94FD5EE84 /* DevHooks.swift */,
 				8C1E8BE26559134C6F720AA6 /* DevLog.swift */,
 				E5B9A7F03C8B00D53E48EFA1 /* Formatting.swift */,
+				97A1F5DC576DD3245D2D6554 /* Labels.swift */,
 				7FBCCD89034603DF2F446EE5 /* Provisioning.swift */,
 				9CB84A8B5D9AD0BE88661B1B /* Tones.swift */,
 			);
@@ -529,6 +561,7 @@
 			files = (
 				A0081FA7B8977D54E891A26E /* Assets.xcassets in Resources */,
 				B9FA36146E29F95F420595F2 /* Colors.xcassets in Resources */,
+				AB97A88030EF54F41BC3D57D /* PrivacyInfo.xcprivacy in Resources */,
 				878009CD0A216A5A56DE735B /* connected.wav in Resources */,
 				6E93A0D9AB0D4072C9FFA494 /* ended.wav in Resources */,
 				3FACB9091E36121066317B12 /* ringback.wav in Resources */,
@@ -542,6 +575,7 @@
 			files = (
 				BE87A73BC644CD9C4FA65CE9 /* Assets.xcassets in Resources */,
 				7DA54B6994CC9339FD7FE17F /* Colors.xcassets in Resources */,
+				04783A7DAB6D858425BAFFE9 /* PrivacyInfo.xcprivacy in Resources */,
 				59D16D70BE3CF9BA43A09C65 /* connected.wav in Resources */,
 				D83E57B6B5B532E795E837A3 /* ended.wav in Resources */,
 				28BF384E6CB99D2D4FE5D7C7 /* ringback.wav in Resources */,
@@ -562,6 +596,7 @@
 				2E0EA011EBF8E064B188BD71 /* AppModel+Realtime.swift in Sources */,
 				3603844081A39E4775872B94 /* AppModel.swift in Sources */,
 				FE4BE71B6B04BA198B517FA1 /* AudioPlayerView.swift in Sources */,
+				86720C3FE5EE02EB5D2696A5 /* BlockViews.swift in Sources */,
 				0663B244B115843467C65288 /* CallBanner.swift in Sources */,
 				80800C7371C070AE55C11E31 /* CallHUD.swift in Sources */,
 				C8E3748C7A65BE6E736C88EC /* CallMedia.swift in Sources */,
@@ -569,12 +604,16 @@
 				4E6C707165D97574D750CAE5 /* CallSession.swift in Sources */,
 				914F2F9FF9404C28C6B392D1 /* CallSystem.swift in Sources */,
 				E72563C1E1F8514B8D4B4274 /* Components.swift in Sources */,
+				AC2C6F457A80FB7AE0E91E5C /* DemoFixtures.swift in Sources */,
+				6BB46C5CB32A8668F6B282A1 /* DemoMode.swift in Sources */,
+				7A479E6135BCD9216C19B58C /* DemoServer.swift in Sources */,
 				B01AD2632AAE9D2D3E25477B /* DevHooks.swift in Sources */,
 				3F633E4D99A687FED16F0EB1 /* DevLog.swift in Sources */,
 				97ECCB85755CDACD3CE6CFCA /* DialerView.swift in Sources */,
 				D99FFDF9CB35E88899C26157 /* Events.swift in Sources */,
 				69540176133657AE8C1EC16B /* Formatting.swift in Sources */,
 				5B7254D1162386836357A326 /* JSON.swift in Sources */,
+				35D538049B4C5ECF0B1DA169 /* Labels.swift in Sources */,
 				AB17E22D4F2F2ECAEBDD8BB1 /* MacAppDelegate.swift in Sources */,
 				3406F8D1698D0F18E9DA4E55 /* MacCallSystem.swift in Sources */,
 				507F9364AFF7380459DEA88E /* MacViews.swift in Sources */,
@@ -582,6 +621,8 @@
 				C60CF26CD9D37345006984CC /* Provisioning.swift in Sources */,
 				840A5E413253EA1B177FE3BE /* RealtimeConnection.swift in Sources */,
 				08972A4BA429F7B3D3E04EFF /* RecentsView.swift in Sources */,
+				F282470947DE6F8736F3414A /* RecordingNotice.swift in Sources */,
+				810FBB57D4E23351A05B062A /* RecordingNoticeView.swift in Sources */,
 				FDD6CCB3F2B07A904B24A6A7 /* RingMacApp.swift in Sources */,
 				77B45897DDBE96C4A6B865CB /* RootView.swift in Sources */,
 				19F5BC085291BD00025A8F86 /* SessionStore.swift in Sources */,
@@ -605,22 +646,29 @@
 				EA676087A27B73686430528B /* AppModel.swift in Sources */,
 				5088F0B60B98FF16BB81055A /* AudioPlayerView.swift in Sources */,
 				3055129CC3A50793BF8EBB31 /* AudioRouteButton.swift in Sources */,
+				81A99918FD541E588B9FC623 /* BlockViews.swift in Sources */,
 				A0B0C80A33B4F7E3664FD3AB /* CallKitBridge.swift in Sources */,
 				66BDB776D7BB07A9CA8503DE /* CallMedia.swift in Sources */,
 				A830EE62247EFE3FAB56055B /* CallScreen.swift in Sources */,
 				8A523F7F65F45AECD48E9C00 /* CallSession.swift in Sources */,
 				A0E1554BDF14140D53BF672A /* CallSystem.swift in Sources */,
 				3D94B9549ECD9ACEF24B070F /* Components.swift in Sources */,
+				D314013F84B3F0C9A764DF41 /* DemoFixtures.swift in Sources */,
+				502F2A7A417A7BE8A66CB2D3 /* DemoMode.swift in Sources */,
+				C67E1B521357F1BDC550B67B /* DemoServer.swift in Sources */,
 				749AE1C805B057138E54C649 /* DevHooks.swift in Sources */,
 				51BA5D85CCF24D1D65DE781D /* DevLog.swift in Sources */,
 				071CE789B128F78A35CADD18 /* DialerView.swift in Sources */,
 				CAA4ED73ACCDD5AE953CEFD9 /* Events.swift in Sources */,
 				BD6218C0C2B1A7EA6E0350F5 /* Formatting.swift in Sources */,
 				54963C574197265622DF07E3 /* JSON.swift in Sources */,
+				EF6441662F953EA91A7D91C5 /* Labels.swift in Sources */,
 				0F3D8CD79A90805946086771 /* Models.swift in Sources */,
 				C05FCBDDED2A647818F377A7 /* Provisioning.swift in Sources */,
 				3CCB831610C768A1A1A3E075 /* RealtimeConnection.swift in Sources */,
 				4587E1073D977D965AC5155C /* RecentsView.swift in Sources */,
+				91D8CCE864FF7DDCB6DC7C99 /* RecordingNotice.swift in Sources */,
+				3384AF1CBD995683C26B11FB /* RecordingNoticeView.swift in Sources */,
 				A6E385E84F43FF9F096D6F2C /* RingApp.swift in Sources */,
 				E5A8C430D568D872C9835F59 /* RootView.swift in Sources */,
 				789B3813D12E6B7541C4B859 /* SessionStore.swift in Sources */,
@@ -735,7 +783,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = LTBSK59BJ2;
@@ -813,7 +861,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = LTBSK59BJ2;

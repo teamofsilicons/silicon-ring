@@ -155,6 +155,16 @@ final class MacCallSystem: CallSystem {
 
     func requestMute(_ session: CallSession, muted: Bool) -> Bool { false }
 
+    /// Accept on a banner, or Answer in the menu bar, before this Mac showed the recording notice:
+    /// the ring moves to Ring's window, under the notice.
+    func showRecordingNotice(for ring: IncomingRing?) {
+        if let ring, model?.rings[ring.invitationID] != nil {
+            showInApp(ring.invitationID)
+        } else {
+            MainWindow.show()
+        }
+    }
+
     /// Rings while a ring is pending (a banner, or the incoming screen in Ring's window) and no call
     /// is live; a ring during a call only plays the call-waiting tone.
     private func updateRingtone() {

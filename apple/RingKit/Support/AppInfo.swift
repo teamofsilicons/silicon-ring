@@ -41,6 +41,9 @@ enum AppInfo {
     }
 
     static let sourceURL = URL(string: "https://github.com/teamofsilicons/silicon-ring")!
+    static let privacyURL = URL(string: "https://ring.teamofsilicons.com/privacy")!
+    static let supportURL = URL(string: "https://ring.teamofsilicons.com/support")!
+    static let contactEmail = "lords@teamofsilicons.com"
     static let defaultAccountsURL = URL(string: "https://accounts.teamofsilicons.com")!
     static let nativeRedirectURI = "com.teamofsilicons.ring:/auth/callback"
     static let callbackScheme = "com.teamofsilicons.ring"
@@ -70,7 +73,15 @@ enum ServerConfig {
         }
     }
 
-    static var current: URL { override ?? defaultURL }
+    /// Release builds always use the default: the switch is a Debug-only developer setting, and an
+    /// override left behind by a Debug build on the same device must not strand a Release one.
+    static var current: URL {
+        #if DEBUG
+        override ?? defaultURL
+        #else
+        defaultURL
+        #endif
+    }
 
     /// Accepts `http(s)://host[:port]` and drops any path.
     static func normalize(_ text: String) -> URL? {

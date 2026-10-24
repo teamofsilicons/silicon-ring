@@ -56,6 +56,17 @@ struct RootView: View {
             }
         }
         .animation(.smooth(duration: 0.3), value: showsCallScreen)
+        // Nothing underneath answers (keyboard shortcuts included) while the notice asks. A notice
+        // about the live call on screen shows on the call screen instead, above its controls.
+        .disabled(showsRecordingNotice)
+        .overlay {
+            if showsRecordingNotice, let request = model.recordingNotice {
+                RecordingNoticeView(request: request)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.smooth(duration: 0.25), value: model.recordingNotice?.id)
+        .animation(.smooth(duration: 0.25), value: showsRecordingNotice)
         .overlay(alignment: .top) {
             VStack(spacing: 8) {
                 if let notice = model.notice {
@@ -86,6 +97,10 @@ struct RootView: View {
         if let session = model.activeCall, !session.minimized { return true }
         return model.inAppRing != nil
     }
+
+    private var showsRecordingNotice: Bool {
+        model.recordingNoticePlacement == .window
+    }
 }
 
 struct HomeView: View {
@@ -107,6 +122,7 @@ struct HomeView: View {
             .environment(\.openDialer, OpenDialerAction { dialer = $0 })
             .onChange(of: model.activeCall?.ringid) { _, ringid in if ringid != nil { dialer = nil } }
             .onChange(of: model.inAppRing?.invitationID) { _, id in if id != nil { dialer = nil } }
+            .onChange(of: model.recordingNoticePlacement) { _, placement in if placement == .window { dialer = nil } }
             .onChange(of: model.requestedSection, initial: true) { _, requested in
                 guard let requested else { return }
                 section = requested

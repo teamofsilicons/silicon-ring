@@ -9,6 +9,8 @@ import Foundation
 /// - `-RingAutoAnswer YES` answers incoming calls after two seconds.
 /// - `-RingAutoHandoff YES` moves this account's call here when another device carries it.
 /// - `-RingKeepAwake YES` keeps the screen on while Ring is in the foreground.
+/// - `-RingDemo recents|call|incoming|voicemail|dialer` (iPhone and iPad) opens one screen filled
+///   with made-up people and calls, for App Store screenshots. It needs no server (DemoMode.swift).
 enum DevHooks {
     private static var defaults: UserDefaults { .standard }
 
@@ -39,6 +41,14 @@ enum DevHooks {
     /// Runs before `AppModel.shared` exists, so an installed session is picked up on load.
     @MainActor
     static func applyLaunchArguments() {
+        #if os(iOS) && targetEnvironment(simulator)
+        // Simulator only: demo mode replaces the signed-in session, which on a real device would
+        // leave its server session and VoIP registration behind.
+        if let scene = launchValue("RingDemo").flatMap(DemoScene.init(rawValue:)) {
+            DemoMode.start(scene)
+            return
+        }
+        #endif
         // `-RingDevServer https://…` persists like the developer setting, so push-woken launches
         // (which get no arguments) keep talking to the same server.
         if let server = launchValue("RingDevServer").flatMap(ServerConfig.normalize) {

@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Ring</string>
+	<string>Silicon Ring</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -43,8 +43,6 @@
 	<array>
 		<string>INStartCallIntent</string>
 	</array>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Ring connects to a Ring server on your local network during development.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>Fonts/BDOGrotesk-Regular.ttf</string>
@@ -62,7 +60,6 @@
 	<array>
 		<string>audio</string>
 		<string>voip</string>
-		<string>remote-notification</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict>
@@ -85,6 +82,8 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 #ifdef RING_DEBUG
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Ring connects to a Ring server on your local network during development.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

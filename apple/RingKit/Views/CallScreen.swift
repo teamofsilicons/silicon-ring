@@ -39,6 +39,7 @@ struct IncomingCallView: View {
     var compact = false
     @State private var declining = false
     @State private var reason = ""
+    @State private var confirmBlock: Account?
     @FocusState private var reasonFocused: Bool
 
     private static let reasons = ["Can't talk right now", "In a meeting", "Call you back soon", "Text me instead"]
@@ -51,12 +52,19 @@ struct IncomingCallView: View {
             if declining { declineReasons.transition(.opacity.combined(with: .move(edge: .bottom))) }
             controls
                 .padding(.top, declining ? 16 : 0)
-            Button("Silence") { model.silence(ring) }
-                .font(RingFont.ui(15))
-                .foregroundStyle(Palette.momentMuted)
-                .buttonStyle(.plain)
-                .padding(.vertical, compact ? 10 : 16)
-                .accessibilityHint("Stops ringing on all your devices without declining")
+            HStack(spacing: 36) {
+                Button("Silence") { model.silence(ring) }
+                    .accessibilityHint("Stops ringing on all your devices without declining")
+                Button(Labels.Safety.incomingBlock) { confirmBlock = ring.from }
+                    .accessibilityHint("Declines the call and blocks \(ring.from.label)")
+            }
+            .font(RingFont.ui(15))
+            .foregroundStyle(Palette.momentMuted)
+            .buttonStyle(.plain)
+            .padding(.vertical, compact ? 10 : 16)
+            .blockConfirmation($confirmBlock, confirmTitle: Labels.Safety.declineAndBlock) { _ in
+                model.declineAndBlock(ring)
+            }
         }
         .padding(.horizontal, compact ? 20 : 24)
         .padding(.top, compact ? 22 : 0)
@@ -383,6 +391,7 @@ struct OutgoingCallView: View {
                     .padding(.top, 8)
                     .contentTransition(.opacity)
                     .animation(.easeOut(duration: 0.15), value: status)
+                RecordingIndicator()
             }
             .padding(.horizontal, 24)
             Spacer(minLength: 24)
@@ -420,11 +429,22 @@ struct InCallView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            TranscriptView(lines: session.visibleLines, myUUID: session.myUUID)
-                .frame(maxWidth: 720)
-                .frame(maxHeight: .infinity)
-                .padding(.horizontal, 20)
+            VStack(spacing: 0) {
+                header
+                TranscriptView(lines: session.visibleLines, myUUID: session.myUUID)
+                    .frame(maxWidth: 720)
+                    .frame(maxHeight: .infinity)
+                    .padding(.horizontal, 20)
+            }
+            // A call that connected before this device agreed to the recording notice: the notice
+            // covers the people and the transcript, and mute and end stay in reach below it.
+            .overlay {
+                if let request = recordingNotice {
+                    RecordingNoticeView(request: request, placement: .callScreen)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.smooth(duration: 0.25), value: recordingNotice?.id)
             controls
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -432,6 +452,15 @@ struct InCallView: View {
         .sheet(isPresented: $inviting) {
             DialerView(mode: .invite)
         }
+        // A sheet covers the incoming screen and the recording notice: make way for them.
+        .onChange(of: model.inAppRing?.invitationID) { _, id in if id != nil { inviting = false } }
+        .onChange(of: model.recordingNoticePlacement) { _, placement in if placement != nil { inviting = false } }
+    }
+
+    /// The recording notice, when it is about this call.
+    private var recordingNotice: RecordingNoticeRequest? {
+        guard model.recordingNoticePlacement == .callScreen, model.activeCall === session else { return nil }
+        return model.recordingNotice
     }
 
     private var header: some View {
@@ -449,14 +478,17 @@ struct InCallView: View {
                 .accessibilityLabel("Minimize call")
                 .opacity(session.isLive ? 1 : 0)
                 Spacer()
-                Group {
-                    if session.isLive {
-                        CallTimer(since: session.answeredAt)
-                    } else {
-                        Text(session.endSummary ?? "Call ended")
+                VStack(spacing: 6) {
+                    Group {
+                        if session.isLive {
+                            CallTimer(since: session.answeredAt)
+                        } else {
+                            Text(session.endSummary ?? "Call ended")
+                        }
                     }
+                    .pixelLabel(13, color: session.isLive ? Palette.textSecondary : Palette.danger)
+                    RecordingIndicator()
                 }
-                .pixelLabel(13, color: session.isLive ? Palette.textSecondary : Palette.danger)
                 Spacer()
                 mediaIndicator
                     .frame(width: 44, height: 44)

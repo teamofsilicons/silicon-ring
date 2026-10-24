@@ -44,7 +44,7 @@ xcrun devicectl device process launch --device <udid> com.teamofsilicons.ring
 
 ## Servers
 
-Debug builds talk to `http://192.168.29.75:8765` (the developer's LAN ring-server, allowed by a Debug-only ATS exception); Release builds talk to `https://backend.ring.teamofsilicons.com`. A hidden developer setting overrides it: long-press the version in Settings → About (or the Ring mark on the sign-in screen). Changing the server signs out, because sessions belong to the server that issued them.
+Debug builds talk to `http://192.168.29.75:8765` (the developer's LAN ring-server, allowed by a Debug-only ATS exception); Release builds talk to `https://backend.ring.teamofsilicons.com`. In Debug builds a developer setting overrides it: long-press the version in Settings → About (or the Ring mark on the sign-in screen). Changing the server signs out, because sessions belong to the server that issued them. Release builds have no such setting and ignore an override left by a Debug build.
 
 ## Signing and push
 

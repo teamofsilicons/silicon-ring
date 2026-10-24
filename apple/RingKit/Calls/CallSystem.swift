@@ -43,8 +43,14 @@ protocol CallSystem: AnyObject {
     /// Routes a user hang-up or mute through the system. Returns true when the system will call back.
     func requestHangUp(_ session: CallSession) -> Bool
     func requestMute(_ session: CallSession, muted: Bool) -> Bool
+
+    /// A call action waits for the recording notice, which shows in the app's window: bring it
+    /// forward, with `ring` on its incoming screen when the action was answering it.
+    func showRecordingNotice(for ring: IncomingRing?)
 }
 
 extension CallSystem {
     var keepsRinging: Bool { false }
+    /// iPhone and iPad: call actions that wait for the notice start in the app, which is in front.
+    func showRecordingNotice(for ring: IncomingRing?) {}
 }

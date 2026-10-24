@@ -16,6 +16,7 @@ extension AppModel {
             show("You're already on a call.", style: .error)
             return
         }
+        if holdForRecordingNotice(.place(target)) { return }
         Task {
             do {
                 let created = try await api.createCall(to: target)
@@ -114,6 +115,7 @@ extension AppModel {
 
     func answer(_ ring: IncomingRing) {
         DevLog.log("answer requested \(ring.ringid)")
+        if holdForRecordingNotice(.answer(ring)) { return }
         if callSystem?.answer(ring) == true { return }
         Task {
             if await performAnswer(ring), let session = activeCall {
@@ -147,6 +149,8 @@ extension AppModel {
                 call: accepted.call, invitationID: ring.invitationID)
             activeCall = session
             remember(accepted.call)
+            // Answered from the system call screen before this device agreed: the call goes ahead.
+            showRecordingNoticeOverCall()
             Task { await join(session, grant: grant) }
             return true
         } catch {
@@ -168,6 +172,22 @@ extension AppModel {
             } catch {
                 handle(error)
             }
+        }
+    }
+
+    /// Declines a ring and blocks the caller.
+    func declineAndBlock(_ ring: IncomingRing) {
+        stopRing(ring, cause: .remoteEnded)
+        Task {
+            // Block first, so declining doesn't offer the caller voicemail.
+            let blocked = await block(ring.from, announce: false)
+            do {
+                try await api.decline(ring.ringid, invitationID: ring.invitationID, reason: nil)
+            } catch {
+                // The block may already have ended the ring.
+                handle(error, silently: true)
+            }
+            if blocked { show("You blocked \(ring.from.label).") }
         }
     }
 
@@ -249,16 +269,28 @@ extension AppModel {
 
     /// A call this account is on, carried by another of its devices.
     var callOnOtherDevice: (call: Call, device: DeviceRef)? {
-        guard let myUUID, let myDeviceID else { return nil }
-        for call in liveCalls.values where call.state == .active && activeCall?.ringid != call.ringid {
-            if let me = call.participant(uuid: myUUID), me.state == .joined, let device = me.device, device.deviceID != myDeviceID {
-                return (call, device)
-            }
+        for call in liveCalls.values {
+            if let device = otherDevice(carrying: call) { return (call, device) }
         }
         return nil
     }
 
+    /// The other device of this account that carries `call`, while it is on and not here.
+    func otherDevice(carrying call: Call) -> DeviceRef? {
+        guard let myUUID, let myDeviceID, call.state == .active, activeCall?.ringid != call.ringid,
+              let me = call.participant(uuid: myUUID), me.state == .joined,
+              let device = me.device, device.deviceID != myDeviceID else { return nil }
+        return device
+    }
+
+    /// "Switch to this iPhone": the person moves their call here.
     func switchHere(_ call: Call) {
+        if holdForRecordingNotice(.switchHere(call)) { return }
+        moveCallHere(call)
+    }
+
+    /// Carries a call this account is on from here on.
+    func moveCallHere(_ call: Call) {
         guard let myUUID else { return }
         Task {
             do {
@@ -269,6 +301,8 @@ extension AppModel {
                 activeCall = session
                 remember(moved.call)
                 movedNotice = nil
+                // Rejoining a call this device carried before a restart, from before it agreed.
+                showRecordingNoticeOverCall()
                 callSystem?.began(session)
                 callSystem?.connected(session)
                 await join(session, grant: grant)
@@ -471,6 +505,106 @@ extension AppModel {
         activeCall = nil
         Tones.shared.stopAll()
         await media.disconnect()
+    }
+
+    // MARK: Recording notice
+
+    /// This device has not agreed to the current recording notice yet.
+    var needsRecordingNotice: Bool {
+        #if DEBUG
+        // A device driven by DevHooks has nobody to tap Agree.
+        if DevHooks.autoAnswer || DevHooks.autoHandoff { return false }
+        #if os(iOS)
+        // Demo mode's screens are App Store screenshots of the app in use.
+        if DemoServer.fixtures != nil { return false }
+        #endif
+        #endif
+        return !RecordingNotice.isAccepted
+    }
+
+    /// Where the notice shows now, or nil while it waits: one about a live call shows on that
+    /// call's screen, and waits while the call is minimized.
+    var recordingNoticePlacement: RecordingNoticePlacement? {
+        guard isSignedIn, let request = recordingNotice else { return nil }
+        if request.action.isAnswered, let session = activeCall, session.isLive {
+            return session.minimized ? nil : .callScreen
+        }
+        return .window
+    }
+
+    /// Right after sign-in, and on the first launch signed in after the notice changed: the notice
+    /// once, before the home screen can be used, so that this device has normally agreed before a
+    /// call can be answered from the system call screen.
+    func offerRecordingNotice() {
+        guard needsRecordingNotice, !RecordingNotice.wasOffered, recordingNotice == nil else { return }
+        recordingNotice = RecordingNoticeRequest(action: .welcome)
+    }
+
+    /// Holds a call action until the person has agreed to the recording notice. Returns true when
+    /// the action waits for the notice.
+    func holdForRecordingNotice(_ action: RecordingNoticeRequest.Action) -> Bool {
+        guard needsRecordingNotice else { return false }
+        recordingNotice = RecordingNoticeRequest(action: action)
+        callSystem?.showRecordingNotice(for: action.ring)
+        return true
+    }
+
+    /// A call connected on this device before it agreed (answered from the system call screen, or
+    /// agreed to an older notice). The call and its audio go on; the notice shows over the call,
+    /// in place of whatever call action was waiting for it, since this call now comes first.
+    func showRecordingNoticeOverCall() {
+        guard needsRecordingNotice, recordingNotice?.action.isAnswered != true else { return }
+        recordingNotice = RecordingNoticeRequest(action: .answered)
+    }
+
+    /// "Agree and continue": remembers the agreement on this device and carries on with the call.
+    func agreeToRecordingNotice() {
+        guard let request = recordingNotice else { return }
+        RecordingNotice.accept()
+        closeRecordingNotice()
+        switch request.action {
+        case .place(let ref):
+            placeCall(to: ref)
+        case .answer(let ring):
+            // Only while it still rings.
+            if let ring = rings[ring.invitationID] { answer(ring) }
+        case .switchHere(let call):
+            if let live = liveCalls[call.ringid], otherDevice(carrying: live) != nil { moveCallHere(live) }
+        case .welcome, .answered:
+            break
+        }
+    }
+
+    /// "Not now": drops the call action that waited; a call already on goes on. The notice comes
+    /// back before the next call, and the one after sign-in only after the next sign-in.
+    func dismissRecordingNotice() {
+        guard recordingNotice != nil else { return }
+        RecordingNotice.markOffered()
+        closeRecordingNotice()
+    }
+
+    /// A notice waiting to answer a ring, or to move a call here, goes away with that ring or call:
+    /// the caller hung up, another device answered or declined, it stopped ringing, or the call
+    /// ended or moved. Runs whenever the rings or calls change.
+    func dropStaleRecordingNotice() {
+        guard let action = recordingNotice?.action else { return }
+        let gone = switch action {
+        case .answer(let ring): rings[ring.invitationID] == nil
+        case .switchHere(let call): liveCalls[call.ringid].flatMap { otherDevice(carrying: $0) } == nil
+        case .welcome, .place, .answered: false
+        }
+        if gone { closeRecordingNotice() }
+    }
+
+    private func closeRecordingNotice() {
+        let closed = recordingNotice?.action
+        recordingNotice = nil
+        // A notice about another call took the place of the one over this device's live call:
+        // that call still has no agreement, so its notice comes back.
+        if closed?.isAnswered == false, activeCall?.isLive == true { showRecordingNoticeOverCall() }
+        guard permissionsAfterNotice else { return }
+        permissionsAfterNotice = false
+        Task { await requestPermissions() }
     }
 
     static func cause(for state: InvitationState) -> CallEndCause {

@@ -44,14 +44,14 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Team of Silicons</string>
+	<string>© 2026 Team of Silicons</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Ring uses the microphone so the people and silicons you call can hear you.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Ring connects to a Ring server on your local network during development.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 #ifdef RING_DEBUG
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Ring connects to a Ring server on your local network during development.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

@@ -16,7 +16,7 @@ settings:
     DEVELOPMENT_TEAM: LTBSK59BJ2
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "4"
+    CURRENT_PROJECT_VERSION: "5"
     PRODUCT_NAME: Ring
     PRODUCT_BUNDLE_IDENTIFIER: com.teamofsilicons.ring
     GENERATE_INFOPLIST_FILE: NO
@@ -43,6 +43,9 @@ targetTemplates:
     sources:
       - path: RingKit
       - path: Resources/Colors.xcassets
+      # The privacy manifest (App Store Connect rejects builds without one): what Ring collects,
+      # and its one required-reason API, UserDefaults (CA92.1, the app's own settings).
+      - path: Resources/PrivacyInfo.xcprivacy
       - path: ../assets/sounds/ringback.wav
       - path: ../assets/sounds/ringtone.wav
       - path: ../assets/sounds/connected.wav

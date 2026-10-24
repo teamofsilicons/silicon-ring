@@ -3,9 +3,14 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
+    #if DEBUG
     @State private var showServer = false
+    #endif
     @State private var confirmSignOut = false
+    @State private var showDeleteAccount = false
+    @State private var deletingAccount = false
     @State private var deviceName = ""
+    @State private var blocksAttempted = false
 
     var body: some View {
         @Bindable var model = model
@@ -17,6 +22,7 @@ struct SettingsView: View {
                 thisDevice
                 devices
                 voicemail
+                blockedAccounts
                 group("Appearance") {
                     Picker("Appearance", selection: $model.appearance) {
                         ForEach(Appearance.allCases) { Text($0.label).tag($0) }
@@ -50,18 +56,42 @@ struct SettingsView: View {
         .background(Palette.background)
         .homeScreenChrome()
         .navigationTitle("Settings")
+        #if DEBUG
         .sheet(isPresented: $showServer) { ServerSettingsView() }
+        #endif
+        .sheet(isPresented: $showDeleteAccount) { DeleteAccountView(working: $deletingAccount) }
+        // A sheet covers the call screen and the recording notice (on iOS they are overlays of
+        // RootView): make way for them, as HomeView does with the dialer.
+        .onChange(of: model.activeCall?.ringid) { _, ringid in if ringid != nil { closeDeleteAccount() } }
+        .onChange(of: model.inAppRing?.invitationID) { _, id in if id != nil { closeDeleteAccount() } }
+        .onChange(of: model.recordingNoticePlacement) { _, placement in if placement == .window { closeDeleteAccount() } }
+        .onChange(of: deletingAccount) { _, working in if !working, somethingWaitsUnderSheet { closeDeleteAccount() } }
         .task {
             await model.refreshDevices()
             await model.refreshSettings()
             deviceName = model.currentDevice?.name ?? ""
+            await model.refreshBlocks()
+            blocksAttempted = true
         }
+    }
+
+    /// Not while the deletion is in flight: it ends every call and ring when it goes through, and
+    /// the sheet is where a failure is told. Once it fails, the sheet makes way.
+    private func closeDeleteAccount() {
+        guard !deletingAccount else { return }
+        showDeleteAccount = false
+    }
+
+    /// The call screen or the recording notice, which came up while the deletion was in flight.
+    private var somethingWaitsUnderSheet: Bool {
+        if let session = model.activeCall, !session.minimized { return true }
+        return model.inAppRing != nil || model.recordingNoticePlacement == .window
     }
 
     // MARK: Sections
 
     private var account: some View {
-        group("Account") {
+        group(Labels.Settings.account) {
             if let me = model.me {
                 HStack(spacing: 14) {
                     AvatarView(account: me, size: 48)
@@ -75,6 +105,10 @@ struct SettingsView: View {
                 Hairline()
                 rowButton("Edit profile on Silicon Accounts", symbol: "arrow.up.right") {
                     openURL(model.accountsURL)
+                }
+                Hairline().padding(.leading, 14)
+                rowButton(Labels.Settings.deleteAccount, symbol: "trash", destructive: true) {
+                    showDeleteAccount = true
                 }
             }
         }
@@ -182,8 +216,48 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var blockedAccounts: some View {
+        group(Labels.Settings.blocked) {
+            if !model.blocked.isEmpty {
+                ForEach(Array(model.blocked.enumerated()), id: \.element.uuid) { index, account in
+                    if index > 0 { Hairline().padding(.leading, 58) }
+                    HStack(spacing: 12) {
+                        AvatarView(account: account, size: 32)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(account.label).font(RingFont.ui(15, .medium)).foregroundStyle(Palette.foreground).lineLimit(1)
+                            Text(account.id).pixelID(10)
+                        }
+                        Spacer()
+                        Button(Labels.Settings.unblock) { Task { await model.unblock(account) } }
+                            .buttonStyle(RingButtonStyle(kind: .secondary, small: true))
+                            .accessibilityLabel("Unblock \(account.label)")
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                }
+            } else {
+                Text(blockedPlaceholder)
+                    .font(RingFont.ui(14))
+                    .foregroundStyle(Palette.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(14)
+            }
+        }
+    }
+
+    private var blockedPlaceholder: String {
+        if model.blockedLoaded {
+            "No one is blocked. You can block someone from their calls in Recents."
+        } else if blocksAttempted {
+            "Ring couldn't load the people you blocked."
+        } else {
+            "Loading…"
+        }
+    }
+
     private var about: some View {
-        group("About") {
+        group(Labels.Settings.about) {
             HStack {
                 Text("Version").font(RingFont.ui(15)).foregroundStyle(Palette.foreground)
                 Spacer()
@@ -192,7 +266,14 @@ struct SettingsView: View {
             .padding(.horizontal, 14)
             .frame(minHeight: 48)
             .contentShape(Rectangle())
+            #if DEBUG
+            // The developer server switch; Release builds always use the production server.
             .onLongPressGesture(minimumDuration: 1.0) { showServer = true }
+            #endif
+            Hairline().padding(.leading, 14)
+            rowButton(Labels.Settings.privacyPolicy, symbol: "arrow.up.right") { openURL(AppInfo.privacyURL) }
+            Hairline().padding(.leading, 14)
+            rowButton(Labels.Settings.support, symbol: "arrow.up.right") { openURL(AppInfo.supportURL) }
             Hairline().padding(.leading, 14)
             rowButton("Source", symbol: "arrow.up.right") { openURL(AppInfo.sourceURL) }
             Hairline().padding(.leading, 14)
@@ -216,10 +297,10 @@ struct SettingsView: View {
         }
     }
 
-    private func rowButton(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
+    private func rowButton(_ title: String, symbol: String, destructive: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack {
-                Text(title).font(RingFont.ui(15)).foregroundStyle(Palette.accentText)
+                Text(title).font(RingFont.ui(15)).foregroundStyle(destructive ? Palette.danger : Palette.accentText)
                 Spacer()
                 Image(systemName: symbol).font(.system(size: 13, weight: .light)).foregroundStyle(Palette.textMuted)
             }
@@ -323,7 +404,134 @@ struct GreetingEditor: View {
     }
 }
 
-/// The hidden developer setting: which Ring server this app talks to.
+/// Confirms deleting the Ring account, and says what is deleted and what stays.
+struct DeleteAccountView: View {
+    /// While the deletion is in flight; Settings keeps the sheet up until it is over.
+    @Binding var working: Bool
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var error: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(Labels.DeleteAccount.title).font(RingFont.display(24)).foregroundStyle(Palette.ink)
+                VStack(alignment: .leading, spacing: 8) {
+                    paragraph("This permanently deletes:")
+                    item("Your call history, with its transcripts and recordings")
+                    item("Voicemails left for you")
+                    item("Your greetings, settings and the people you blocked")
+                    item("Your devices. They are all signed out, and any call you're on ends.")
+                }
+                paragraph("The people you talked with keep their copies of the calls you shared. A call is deleted for everyone once nobody on it still uses Ring.")
+                paragraph("Ring doesn't delete your Silicon Account. Silicon Accounts is the separate service you sign in with, like Sign in with Google, and other apps may use it too. If you sign in to Ring with it again later, you start with an empty Ring account.")
+                paragraph("To delete your Silicon Account as well, do that at \(accountsHost).")
+                Button {
+                    openURL(accountSettingsURL)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("Open \(accountsHost)")
+                        Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .light))
+                    }
+                }
+                .buttonStyle(RingButtonStyle(kind: .ghost, small: true))
+                .padding(.leading, -10)
+                if let error {
+                    Text(error)
+                        .font(RingFont.ui(14))
+                        .foregroundStyle(Palette.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if Metrics.isTouch {
+                    VStack(spacing: 10) {
+                        deleteButton.buttonStyle(RingButtonStyle(kind: .danger, fullWidth: true))
+                        cancelButton.buttonStyle(RingButtonStyle(kind: .ghost, fullWidth: true))
+                    }
+                    .padding(.top, 4)
+                } else {
+                    HStack {
+                        Spacer()
+                        cancelButton.buttonStyle(.ringGhost)
+                        deleteButton.buttonStyle(RingButtonStyle(kind: .danger))
+                    }
+                }
+            }
+            .padding(20)
+        }
+        #if os(macOS)
+        // A sheet takes its content's ideal size, and a ScrollView has no ideal height of its own.
+        .frame(minWidth: 420, idealWidth: 460, minHeight: 500, idealHeight: 580)
+        #endif
+        .background(Palette.background.ignoresSafeArea())
+        .interactiveDismissDisabled(working)
+        .presentationDetents([.large])
+    }
+
+    private var cancelButton: some View {
+        Button(Labels.cancel) { dismiss() }
+            .disabled(working)
+    }
+
+    private var deleteButton: some View {
+        Button {
+            Task { await delete() }
+        } label: {
+            HStack(spacing: 8) {
+                if working {
+                    ProgressView().controlSize(.small).tint(Palette.onStatus(colorScheme))
+                }
+                Text(Labels.DeleteAccount.confirm)
+            }
+        }
+        .disabled(working)
+    }
+
+    /// Where a Silicon Account is deleted.
+    private var accountSettingsURL: URL { model.accountsURL.appending(path: "settings") }
+
+    private var accountsHost: String { model.accountsURL.host() ?? "accounts.teamofsilicons.com" }
+
+    private func paragraph(_ text: String) -> some View {
+        Text(text)
+            .font(RingFont.ui(15))
+            .foregroundStyle(Palette.foreground)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func item(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("•").foregroundStyle(Palette.textMuted)
+            Text(text)
+                .foregroundStyle(Palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(RingFont.ui(15))
+    }
+
+    private func delete() async {
+        working = true
+        error = nil
+        defer { working = false }
+        do {
+            try await model.deleteAccount()
+            dismiss()
+        } catch let failure as RingError {
+            if failure.isSessionInvalid {
+                model.handle(failure)
+                return
+            }
+            if case .cancelled = failure { return }
+            error = [failure.errorDescription, failure.recoverySuggestion].compactMap { $0 }.joined(separator: " ")
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+#if DEBUG
+/// The developer setting, in Debug builds only: which Ring server this app talks to.
 struct ServerSettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -379,3 +587,4 @@ struct ServerSettingsView: View {
         .presentationDetents([.medium])
     }
 }
+#endif

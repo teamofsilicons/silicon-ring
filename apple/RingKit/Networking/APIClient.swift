@@ -73,6 +73,11 @@ struct APIClient: Sendable {
         let _: EmptyResponse = try await send("DELETE", "/v1/session")
     }
 
+    /// Deletes this Ring account and signs out all its devices. The Silicon Account stays.
+    func deleteAccount() async throws {
+        let _: EmptyResponse = try await send("DELETE", "/v1/me", body: DeleteAccountRequest())
+    }
+
     // MARK: Devices
 
     @discardableResult
@@ -104,6 +109,23 @@ struct APIClient: Sendable {
         if !query.isEmpty { items.append(URLQueryItem(name: "q", value: query)) }
         let page: Items<RecentPerson> = try await send("GET", "/v1/people/recent", query: items)
         return page.items
+    }
+
+    // MARK: Blocks
+
+    /// The accounts this account has blocked.
+    func blocks() async throws -> [Account] {
+        let items: Items<Account> = try await send("GET", "/v1/blocks")
+        return items.items
+    }
+
+    /// Blocks `ref` (`c:handle`, `si:handle` or a uuid). Blocking again is fine.
+    func block(_ ref: String) async throws {
+        let _: EmptyResponse = try await send("PUT", "/v1/blocks/\(escape(ref))")
+    }
+
+    func unblock(_ ref: String) async throws {
+        let _: EmptyResponse = try await send("DELETE", "/v1/blocks/\(escape(ref))")
     }
 
     // MARK: Calls

@@ -89,7 +89,7 @@ extension AppModel {
         if activeCall == nil, let myDeviceID {
             for call in page.items where call.state == .active {
                 if let me = call.participant(uuid: myUUID), me.state == .joined, me.device?.deviceID == myDeviceID {
-                    switchHere(call)
+                    moveCallHere(call)
                     break
                 }
             }
@@ -132,6 +132,10 @@ extension AppModel {
                   invitation.state == .ringing else { return }
             let ring = IncomingRing(call: call, invitation: invitation, me: myUUID)
             rings[ring.invitationID] = ring
+            if holdForRecordingNotice(.answer(ring)) {
+                scheduleExpiry(for: ring)
+                return
+            }
             if await performAnswer(ring), let session = activeCall {
                 callSystem?.began(session)
                 callSystem?.connected(session)

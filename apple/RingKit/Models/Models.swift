@@ -212,6 +212,11 @@ struct CarbonLogin: Encodable, Sendable {
     }
 }
 
+/// `DELETE /v1/me`.
+struct DeleteAccountRequest: Encodable, Sendable {
+    var confirm = "delete"
+}
+
 // MARK: - Meta
 
 struct Limits: Codable, Sendable, Hashable {

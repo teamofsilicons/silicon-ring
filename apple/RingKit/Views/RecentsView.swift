@@ -43,6 +43,7 @@ struct RecentsView: View {
 struct RecentRow: View {
     var call: Call
     @Environment(AppModel.self) private var model
+    @State private var confirmBlock: Account?
 
     var body: some View {
         let person = call.counterpart(me: model.myUUID)
@@ -58,6 +59,7 @@ struct RecentRow: View {
                                 .foregroundStyle(missed ? Palette.danger : Palette.foreground)
                                 .lineLimit(1)
                             KindBadge(account: person)
+                            if model.isBlocked(person) { Badge(text: "Blocked") }
                         }
                         HStack(spacing: 6) {
                             Image(systemName: directionSymbol(missed: missed))
@@ -88,6 +90,15 @@ struct RecentRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button("Call \(person.label)", systemImage: "phone") { model.placeCall(to: person.uuid) }
+            Divider()
+            PersonSafetyActions(account: person, ringid: call.ringid, confirmBlock: $confirmBlock)
+        }
+        .blockConfirmation($confirmBlock) { account in
+            Task { await model.block(account) }
+        }
         .accessibilityElement(children: .contain)
     }
 
@@ -105,6 +116,7 @@ struct CallDetailView: View {
     @State private var entries: [TranscriptEntry] = []
     @State private var recording: Recording?
     @State private var loading = true
+    @State private var confirmBlock: Account?
 
     var body: some View {
         let person = call.counterpart(me: model.myUUID)
@@ -142,6 +154,20 @@ struct CallDetailView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .toolbar {
+            // Block or Unblock, and Report, for the person this call was with.
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    PersonSafetyActions(account: person, ringid: call.ringid, confirmBlock: $confirmBlock)
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
+                .accessibilityLabel("More for \(person.label)")
+            }
+        }
+        .blockConfirmation($confirmBlock) { account in
+            Task { await model.block(account) }
+        }
         .task { await load() }
     }
 
@@ -155,6 +181,7 @@ struct CallDetailView: View {
                 HStack(spacing: 8) {
                     Text(person.id).pixelID(12)
                     KindBadge(account: person)
+                    if model.isBlocked(person) { Badge(text: "Blocked") }
                 }
                 Text("\(Format.timestamp(call.createdAt)) · \(Format.outcome(of: call, me: model.myUUID))")
                     .pixelLabel(11, color: Format.isMissed(call, me: model.myUUID) ? Palette.danger : Palette.textMuted)
@@ -184,12 +211,17 @@ struct CallDetailView: View {
                         }
                         Spacer()
                         KindBadge(account: account)
+                        if model.isBlocked(account) { Badge(text: "Blocked") }
                         if let invitation = call.invitations.last(where: { $0.to.uuid == account.uuid }) {
                             Badge(text: invitationLabel(invitation))
                         }
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                    .contextMenu {
+                        PersonSafetyActions(account: account, ringid: call.ringid, confirmBlock: $confirmBlock)
+                    }
                 }
             }
             .ringCard()

@@ -55,15 +55,21 @@ final class AppModel {
     var devices: [Device] = []
     var settings: Settings?
     var voices: [Voice] = []
+    /// Accounts this account blocked, newest first.
+    var blocked: [Account] = []
+    var blockedLoaded = false
 
     // MARK: Calls
 
+    // A recording notice waiting to answer a ring, or to move a call here, goes with that ring or
+    // call (dropStaleRecordingNotice in AppModel+Calls.swift).
+
     /// Calls that are ringing, active or in voicemail and involve this account, by ringid.
-    var liveCalls: [String: Call] = [:]
+    var liveCalls: [String: Call] = [:] { didSet { dropStaleRecordingNotice() } }
     /// The call this device carries audio for.
-    var activeCall: CallSession?
+    var activeCall: CallSession? { didSet { dropStaleRecordingNotice() } }
     /// Calls ringing on this device, by invitation id.
-    var rings: [String: IncomingRing] = [:]
+    var rings: [String: IncomingRing] = [:] { didSet { dropStaleRecordingNotice() } }
     /// Rings the app shows itself (the rest are shown by the system call UI).
     var inAppRingIDs: [String] = []
     var notice: Notice?
@@ -71,6 +77,9 @@ final class AppModel {
     var movedNotice: String?
     /// A home section to bring forward, for example after tapping a voicemail notification.
     var requestedSection: HomeSection?
+    /// The recording notice: after sign-in, and before a call until this device agrees
+    /// (AppModel+Calls.swift).
+    var recordingNotice: RecordingNoticeRequest?
 
     var appearance: Appearance = Appearance(rawValue: UserDefaults.standard.string(forKey: "ring.appearance") ?? "") ?? .system {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "ring.appearance") }
@@ -93,6 +102,9 @@ final class AppModel {
     @ObservationIgnored private var recentsRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var ringExpiry: [String: Task<Void, Never>] = [:]
     @ObservationIgnored var bootstrapped = false
+    @ObservationIgnored private var deletingAccount = false
+    /// The microphone and notification prompts wait for the notice after sign-in.
+    @ObservationIgnored var permissionsAfterNotice = false
 
     init() {
         #if os(iOS)
@@ -126,6 +138,7 @@ final class AppModel {
         realtime.start(server: session.server, token: session.token)
         guard !bootstrapped else { return }
         bootstrapped = true
+        offerRecordingNotice()
         Task {
             await refreshMe()
             await nameDeviceIfGeneric()
@@ -133,7 +146,8 @@ final class AppModel {
             async let meta: Void = loadMeta()
             async let recents: Void = refreshRecents()
             async let voicemails: Void = refreshVoicemails()
-            _ = await (meta, recents, voicemails)
+            async let blocks: Void = refreshBlocks()
+            _ = await (meta, recents, voicemails, blocks)
         }
     }
 
@@ -168,9 +182,15 @@ final class AppModel {
         session = stored
         me = grant.account
         bootstrapped = false
+        // Shows the recording notice, unless this device agreed before.
         start()
         onSignIn?()
-        await requestPermissions()
+        if case .welcome = recordingNotice?.action {
+            // The system prompts follow the notice, which says what the microphone is for.
+            permissionsAfterNotice = true
+        } else {
+            await requestPermissions()
+        }
     }
 
     func signOut() async {
@@ -184,9 +204,25 @@ final class AppModel {
         try? await client.signOut()
     }
 
+    /// Deletes this Ring account. The server ends its calls and signs out every device; this one
+    /// then returns to sign-in.
+    func deleteAccount() async throws {
+        guard isSignedIn else { return }
+        deletingAccount = true
+        defer { deletingAccount = false }
+        try await api.deleteAccount()
+        await endEverythingLocally()
+        realtime.stop()
+        session = nil
+        SessionStore.clear()
+        clearAccountState()
+        show("Your Ring account was deleted.")
+    }
+
     /// The server no longer accepts this session.
     func sessionInvalidated() {
-        guard session != nil else { return }
+        // Deleting the account revokes this session too; deleteAccount() finishes the sign-out.
+        guard session != nil, !deletingAccount else { return }
         session = nil
         SessionStore.clear()
         realtime.stop()
@@ -208,9 +244,15 @@ final class AppModel {
         voicemailsLoaded = false
         devices = []
         settings = nil
+        blocked = []
+        blockedLoaded = false
         liveCalls = [:]
         rings = [:]
         inAppRingIDs = []
+        recordingNotice = nil
+        permissionsAfterNotice = false
+        // The next sign-in shows the recording notice again, unless this device agreed.
+        RecordingNotice.resetOffer()
         bootstrapped = false
     }
 
@@ -438,6 +480,46 @@ final class AppModel {
     func patchSettings(_ patch: JSONValue) async {
         do {
             settings = try await api.patchSettings(patch)
+        } catch {
+            handle(error)
+        }
+    }
+
+    // MARK: Blocks
+
+    func refreshBlocks() async {
+        do {
+            blocked = try await api.blocks()
+            blockedLoaded = true
+        } catch {
+            handle(error, silently: true)
+        }
+    }
+
+    func isBlocked(_ account: Account) -> Bool {
+        blocked.contains { $0.uuid == account.uuid }
+    }
+
+    /// Blocks an account: its calls stop ringing here, and it can't leave voicemail or add this
+    /// account to a call. The server doesn't tell it. Returns whether the block went through.
+    @discardableResult
+    func block(_ account: Account, announce: Bool = true) async -> Bool {
+        do {
+            try await api.block(account.uuid)
+            if !isBlocked(account) { blocked.insert(account, at: 0) }
+            if announce { show("You blocked \(account.label).") }
+            return true
+        } catch {
+            handle(error)
+            return false
+        }
+    }
+
+    func unblock(_ account: Account) async {
+        do {
+            try await api.unblock(account.uuid)
+            blocked.removeAll { $0.uuid == account.uuid }
+            show("You unblocked \(account.label).")
         } catch {
             handle(error)
         }
