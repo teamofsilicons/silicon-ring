@@ -1,0 +1,57 @@
+[Unit]
+Description=Silicon Ring demo silicon for App Review (answers carbons, calls back once)
+Documentation=https://github.com/teamofsilicons/silicon-ring/blob/main/deploy/demo-silicon/README.md
+Wants=network-online.target
+After=network-online.target ring-server.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=ring-demo
+Group=ring-demo
+WorkingDirectory=/var/lib/ring-demo
+Environment=HOME=/var/lib/ring-demo
+# ring-server on loopback: no DNS, TLS or Caddy in the way. The CLI session is bound to this origin.
+Environment=RING_API_URL=http://127.0.0.1:8765
+# RING_DEMO_SILICON, the only account the agent runs as. ring-demo.sh login writes it after
+# checking that the CLI signed in as that silicon.
+EnvironmentFile=/etc/ring-demo.env
+ExecStart=/usr/bin/python3 -I /opt/ring-demo/agent.py --ring /opt/ring-demo/bin/ring --silicon ${RING_DEMO_SILICON} --state /var/lib/ring-demo/agent-state.json
+Restart=always
+RestartSec=5
+# 78: the CLI is signed in as some other account. Stay stopped until ring-demo.sh login.
+RestartPreventExitStatus=78
+# SIGTERM goes to the agent alone. It stops between ring commands (each at most 30 s), so none is
+# cut off halfway; anything still running when it exits is killed.
+KillMode=mixed
+TimeoutStopSec=45
+UMask=0077
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ring-demo
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
