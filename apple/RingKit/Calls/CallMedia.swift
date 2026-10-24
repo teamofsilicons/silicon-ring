@@ -1,3 +1,4 @@
+import AVFAudio
 import Foundation
 import LiveKit
 
@@ -14,6 +15,8 @@ final class CallMedia: NSObject {
     var onSpeakers: ((Set<String>) -> Void)?
     /// The room dropped and LiveKit gave up reconnecting.
     var onLost: (() -> Void)?
+    /// The microphone could not start for lack of access (true), or has started since (false).
+    var onMicrophoneUnavailable: ((Bool) -> Void)?
 
     private(set) var state: State = .idle {
         didSet { if state != oldValue { onState?(state) } }
@@ -24,6 +27,9 @@ final class CallMedia: NSObject {
     /// iOS: the microphone is published only once CallKit has activated the audio session;
     /// enabling it earlier makes LiveKit's engine fail (-3010) and the call drops.
     private var micPending: Bool?
+    /// The microphone could not be published (no access yet, or denied): the call goes on without
+    /// it, and `retryMicrophone` publishes it once access is granted.
+    private var micFailed = false
     private var muted = false
     /// What the microphone hears before its track is published (see `Preroll`), and where that
     /// goes, until the microphone is published.
@@ -37,7 +43,12 @@ final class CallMedia: NSObject {
     /// Told after the microphone starts or changes: LiveKit's voice processing reconfigures the
     /// audio session then, which drops a speaker override.
     static var microphoneChanged: (@MainActor () -> Void)?
+    /// No microphone until access is decided: LiveKit would ask for it itself while the app is on
+    /// screen, over the recording notice. AppModel.restoreCallMicrophone asks after the notice
+    /// (join asks before connecting when no notice is up), then retries.
+    private static var micUndecided: Bool { AVAudioApplication.shared.recordPermission == .undetermined }
     #else
+    private static let micUndecided = false
     private static let audioReady = true
     #endif
 
@@ -64,7 +75,12 @@ final class CallMedia: NSObject {
             try? AudioManager.shared.setEngineAvailability(AudioEngineAvailability(isInputAvailable: false, isOutputAvailable: true))
         }
         audioReady = true
-        if let current { Task { await current.publishPendingMicrophone() } }
+        if let current {
+            Task {
+                await current.publishPendingMicrophone()
+                current.retryMicrophoneIfAllowed()
+            }
+        }
     }
 
     static func audioSessionDeactivated() {
@@ -97,13 +113,17 @@ final class CallMedia: NSObject {
         // (often the first words after answering) is the pre-roll, which ring-media puts in front
         // of the published track. Joining does not wait for it. On iOS it starts once CallKit has
         // activated the audio session.
-        let starting = Self.audioReady ? Task { await self.startPreroll() } : nil
+        let starting = Self.audioReady && !Self.micUndecided ? Task { await self.startPreroll() } : nil
         do {
             try await room.connect(url: grant.url, token: grant.token)
             await starting?.value
-            if self.room === room { state = .connected }
+            // The call ended, or another began, while the room joined: say so, so the caller leaves
+            // alone the room this instance carries now.
+            guard self.room === room else { throw CancellationError() }
+            state = .connected
             if Self.audioReady {
-                try await publishMicrophone(room, muted: muted)
+                try await publishMicrophoneOrRemember(room, muted: muted)
+                guard self.room === room else { throw CancellationError() }
             } else {
                 // Remote audio plays as soon as the session is active; the microphone follows.
                 micPending = muted
@@ -146,11 +166,14 @@ final class CallMedia: NSObject {
             await preroll.open(room, to: prerollTo)
             try await room.localParticipant.publish(audioTrack: preroll.track)
             preroll.published()
+            // A mute tapped while the pre-roll stream opened or its track published must win.
+            if self.muted { try await room.localParticipant.setMicrophone(enabled: false) }
         } else {
             preroll?.discard()
             preroll = nil
             try await room.localParticipant.setMicrophone(enabled: true)
-            if muted { try await room.localParticipant.setMicrophone(enabled: false) }
+            // Muting or unmuting while the track started decides, not the state on entry.
+            if self.muted { try await room.localParticipant.setMicrophone(enabled: false) }
         }
         #if os(iOS)
         Self.microphoneChanged?()
@@ -160,13 +183,67 @@ final class CallMedia: NSObject {
     private func publishPendingMicrophone() async {
         guard let room, let muted = micPending else { return }
         micPending = nil
-        if !muted { await startPreroll() }
+        if !muted, !Self.micUndecided { await startPreroll() }
+        try? await publishMicrophoneOrRemember(room, muted: muted)
+    }
+
+    /// Publishes the microphone. Without microphone access (not asked yet, as on the lock screen, or
+    /// denied) the call goes on without it, and `retryMicrophone` publishes it once access is
+    /// granted; any other failure is thrown.
+    private func publishMicrophoneOrRemember(_ room: Room, muted: Bool) async throws {
+        if Self.micUndecided {
+            DevLog.log("microphone waits for access")
+            guard room === self.room else { return }
+            preroll?.discard()
+            preroll = nil
+            markMicrophone(unavailable: true)
+            return
+        }
         do {
             try await publishMicrophone(room, muted: muted)
-            DevLog.log("microphone published after audio session activation")
+            if room === self.room {
+                // Said every time, not only on a change: a rejoin starts from a fresh state but may
+                // still carry the mute the app set while the microphone had no access.
+                micFailed = false
+                onMicrophoneUnavailable?(false)
+            }
+            DevLog.log("microphone published")
         } catch {
             DevLog.log("microphone publish failed: \(error)")
+            // A room the call has left says nothing about this call's microphone.
+            guard room === self.room else { return }
+            preroll?.discard()
+            preroll = nil
+            let noAccess = (error as? LiveKitError)?.type == .deviceAccessDenied
+                || AVAudioApplication.shared.recordPermission != .granted
+            guard noAccess else { throw error }
+            markMicrophone(unavailable: true)
         }
+    }
+
+    private func markMicrophone(unavailable: Bool) {
+        guard micFailed != unavailable else { return }
+        micFailed = unavailable
+        onMicrophoneUnavailable?(unavailable)
+    }
+
+    /// Publishes the microphone that failed to start, once the app has microphone access.
+    func retryMicrophone() async {
+        guard micFailed, let room, state == .connected else { return }
+        #if os(iOS)
+        guard Self.audioReady else { return }
+        // Starting the microphone reconfigures the session, which drops a speaker override; keep it.
+        Self.microphoneChanged?()
+        // The engine was left output-only when input was refused; turn input back on.
+        try? AudioManager.shared.setEngineAvailability(.default)
+        #endif
+        try? await publishMicrophoneOrRemember(room, muted: muted)
+    }
+
+    /// A retry that a reconnect or an inactive audio session held back.
+    private func retryMicrophoneIfAllowed() {
+        guard micFailed, AVAudioApplication.shared.recordPermission == .granted else { return }
+        Task { await retryMicrophone() }
     }
 
     func setMuted(_ muted: Bool) async {
@@ -178,7 +255,17 @@ final class CallMedia: NSObject {
             return
         }
         guard let room else { return }
-        _ = try? await room.localParticipant.setMicrophone(enabled: !muted)
+        // Unmuting a microphone that has no access yet can't be heard (and would make LiveKit ask
+        // for access itself): the call shows muted again.
+        if !muted, micFailed, Self.micUndecided {
+            onMicrophoneUnavailable?(true)
+            return
+        }
+        if (try? await room.localParticipant.setMicrophone(enabled: !muted)) != nil {
+            if !muted { markMicrophone(unavailable: false) }
+        } else if !muted, micFailed {
+            onMicrophoneUnavailable?(true)
+        }
         #if os(iOS)
         Self.microphoneChanged?()
         #endif
@@ -186,6 +273,7 @@ final class CallMedia: NSObject {
 
     func disconnect() async {
         micPending = nil
+        micFailed = false
         prerollTo = nil
         preroll?.discard()
         preroll = nil
@@ -209,7 +297,9 @@ final class CallMedia: NSObject {
     private func handleConnection(_ connectionState: ConnectionState, room: Room) {
         guard room === self.room else { return }
         switch connectionState {
-        case .connected: state = .connected
+        case .connected:
+            state = .connected
+            retryMicrophoneIfAllowed()
         case .reconnecting: state = .reconnecting
         case .connecting: state = .connecting
         case .disconnected, .disconnecting:

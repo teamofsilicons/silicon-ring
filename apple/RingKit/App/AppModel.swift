@@ -124,6 +124,7 @@ final class AppModel {
         media.onState = { [weak self] state in self?.activeCall?.mediaState = state }
         media.onSpeakers = { [weak self] identities in self?.activeCall?.speakingIdentities = identities }
         media.onLost = { [weak self] in self?.mediaLost() }
+        media.onMicrophoneUnavailable = { [weak self] unavailable in self?.microphoneUnavailable(unavailable) }
     }
 
     var api: APIClient {
@@ -156,6 +157,7 @@ final class AppModel {
         guard isSignedIn else { return }
         realtime.ensureConnected()
         Task { await reconcile() }
+        Task { await restoreCallMicrophone() }
     }
 
     // MARK: Sign-in
@@ -268,6 +270,7 @@ final class AppModel {
         if AVAudioApplication.shared.recordPermission == .undetermined {
             _ = await AVAudioApplication.requestRecordPermission()
         }
+        await restoreCallMicrophone()
         _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
     }
 

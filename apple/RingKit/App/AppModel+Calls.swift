@@ -249,7 +249,24 @@ extension AppModel {
     func applyMute(_ muted: Bool) async {
         guard let session = activeCall else { return }
         session.muted = muted
+        if !muted { session.mutedForMicrophone = false }
         await media.setMuted(muted)
+    }
+
+    /// The microphone could not start for lack of access (true), or has started since (false). The
+    /// call shows muted meanwhile, on the system call screen too, so nobody thinks they are heard.
+    func microphoneUnavailable(_ unavailable: Bool) {
+        guard let session = activeCall, session.isLive else { return }
+        if unavailable {
+            explainMicrophoneDenied()
+            // The person's own mute stays theirs.
+            guard !session.muted else { return }
+            session.mutedForMicrophone = true
+        } else {
+            guard session.mutedForMicrophone else { return }
+            session.mutedForMicrophone = false
+        }
+        if callSystem?.requestMute(session, muted: unavailable) != true { Task { await applyMute(unavailable) } }
     }
 
     func invite(_ ref: String) async -> Bool {
@@ -316,14 +333,15 @@ extension AppModel {
 
     func join(_ session: CallSession, grant: MediaGrant) async {
         #if os(iOS)
-        // CallKit enables LiveKit's input only once access is decided; ask while the prompt can show.
-        if AVAudioApplication.shared.recordPermission == .undetermined, UIApplication.shared.applicationState == .active {
+        // CallKit enables LiveKit's input only once access is decided; ask while the prompt can show,
+        // after the recording notice, which says what the microphone is for (restoreCallMicrophone
+        // asks when it closes).
+        if AVAudioApplication.shared.recordPermission == .undetermined,
+           UIApplication.shared.applicationState == .active, recordingNotice == nil {
             _ = await AVAudioApplication.requestRecordPermission()
         }
         #endif
-        if AVAudioApplication.shared.recordPermission == .denied {
-            show("Ring can't use the microphone, so the call can't hear you. Allow it in Settings.", style: .error)
-        }
+        explainMicrophoneDenied()
         DevLog.log("join \(session.ringid) audioActive=\(audioActive) mic=\(AVAudioApplication.shared.recordPermission.rawValue)")
         do {
             try await media.connect(grant, muted: session.muted)
@@ -335,10 +353,38 @@ extension AppModel {
             await loadTranscript(session)
         } catch {
             DevLog.log("join failed \(session.ringid): \(error)")
+            // Another join took over the room (CallMedia.connect): not a failure of this call.
+            if error is CancellationError { return }
             guard activeCall === session, session.isLive else { return }
             show("Ring couldn't connect the call audio.", style: .error)
             await performHangUp(session, cause: .failed)
         }
+    }
+
+    /// A call that went ahead without the microphone (no access yet when it connected, for example
+    /// answered on the lock screen): ask for access while the app is on screen, then publish it.
+    func restoreCallMicrophone() async {
+        guard let session = activeCall, session.isLive else { return }
+        #if os(iOS)
+        if AVAudioApplication.shared.recordPermission == .undetermined {
+            // The recording notice says what the microphone is for, so the prompt follows it.
+            guard UIApplication.shared.applicationState == .active, recordingNotice == nil else { return }
+            _ = await AVAudioApplication.requestRecordPermission()
+        }
+        #endif
+        guard AVAudioApplication.shared.recordPermission == .granted else {
+            explainMicrophoneDenied()
+            return
+        }
+        await media.retryMicrophone()
+    }
+
+    private static let microphoneDenied = "Ring can't use the microphone, so the call can't hear you. Allow it in Settings."
+
+    /// Says why the call can't hear the person, when microphone access was denied; once at a time.
+    func explainMicrophoneDenied() {
+        guard AVAudioApplication.shared.recordPermission == .denied, notice?.message != Self.microphoneDenied else { return }
+        show(Self.microphoneDenied, style: .error)
     }
 
     private func loadTranscript(_ session: CallSession) async {
@@ -538,6 +584,9 @@ extension AppModel {
     func offerRecordingNotice() {
         guard needsRecordingNotice, !RecordingNotice.wasOffered, recordingNotice == nil else { return }
         recordingNotice = RecordingNoticeRequest(action: .welcome)
+        // The system prompts follow this notice, also when it comes back after a relaunch (the
+        // flag set at sign-in lives only in memory).
+        permissionsAfterNotice = true
     }
 
     /// Holds a call action until the person has agreed to the recording notice. Returns true when
@@ -602,7 +651,10 @@ extension AppModel {
         // A notice about another call took the place of the one over this device's live call:
         // that call still has no agreement, so its notice comes back.
         if closed?.isAnswered == false, activeCall?.isLive == true { showRecordingNoticeOverCall() }
-        guard permissionsAfterNotice else { return }
+        guard permissionsAfterNotice else {
+            Task { await restoreCallMicrophone() }
+            return
+        }
         permissionsAfterNotice = false
         Task { await requestPermissions() }
     }
