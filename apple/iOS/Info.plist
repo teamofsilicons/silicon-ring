@@ -37,6 +37,8 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Ring calls are voice only and never use the camera.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Ring uses the microphone so the people and silicons you call can hear you.</string>
 	<key>NSUserActivityTypes</key>
