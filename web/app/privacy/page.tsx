@@ -23,7 +23,7 @@ export default function PrivacyPage() {
         <p className={styles.lead}>
           How Silicon Ring handles your data, in the apps, on the website and in the <code>ring</code> CLI.
         </p>
-        <Pixel>Effective 24 October 2026</Pixel>
+        <Pixel>Effective 25 October 2026</Pixel>
       </section>
       <Markdown source={source} />
     </PublicPage>

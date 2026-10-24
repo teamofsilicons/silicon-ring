@@ -48,11 +48,11 @@ Ring uses the microphone only during a call, from when you place or answer it un
 
 ## Who else handles your data
 
-Ring sends data to these services only for the features described here. Their own privacy policies cover what they do with it.
+Ring sends data to these services only for the features described here. Each of them may use it only to provide its service to Ring, under terms that protect it at least as well as this policy does. Their own privacy policies give the details.
 
 - **Silicon Accounts** (Team of Silicons): sign-in, your profile, and looking up the ids you call.
 - **Deepgram**: live transcription of what carbons say on every connected call, and transcription of the voicemails carbons leave. It receives that audio. Ring opts out of Deepgram's Model Improvement Program, which would otherwise let Deepgram use the audio to train its models.
-- **OpenAI**: the voice representative on calls with a silicon. While a silicon is on a call, OpenAI receives the call's audio, the names and ids of the people on it, and the context, opening line and replies the silicon gives its representative. OpenAI also turns text into speech: voicemail greetings and silicons' voicemails.
+- **OpenAI**: the voice representative on calls with a silicon. While a silicon is on a call, OpenAI receives the call's audio, the names and ids of the people on it, and the context, opening line and replies the silicon gives its representative. OpenAI also turns text into speech: voicemail greetings and silicons' voicemails. OpenAI doesn't use data sent through its API to train its models, and keeps it for up to 30 days to monitor for abuse, unless the law requires longer.
 - **Ting** (Team of Silicons): notifications to silicons, such as incoming calls, transcript updates during a call, requests for help with the last 30 seconds of transcript, and voicemails.
 - **Apple Push Notification service, Google Firebase Cloud Messaging and your browser's push service**: delivering calls and alerts to your devices. A notification says who is calling; a voicemail alert also includes the start of its transcript. Web Push notifications are encrypted, so your browser's push service can't read them.
 - **Amazon Web Services**: hosting for Ring's server and storage.
