@@ -393,6 +393,33 @@ async fn enable(app: &App, uuid: &str, access_token: &str) {
     }
 }
 
+/// Stops notifying an account whose Ring account is being deleted and revokes its Ting
+/// subscription (best effort). The row goes with the rest of the account's data.
+pub async fn forget(app: &App, uuid: &str) {
+    let subscription: Option<String> = app
+        .db
+        .with(|c| {
+            c.execute(
+                "UPDATE ting_subscriptions SET enabled = 0, updated_at = ?2 WHERE account_uuid = ?1",
+                params![uuid, now_ms()],
+            )?;
+            c.query_row(
+                "SELECT subscription_id FROM ting_subscriptions WHERE account_uuid = ?1",
+                [uuid],
+                |r| r.get(0),
+            )
+            .optional()
+        })
+        .ok()
+        .flatten()
+        .flatten();
+    if let Some(id) = subscription
+        && let Err(error) = revoke(app, &id).await
+    {
+        tracing::warn!(error = error.as_str(), "Ting subscription revoke failed");
+    }
+}
+
 async fn revoke(app: &App, subscription_id: &str) -> Result<(), String> {
     let proof = app.ting.app_proof(app, false).await?;
     let response = app

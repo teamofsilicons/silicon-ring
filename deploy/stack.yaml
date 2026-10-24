@@ -37,7 +37,7 @@ Conditions:
   UsePinnedAmi: !Not [!Equals [!Ref PinnedAmi, '']]
 
 Resources:
-  # Unchanged from the original stack: it holds recordings, voicemail, releases and backups.
+  # From the original stack: it holds recordings, voicemail, releases and backups.
   Assets:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
@@ -47,6 +47,18 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      # Database backups expire after 35 days, so a deleted Ring account is gone from every backup
+      # within 35 days. The rule matches keys under backups/ only, never production/ (recordings,
+      # voicemail) or releases/. This template does not turn on versioning, so an expired backup is
+      # gone for good.
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-database-backups
+            Status: Enabled
+            Prefix: backups/
+            ExpirationInDays: 35
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 2
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true

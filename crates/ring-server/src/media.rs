@@ -98,6 +98,21 @@ impl MediaLink {
         }
     }
 
+    /// Asks ring-media to delete these greetings from its cache (queued while it is away), and
+    /// forgets that they were prepared.
+    pub fn forget_greetings(&self, voice: &str, texts: Vec<String>) {
+        {
+            let mut prepared = self.prepared.lock().unwrap_or_else(|p| p.into_inner());
+            for text in &texts {
+                prepared.remove(&(voice.to_string(), text.clone()));
+            }
+        }
+        self.send(ToMedia::GreetingForget {
+            voice: voice.to_string(),
+            texts,
+        });
+    }
+
     pub fn is_connected(&self) -> bool {
         self.state
             .lock()
@@ -449,8 +464,8 @@ async fn recording_finished(
         tracing::warn!(ringid, error = error.as_str(), "recording failed");
     }
     let mut fx = Effects::default();
-    let result = app.db.tx(|tx| -> rusqlite::Result<()> {
-        let Some(data) = calls::load(tx, ringid)? else { return Ok(()) };
+    let result = app.db.tx(|tx| -> rusqlite::Result<bool> {
+        let Some(data) = calls::load(tx, ringid)? else { return Ok(false) };
         tx.execute(
             "UPDATE calls SET recording_status = ?2, recording_key = COALESCE(?3, recording_key), recording_duration_ms = ?4 WHERE ringid = ?1",
             rusqlite::params![ringid, if ready { "ready" } else { "failed" }, s3_key, duration_ms.map(|d| d as i64)],
@@ -464,11 +479,21 @@ async fn recording_finished(
             }
         }
         fx.call_updated = true;
-        Ok(())
+        Ok(true)
     });
-    if let Err(error) = result {
-        tracing::error!(%error, "could not store recording result");
-        return;
+    match result {
+        Ok(true) => {}
+        Ok(false) => {
+            // The call was deleted with its Ring accounts while the recording was uploading.
+            if let Some(key) = s3_key {
+                crate::deletion::delete_stored(app, vec![key]);
+            }
+            return;
+        }
+        Err(error) => {
+            tracing::error!(%error, "could not store recording result");
+            return;
+        }
     }
     drop(_guard);
     fx.apply(app, ringid).await;

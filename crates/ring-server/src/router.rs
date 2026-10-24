@@ -17,7 +17,8 @@ use crate::calls::api as calls;
 use crate::error::ApiResult;
 use crate::extract::Auth;
 use crate::{
-    hooks, idempotency, media, realtime, sessions, settings, ting, transcript, voicemail, web,
+    blocks, deletion, hooks, idempotency, media, realtime, sessions, settings, ting, transcript,
+    voicemail, web,
 };
 
 pub fn build(app: AppState) -> Router {
@@ -29,7 +30,7 @@ pub fn build(app: AppState) -> Router {
         .route("/v1/auth/carbon", post(sessions::carbon_login))
         .route("/v1/auth/web/start", get(sessions::web_start))
         .route("/v1/auth/web/callback", get(sessions::web_callback))
-        .route("/v1/me", get(sessions::me))
+        .route("/v1/me", get(sessions::me).delete(deletion::delete_me))
         .route("/v1/session", delete(sessions::logout))
         .route("/v1/devices/current", put(sessions::update_current))
         .route("/v1/devices", get(sessions::list_devices))
@@ -39,6 +40,11 @@ pub fn build(app: AppState) -> Router {
         )
         .route("/v1/accounts/{reference}", get(account_lookup))
         .route("/v1/people/recent", get(calls::recent_people))
+        .route("/v1/blocks", get(blocks::list))
+        .route(
+            "/v1/blocks/{reference}",
+            put(blocks::put).delete(blocks::delete),
+        )
         .route(
             "/v1/calls",
             get(calls::list).merge(post(calls::create).route_layer(idempotent())),

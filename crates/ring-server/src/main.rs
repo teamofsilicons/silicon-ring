@@ -2,9 +2,11 @@
 
 mod accounts;
 mod app;
+mod blocks;
 mod calls;
 mod config;
 mod db;
+mod deletion;
 mod error;
 mod extract;
 mod hooks;
@@ -119,6 +121,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sy
     tokio::spawn(ting::worker(app.clone()));
     tokio::spawn(transcript::batch_worker(app.clone()));
     tokio::spawn(cleanup(app.clone()));
+    tokio::spawn(deletion::worker(app.clone()));
 
     let listener = tokio::net::TcpListener::bind(app.config.bind).await?;
     tracing::info!(bind = %app.config.bind, "listening");
@@ -167,7 +170,8 @@ async fn shutdown() {
     }
 }
 
-/// Hourly housekeeping: expired idempotency records, sign-in claims, previews and old outbox rows.
+/// Hourly housekeeping: expired idempotency records, sign-in claims, previews, old outbox rows and
+/// the record of which devices old invitations rang.
 async fn cleanup(app: Arc<App>) {
     let mut tick = tokio::time::interval(Duration::from_secs(3600));
     loop {
@@ -180,6 +184,7 @@ async fn cleanup(app: Arc<App>) {
             c.execute("DELETE FROM context_preparations WHERE expires_at < ?1", [now - day])?;
             c.execute("DELETE FROM context_approvals WHERE expires_at < ?1", [now - 30 * day])?;
             c.execute("DELETE FROM webhook_events WHERE received_at < ?1", [now - 7 * day])?;
+            c.execute("DELETE FROM invitation_pushes WHERE created_at < ?1", [now - day])?;
             c.execute("DELETE FROM ting_outbox WHERE status IN ('delivered', 'failed') AND updated_at < ?1", [now - 14 * day])?;
             // Media results that never arrived (ring-media restarted mid-upload) will not arrive now.
             c.execute("UPDATE calls SET recording_status = 'failed' WHERE recording_status = 'processing' AND ended_at < ?1", [now - 3600 * 1000])?;

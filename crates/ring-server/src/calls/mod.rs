@@ -84,6 +84,9 @@ pub struct InvitationRow {
     pub answered_at: Option<i64>,
     pub silenced: bool,
     pub call_uuid: String,
+    /// From someone the invitee blocked: it rings none of the invitee's devices, and the invitee
+    /// never sees it or the call through it. To everyone else it looks like any other invitation.
+    pub hidden: bool,
 }
 
 /// A call with everything needed to render or change it.
@@ -93,6 +96,10 @@ pub struct CallData {
     pub participants: Vec<ParticipantRow>,
     pub invitations: Vec<InvitationRow>,
     pub accounts: HashMap<String, Account>,
+    /// Accounts on this call that have since deleted their Ring account. Their rows stay so the
+    /// others see the call unchanged, but the call is no longer theirs, even if they sign in to
+    /// Ring again.
+    pub departed: HashSet<String>,
 }
 
 impl CallData {
@@ -127,9 +134,9 @@ impl CallData {
         let mut out = Vec::new();
         let all = std::iter::once(self.call.created_by.as_str())
             .chain(self.participants.iter().map(|p| p.account_uuid.as_str()))
-            .chain(self.invitations.iter().map(|i| i.to_uuid.as_str()));
+            .chain(self.visible_invitations().map(|i| i.to_uuid.as_str()));
         for uuid in all {
-            if seen.insert(uuid) {
+            if !self.departed.contains(uuid) && seen.insert(uuid) {
                 out.push(uuid.to_string());
             }
         }
@@ -137,9 +144,20 @@ impl CallData {
     }
 
     pub fn can_view(&self, uuid: &str) -> bool {
-        self.call.created_by == uuid
-            || self.participant(uuid).is_some()
-            || self.invitations.iter().any(|i| i.to_uuid == uuid)
+        !self.departed.contains(uuid)
+            && (self.call.created_by == uuid
+                || self.participant(uuid).is_some()
+                || self.visible_invitations().any(|i| i.to_uuid == uuid))
+    }
+
+    /// Invitations their invitee sees (all but those from someone the invitee blocked).
+    pub fn visible_invitations(&self) -> impl DoubleEndedIterator<Item = &InvitationRow> + Clone {
+        self.invitations.iter().filter(|i| !i.hidden)
+    }
+
+    /// True when `uuid` was ever on the call (and the call is still its own).
+    pub fn joined_ever(&self, uuid: &str) -> bool {
+        !self.departed.contains(uuid) && self.participant(uuid).is_some()
     }
 
     pub fn roster(&self) -> Vec<RosterMember> {
@@ -234,8 +252,8 @@ pub fn load(conn: &Connection, ringid: &str) -> rusqlite::Result<Option<CallData
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut stmt = conn.prepare(
-        "SELECT invitation_id, ringid, from_uuid, to_uuid, state, reason, created_at, expires_at, answered_at, silenced, call_uuid
-         FROM invitations WHERE ringid = ?1 ORDER BY created_at, invitation_id",
+        "SELECT invitation_id, ringid, from_uuid, to_uuid, state, reason, created_at, expires_at, answered_at, silenced, call_uuid,
+           hidden FROM invitations WHERE ringid = ?1 ORDER BY created_at, invitation_id",
     )?;
     let invitations = stmt
         .query_map([ringid], row_to_invitation)?
@@ -252,11 +270,18 @@ pub fn load(conn: &Connection, ringid: &str) -> rusqlite::Result<Option<CallData
             )
             .collect();
     let accounts = accounts::load_many(conn, uuids)?;
+    let mut departed = HashSet::new();
+    for uuid in accounts.keys() {
+        if accounts::ring_deleted_at(conn, uuid)?.is_some_and(|at| at > call.created_at) {
+            departed.insert(uuid.clone());
+        }
+    }
     Ok(Some(CallData {
         call,
         participants,
         invitations,
         accounts,
+        departed,
     }))
 }
 
@@ -274,6 +299,7 @@ pub fn row_to_invitation(r: &rusqlite::Row<'_>) -> rusqlite::Result<InvitationRo
         answered_at: r.get(8)?,
         silenced: r.get::<_, i64>(9)? != 0,
         call_uuid: r.get(10)?,
+        hidden: r.get::<_, i64>(11)? != 0,
     })
 }
 
@@ -303,8 +329,40 @@ pub fn device_ref(conn: &Connection, device_id: &str) -> rusqlite::Result<Device
     })
 }
 
-/// Renders the call as seen by `viewer` (only `direction` depends on the viewer).
+/// Renders the call as seen by `viewer`. Only `direction` depends on the viewer, and invitations
+/// to the viewer from someone it blocked are left out.
 pub fn render(conn: &Connection, data: &CallData, viewer: &str) -> rusqlite::Result<Call> {
+    Ok(view(render_all(conn, data)?, data, viewer))
+}
+
+/// True when the call has an invitation `viewer` must not see (from someone it blocked).
+fn hides_from(data: &CallData, viewer: &str) -> bool {
+    data.invitations
+        .iter()
+        .any(|i| i.hidden && i.to_uuid == viewer)
+}
+
+/// A call rendered by `render_all` as `viewer` sees it: its own direction, and without the
+/// invitations to it from someone it blocked. Everyone else still sees those invitations.
+fn view(mut call: Call, data: &CallData, viewer: &str) -> Call {
+    call.direction = if data.call.created_by == viewer {
+        Direction::Outgoing
+    } else {
+        Direction::Incoming
+    };
+    if hides_from(data, viewer) {
+        call.invitations.retain(|rendered| {
+            !data.invitations.iter().any(|i| {
+                i.hidden && i.to_uuid == viewer && i.invitation_id == rendered.invitation_id
+            })
+        });
+    }
+    call
+}
+
+/// Renders the call with every invitation and `direction: incoming`, before `view` fits it to
+/// one viewer.
+fn render_all(conn: &Connection, data: &CallData) -> rusqlite::Result<Call> {
     let mut participants = Vec::with_capacity(data.participants.len());
     for p in &data.participants {
         let account = data.account(&p.account_uuid);
@@ -354,11 +412,7 @@ pub fn render(conn: &Connection, data: &CallData, viewer: &str) -> rusqlite::Res
         ended_at: opt_time(data.call.ended_at),
         end_reason: data.call.end_reason,
         created_by: data.account(&data.call.created_by),
-        direction: if data.call.created_by == viewer {
-            Direction::Outgoing
-        } else {
-            Direction::Incoming
-        },
+        direction: Direction::Incoming,
         participants,
         invitations: data
             .invitations
@@ -449,10 +503,10 @@ impl Effects {
             }
         }
         for invitation_id in &self.incoming {
+            // Only an invitation still ringing; one from someone the invitee blocked never rings.
             if let Some(inv) = data
-                .invitations
-                .iter()
-                .find(|i| &i.invitation_id == invitation_id)
+                .visible_invitations()
+                .find(|i| &i.invitation_id == invitation_id && i.state == InvitationState::Ringing)
             {
                 ring_invitee(app, &data, inv);
             }
@@ -463,7 +517,7 @@ impl Effects {
         if self.call_updated || self.call_ended {
             broadcast_call(app, &data, self.call_ended);
         }
-        for (inv, reason, acting_device) in &self.stopped {
+        for (inv, reason, acting_device) in self.stopped.iter().filter(|s| !s.0.hidden) {
             let event = Event::CallRingingStopped {
                 ringid: ringid.to_string(),
                 invitation_id: inv.invitation_id.clone(),
@@ -475,7 +529,7 @@ impl Effects {
                 crate::push::cancel(app, inv, *reason, acting_device.as_deref());
             }
         }
-        for inv in &self.missed {
+        for inv in self.missed.iter().filter(|i| !i.hidden) {
             if !data.is_silicon(&inv.to_uuid) {
                 crate::push::missed(app, &data, inv);
             }
@@ -510,9 +564,11 @@ impl Effects {
     }
 }
 
-/// Sends `call.updated` (or `call.ended`) to everyone involved, each with their own direction.
+/// Sends `call.updated` (or `call.ended`) to everyone involved, each as they see the call: the
+/// creator with `direction: outgoing`, and anyone with an invitation from someone it blocked
+/// without that invitation. Everyone else gets the same frame.
 pub fn broadcast_call(app: &AppState, data: &CallData, ended: bool) {
-    let rendered = match app.db.with(|c| render(c, data, &data.call.created_by)) {
+    let all = match app.db.with(|c| render_all(c, data)) {
         Ok(call) => call,
         Err(error) => {
             tracing::error!(%error, "could not render call");
@@ -520,21 +576,20 @@ pub fn broadcast_call(app: &AppState, data: &CallData, ended: bool) {
         }
     };
     let make = |call: Call| {
-        if ended {
+        frame(&if ended {
             Event::CallEnded { call }
         } else {
             Event::CallUpdated { call }
-        }
+        })
     };
-    let outgoing = frame(&make(rendered.clone()));
-    let mut incoming_call = rendered;
-    incoming_call.direction = Direction::Incoming;
-    let incoming = frame(&make(incoming_call));
+    let mut shared = None;
     for uuid in data.audience() {
-        let f = if uuid == data.call.created_by {
-            outgoing.clone()
+        let f = if uuid == data.call.created_by || hides_from(data, &uuid) {
+            make(view(all.clone(), data, &uuid))
         } else {
-            incoming.clone()
+            shared
+                .get_or_insert_with(|| make(view(all.clone(), data, &uuid)))
+                .clone()
         };
         app.hub.send_frame(&uuid, f);
     }
@@ -560,8 +615,9 @@ fn ring_invitee(app: &AppState, data: &CallData, inv: &InvitationRow) {
 /// Inserts an invitation row.
 pub fn insert_invitation(conn: &Connection, inv: &InvitationRow) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO invitations (invitation_id, ringid, from_uuid, to_uuid, state, reason, created_at, expires_at, answered_at, silenced, call_uuid)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO invitations (invitation_id, ringid, from_uuid, to_uuid, state, reason, created_at, expires_at, answered_at, silenced, call_uuid,
+           hidden)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             inv.invitation_id,
             inv.ringid,
@@ -573,7 +629,8 @@ pub fn insert_invitation(conn: &Connection, inv: &InvitationRow) -> rusqlite::Re
             inv.expires_at,
             inv.answered_at,
             inv.silenced as i64,
-            inv.call_uuid
+            inv.call_uuid,
+            inv.hidden as i64
         ],
     )?;
     Ok(())

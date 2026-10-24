@@ -92,6 +92,10 @@ pub enum ToMedia {
     /// reaches voicemail hears it at once. A hint: nothing is reported back.
     #[serde(rename = "greeting.prepare")]
     GreetingPrepare { voice: String, text: String },
+    /// Delete these greetings in `voice` from the cache (their account deleted its Ring account).
+    /// Nothing is reported back; a greeting still needed is synthesized again.
+    #[serde(rename = "greeting.forget")]
+    GreetingForget { voice: String, texts: Vec<String> },
     /// Synthesize a silicon's text voicemail in `voice` and upload it.
     #[serde(rename = "voicemail.synthesize")]
     VoicemailSynthesize {

@@ -423,6 +423,7 @@ impl Supervisor {
                 }
                 self.spawn(voicemail::prepare(self.clone(), voice, text), |_, _| {});
             }
+            ToMedia::GreetingForget { voice, texts } => voicemail::forget(self, &voice, &texts),
             ToMedia::VoicemailSynthesize {
                 voicemail_id,
                 text,

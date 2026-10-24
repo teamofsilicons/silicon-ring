@@ -361,6 +361,53 @@ const MIGRATIONS: &[&str] = &[
         received_at INTEGER NOT NULL
     );
     "#,
+    // 2: account deletion. Calls created before `ring_deleted_at` no longer belong to that
+    // account, even after it signs in to Ring again.
+    r#"
+    ALTER TABLE accounts ADD COLUMN ring_deleted_at INTEGER;
+    "#,
+    // 3: durable deletion, blocking, and the devices each invitation rang.
+    r#"
+    -- Ring accounts being deleted; the row goes when the deletion commits, and is retried until then.
+    CREATE TABLE pending_deletions (
+        account_uuid TEXT PRIMARY KEY,
+        initiator TEXT NOT NULL,
+        requested_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT
+    );
+
+    -- Stored audio (S3 keys) to delete; a row goes once S3 confirms.
+    CREATE TABLE pending_files (
+        key TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT
+    );
+    CREATE INDEX pending_files_due ON pending_files(next_attempt_at);
+
+    CREATE TABLE blocks (
+        blocker_uuid TEXT NOT NULL,
+        blocked_uuid TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (blocker_uuid, blocked_uuid)
+    );
+
+    -- An invitation from someone the invitee blocked: it never rings any of the invitee's devices
+    -- and the invitee never sees it.
+    ALTER TABLE invitations ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+
+    -- The devices an invitation's incoming push went to, so only they get the cancel push.
+    CREATE TABLE invitation_pushes (
+        invitation_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (invitation_id, device_id, kind)
+    );
+    "#,
 ];
 
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {

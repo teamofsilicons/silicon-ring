@@ -127,7 +127,7 @@ pub async fn recording(
         .db
         .with(|c| load(c, &ringid))?
         .ok_or_else(|| ApiError::not_found("Call"))?;
-    if data.participant(auth.uuid()).is_none() {
+    if !data.joined_ever(auth.uuid()) {
         return Err(ApiError::not_participant());
     }
     let mut recording = Recording {
@@ -244,12 +244,17 @@ pub async fn list(
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let cursor = decode_cursor(q.cursor.as_deref())?;
     let viewer = auth.uuid().to_string();
+    // Calls from before the viewer deleted a previous Ring account are not theirs.
+    let mine_since = app
+        .db
+        .with(|c| accounts::ring_deleted_at(c, &viewer))?
+        .unwrap_or(0);
 
     let mut sql = String::from(
         "SELECT ringid, created_at FROM calls c WHERE (c.ringid IN (SELECT ringid FROM participants WHERE account_uuid = ?1)
-           OR c.ringid IN (SELECT ringid FROM invitations WHERE to_uuid = ?1))",
+           OR c.ringid IN (SELECT ringid FROM invitations WHERE to_uuid = ?1 AND hidden = 0)) AND c.created_at >= ?2",
     );
-    let mut args: Vec<rusqlite::types::Value> = vec![viewer.clone().into()];
+    let mut args: Vec<rusqlite::types::Value> = vec![viewer.clone().into(), mine_since.into()];
     if !states.is_empty() {
         sql.push_str(&format!(
             " AND c.state IN ({})",
@@ -336,8 +341,10 @@ pub async fn recent_people(
     let items = app.db.with(|c| -> rusqlite::Result<Vec<RecentPerson>> {
         let mut stmt = c.prepare(
             "WITH mine AS (
-               SELECT ringid FROM participants WHERE account_uuid = ?1
-               UNION SELECT ringid FROM invitations WHERE to_uuid = ?1
+               SELECT m.ringid FROM (
+                 SELECT ringid FROM participants WHERE account_uuid = ?1
+                 UNION SELECT ringid FROM invitations WHERE to_uuid = ?1 AND hidden = 0
+               ) m JOIN calls c ON c.ringid = m.ringid WHERE c.created_at >= ?2
              ), others AS (
                SELECT p.ringid, p.account_uuid AS other FROM participants p JOIN mine m ON m.ringid = p.ringid
                UNION SELECT i.ringid, i.to_uuid FROM invitations i JOIN mine m ON m.ringid = i.ringid
@@ -349,8 +356,9 @@ pub async fn recent_people(
              WHERE o.other != ?1
              GROUP BY o.other ORDER BY MAX(c.created_at) DESC LIMIT 1000",
         )?;
+        let mine_since = accounts::ring_deleted_at(c, &viewer)?.unwrap_or(0);
         let rows: Vec<(String, i64, i64, String)> =
-            stmt.query_map([&viewer], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
+            stmt.query_map(rusqlite::params![viewer, mine_since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
         let accounts: HashMap<String, ring_proto::Account> = accounts::load_many(c, rows.iter().map(|r| r.0.as_str()))?;
         let mut out = Vec::new();
         for (uuid, last, count, ringid) in rows {

@@ -4,6 +4,8 @@
   backup.py [--label L] [--local-only]   copy every database in /var/lib/ring with SQLite's online
                                          backup, check it, tar it and upload it to
                                          s3://<bucket>/backups/<label>-<host>-<UTC>.tar.gz
+                                         (S3 expires backups/ after 35 days; local copies are
+                                         deleted here after 35 days too)
   backup.py snapshot --dest DIR          the same copy into DIR only (used before a release switch)
   backup.py restore --from S3URI|PATH    put a backup's databases back into an empty data directory
 
@@ -28,6 +30,9 @@ import tempfile
 
 SUFFIXES = ('.sqlite3', '.sqlite', '.db')
 LOCAL_DIR = pathlib.Path('/var/backups/ring')
+# Database copies are kept at most this long, so a deleted Ring account is gone from all of them
+# within 35 days. The bucket's lifecycle rule (deploy/stack.yaml) expires backups/ at the same age.
+MAX_AGE_DAYS = 35
 
 
 def read_env_file(path):
@@ -81,6 +86,15 @@ def prune_local(keep):
     archives = sorted(LOCAL_DIR.glob('*.tar.gz'), key=lambda p: p.stat().st_mtime, reverse=True)
     for old in archives[keep:]:
         old.unlink()
+    # Pre-deploy snapshots (install-release.sh keeps the newest ten) go once they are too old.
+    cutoff = datetime.datetime.now().timestamp() - MAX_AGE_DAYS * 86400
+    for old in [*LOCAL_DIR.glob('*.tar.gz'), *LOCAL_DIR.glob('pre-*')]:
+        if old.stat().st_mtime >= cutoff:
+            continue
+        if old.is_dir():
+            shutil.rmtree(old)
+        else:
+            old.unlink()
 
 
 def cmd_backup(args):
@@ -89,6 +103,8 @@ def cmd_backup(args):
     region = args.region or env.get('AWS_REGION') or 'us-west-1'
     if not bucket and not args.local_only:
         raise SystemExit('no bucket: pass --bucket or --env-file with RING_S3_BUCKET')
+    if args.prefix.strip('/').split('/')[0] != 'backups':
+        raise SystemExit('--prefix must be under backups/, which S3 expires after 35 days')
     LOCAL_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     name = f'{args.label}-{socket.gethostname().split(".")[0]}-{stamp}.tar.gz'

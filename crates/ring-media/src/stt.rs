@@ -18,7 +18,8 @@ use tokio_tungstenite::{
 use crate::{audio, link::Reporter};
 
 /// Deepgram takes the recorder's audio as is: 48 kHz linear PCM, no resampling on the way.
-const LIVE_URL: &str = "wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&encoding=linear16&sample_rate=48000&channels=1&interim_results=true&smart_format=true&punctuate=true";
+/// `mip_opt_out` (on both requests) keeps call audio out of Deepgram's model improvement program.
+const LIVE_URL: &str = "wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&encoding=linear16&sample_rate=48000&channels=1&interim_results=true&smart_format=true&punctuate=true&mip_opt_out=true";
 const _: () = assert!(audio::RECORD_RATE == 48_000, "LIVE_URL's sample_rate");
 const PRERECORDED_URL: &str = "https://api.deepgram.com/v1/listen";
 /// Audio kept while reconnecting, so a short outage loses no words.
@@ -377,6 +378,7 @@ pub async fn transcribe(http: &reqwest::Client, api_key: &str, wav: Vec<u8>) -> 
             ("language", "multi"),
             ("smart_format", "true"),
             ("punctuate", "true"),
+            ("mip_opt_out", "true"),
         ])
         .header("Authorization", format!("Token {api_key}"))
         .header("Content-Type", "audio/wav")

@@ -102,7 +102,9 @@ deploy/deploy.py rollback --restore-db       # also restore the snapshot taken b
 ```
 
 Without `--restore-db` the database stays as it is, which is right unless the release being rolled
-back changed the schema in a way the older one cannot read.
+back changed the schema in a way the older one cannot read. Pre-deploy snapshots older than 35 days
+are deleted by the daily backup (see Backups), so `--restore-db` needs a release installed less
+than 35 days ago.
 
 ## Status and logs
 
@@ -129,6 +131,14 @@ sudo journalctl -u ring-server -f
 - `ring-backup.timer` copies every SQLite database with SQLite's online backup, checks the copy's
   integrity, and uploads `backups/scheduled-<host>-<UTC>.tar.gz` (SSE-S3). The host keeps the last
   seven archives too.
+- Backups are kept for 35 days, so a deleted Ring account is gone from every copy within 35 days:
+  - S3: the bucket's lifecycle rule `expire-database-backups` (`deploy/stack.yaml`) expires
+    objects under `backups/` 35 days after upload. It matches that prefix only, never
+    `production/` or `releases/`. It takes effect once the stack change is applied
+    (`deploy/deploy.py stack`, then `--execute`); check it with
+    `aws s3api get-bucket-lifecycle-configuration --bucket silicon-ring-assets-smdjuu0paizr`.
+  - On the host: each backup run deletes archives and `pre-*` snapshots in `/var/backups/ring`
+    older than 35 days. `backup.py` refuses a `--prefix` outside `backups/`.
 - `deploy/deploy.py backup --label <label>` does the same on demand. It works on any host with
   Python 3 and the AWS CLI, including pre-1.0 hosts.
 - To restore onto a host, for example after the instance was replaced:
@@ -136,6 +146,23 @@ sudo journalctl -u ring-server -f
   The database that was there is snapshotted first and put back if the release fails.
 
 Recordings and voicemail audio live in S3 and are not part of these backups.
+
+## Account deletion
+
+`DELETE /v1/me` and Accounts' `account.deleted` delete an account's Ring data (`udd/api.md`). A
+deletion is queued in `pending_deletions` and S3 audio to delete in `pending_files`; ring-server
+retries both at startup and every minute, backing off to once an hour, until they complete. To see
+what is waiting (on the host, as root):
+
+```sh
+sqlite3 /var/lib/ring/ring.sqlite3 "SELECT account_uuid, initiator, attempts, last_error FROM pending_deletions;
+  SELECT COUNT(*), MAX(attempts) FROM pending_files;"
+```
+
+A row that keeps failing logs `Ring account deletion failed` or `could not delete stored audio` in
+`deploy.py logs --unit ring-server`. While a deletion is pending that account cannot sign in.
+ring-media drops a deleted account's cached greetings (`/var/lib/ring/media/greetings`) when told,
+and deletes any cached greeting unused for 30 days.
 
 ## The runtime secret
 
@@ -291,3 +318,4 @@ The pre-1.0 host is an x86_64 t3.small with a different secret and layout. In or
 | `ring-media` restarts in a loop | `deploy.py logs --unit ring-media`; it needs ring-server's `/internal/media` and LiveKit on 7880 |
 | Silicons get no call notifications | `ring notifications status` on the silicon; `deploy/ting-types.py` shows unregistered types; `deploy.py logs --unit ring-server` for Ting errors |
 | Names or photos are stale, or sign-outs do not apply | `silicon-accounts app --app-id ring webhook deliveries --status failed` |
+| Someone cannot sign in: "Your Ring account is still being deleted." | `pending_deletions` (see Account deletion) and the `Ring account deletion failed` log lines |

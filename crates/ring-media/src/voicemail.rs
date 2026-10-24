@@ -313,6 +313,22 @@ fn interrupted(interrupt: Interrupt) -> anyhow::Error {
     }
 }
 
+/// Cached greetings not used for this long are deleted (an account's old greetings, or one that
+/// deleted its Ring account).
+const GREETING_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
+/// How often the greeting cache is swept.
+const GREETING_SWEEP_EVERY: Duration = Duration::from_secs(6 * 3600);
+
+fn greetings_dir(supervisor: &Supervisor) -> PathBuf {
+    supervisor.config.data_dir.join("greetings")
+}
+
+/// The cache name of a greeting: a digest of its voice and text.
+fn greeting_name(voice: &str, text: &str) -> String {
+    let digest = Sha256::digest(format!("{voice}|{text}").as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// A greeting in `voice`, cached by voice and text. Concurrent requests for the same greeting
 /// share one synthesis.
 async fn greeting(supervisor: &Supervisor, voice: &str, text: &str) -> Result<Vec<i16>> {
@@ -320,13 +336,8 @@ async fn greeting(supervisor: &Supervisor, voice: &str, text: &str) -> Result<Ve
     if text.is_empty() {
         return Ok(Vec::new());
     }
-    let digest = Sha256::digest(format!("{voice}|{text}").as_bytes());
-    let name: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    let path = supervisor
-        .config
-        .data_dir
-        .join("greetings")
-        .join(format!("{name}.wav"));
+    let name = greeting_name(voice, text);
+    let path = greetings_dir(supervisor).join(format!("{name}.wav"));
     if let Some(samples) = cached(&path) {
         tracing::debug!(%voice, "greeting from the cache");
         return Ok(samples);
@@ -348,10 +359,16 @@ async fn greeting(supervisor: &Supervisor, voice: &str, text: &str) -> Result<Ve
     Ok(samples)
 }
 
+/// A cached greeting's samples. Reading one marks it used, so the sweep keeps it.
 fn cached(path: &Path) -> Option<Vec<i16>> {
     let bytes = std::fs::read(path).ok()?;
     match audio::parse_wav(&bytes) {
-        Ok((LIVE_RATE, samples)) if !samples.is_empty() => Some(samples),
+        Ok((LIVE_RATE, samples)) if !samples.is_empty() => {
+            if let Ok(file) = std::fs::File::options().write(true).open(path) {
+                let _ = file.set_modified(std::time::SystemTime::now());
+            }
+            Some(samples)
+        }
         _ => {
             tracing::warn!(path = %path.display(), "ignoring an unreadable cached greeting");
             None
@@ -390,6 +407,49 @@ pub async fn prepare(supervisor: Arc<Supervisor>, voice: String, text: String) {
     match prepared {
         Ok(_) => tracing::debug!(%voice, "greeting ready"),
         Err(e) => tracing::warn!(%voice, "could not prepare a greeting: {e:#}"),
+    }
+}
+
+/// `greeting.forget`: deletes these greetings in `voice` from the cache.
+pub fn forget(supervisor: &Supervisor, voice: &str, texts: &[String]) {
+    let dir = greetings_dir(supervisor);
+    let mut removed = 0;
+    for text in texts.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        if std::fs::remove_file(dir.join(format!("{}.wav", greeting_name(voice, text)))).is_ok() {
+            removed += 1;
+        }
+    }
+    tracing::info!(removed, "forgot cached greetings");
+}
+
+/// Deletes cached greetings nobody used for `GREETING_MAX_AGE`, now and every
+/// `GREETING_SWEEP_EVERY`, until shutdown.
+pub async fn sweep_greetings(supervisor: Arc<Supervisor>) {
+    loop {
+        let dir = greetings_dir(&supervisor);
+        let removed = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| {
+                        entry
+                            .metadata()
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|modified| modified.elapsed().ok())
+                            .is_some_and(|age| age > GREETING_MAX_AGE)
+                    })
+                    .filter(|entry| std::fs::remove_file(entry.path()).is_ok())
+                    .count()
+            })
+            .unwrap_or(0);
+        if removed > 0 {
+            tracing::info!(removed, "deleted greetings unused for 30 days");
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(GREETING_SWEEP_EVERY) => {}
+            _ = supervisor.shutdown.cancelled() => return,
+        }
     }
 }
 

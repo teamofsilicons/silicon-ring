@@ -98,6 +98,7 @@ async fn run() -> anyhow::Result<()> {
     let (reporter, outgoing) = Reporter::channel();
     let shutdown = CancellationToken::new();
     let supervisor = Arc::new(Supervisor::new(config.clone(), reporter, shutdown.clone()));
+    tokio::spawn(voicemail::sweep_greetings(supervisor.clone()));
     let link_stop = CancellationToken::new();
     let link = tokio::spawn(link::run(
         config,

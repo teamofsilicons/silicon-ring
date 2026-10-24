@@ -2,6 +2,7 @@
 //! and macOS ringing), FCM v1 data messages (Android) and Web Push (browsers).
 //! VoIP pushes carry only `call.incoming` and `call.cancelled`.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -611,16 +612,74 @@ pub fn incoming(app: &AppState, data: &CallData, inv: &InvitationRow) {
         };
         jobs.push(job(t, delivery));
     }
-    spawn_jobs(app, jobs);
+    spawn_jobs(app, record_rang(app, inv, jobs));
 }
 
-/// Stops ringing on the invitee's other devices.
+/// Remembers which devices an incoming push goes to, so the cancel push goes only to them. Nothing
+/// is sent once the invitation stopped ringing, or once the invitee blocked the inviter (a block
+/// can land after the invitation was loaded to ring): then its cancel push has already been
+/// decided.
+fn record_rang(app: &AppState, inv: &InvitationRow, jobs: Vec<Job>) -> Vec<Job> {
+    if jobs.is_empty() {
+        return jobs;
+    }
+    let recorded = app.db.tx(|tx| -> rusqlite::Result<bool> {
+        let ringing: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM invitations WHERE invitation_id = ?1 AND state = 'ringing' AND hidden = 0)",
+            [&inv.invitation_id],
+            |r| r.get(0),
+        )?;
+        if !ringing {
+            return Ok(false);
+        }
+        let now = now_ms();
+        for job in &jobs {
+            tx.execute(
+                "INSERT OR IGNORE INTO invitation_pushes (invitation_id, device_id, kind, created_at) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![inv.invitation_id, job.device_id, crate::calls::enum_str(&job.kind), now],
+            )?;
+        }
+        Ok(true)
+    });
+    match recorded {
+        Ok(true) => jobs,
+        Ok(false) => vec![],
+        Err(error) => {
+            // Ringing matters more than a precise cancel: send it anyway.
+            tracing::error!(%error, "could not record incoming pushes");
+            jobs
+        }
+    }
+}
+
+/// The devices (and push kinds) an invitation's incoming push went to.
+fn rang(app: &AppState, invitation_id: &str) -> HashSet<(String, String)> {
+    app.db
+        .with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT device_id, kind FROM invitation_pushes WHERE invitation_id = ?1",
+            )?;
+            let rows = stmt.query_map([invitation_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect()
+        })
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, "could not read incoming pushes");
+            HashSet::new()
+        })
+}
+
+/// Stops ringing on the invitee's other devices: those the incoming push went to. A device that
+/// was never rung (ringing off, or offline for Web Push) is not woken to be told it stopped.
 pub fn cancel(
     app: &AppState,
     inv: &InvitationRow,
     reason: RingingStoppedReason,
     acting_device: Option<&str>,
 ) {
+    let rang = rang(app, &inv.invitation_id);
+    if rang.is_empty() {
+        return;
+    }
     let payload = payload_value(&PushPayload::CallCancelled {
         ringid: inv.ringid.clone(),
         invitation_id: inv.invitation_id.clone(),
@@ -629,10 +688,10 @@ pub fn cancel(
     });
     let expiration = now_ms() / 1000 + CALL_TTL_SECS;
     let mut jobs = Vec::new();
-    for t in targets(app, &inv.to_uuid)
-        .iter()
-        .filter(|t| Some(t.device_id.as_str()) != acting_device)
-    {
+    for t in targets(app, &inv.to_uuid).iter().filter(|t| {
+        Some(t.device_id.as_str()) != acting_device
+            && rang.contains(&(t.device_id.clone(), crate::calls::enum_str(&t.kind)))
+    }) {
         let delivery = match t.kind {
             PushKind::ApnsVoip => Delivery::Apns {
                 voip: true,

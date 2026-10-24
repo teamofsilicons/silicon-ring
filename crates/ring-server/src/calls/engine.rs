@@ -58,6 +58,7 @@ fn new_invitation(ringid: &str, from: &str, to: &str, state: InvitationState) ->
         answered_at: None,
         silenced: false,
         call_uuid: uuid::Uuid::new_v4().to_string(),
+        hidden: false,
     }
 }
 
@@ -408,9 +409,15 @@ fn enter_voicemail(
 ) -> rusqlite::Result<()> {
     let ringid = data.call.ringid.as_str();
     let caller_uuid = data.call.created_by.as_str();
-    let Some(callee_uuid) = data.invitations.first().map(|i| i.to_uuid.clone()) else {
+    let Some(callee_invitation) = data.invitations.first() else {
         return end_call_tx(app, tx, data, voicemail_reason_to_end(reason), fx);
     };
+    // The callee blocked the caller, or its Ring account is deleted (or being deleted): no
+    // voicemail, as if the callee had it off.
+    if callee_invitation.hidden || crate::deletion::gone(tx, &callee_invitation.to_uuid)? {
+        return end_call_tx(app, tx, data, voicemail_reason_to_end(reason), fx);
+    }
+    let callee_uuid = callee_invitation.to_uuid.clone();
     let callee = data.account(&callee_uuid);
     let callee_settings = settings::load(tx, &callee_uuid)?.settings;
     let caller_joined = data.participant(caller_uuid).is_some_and(|p| p.joined());
@@ -613,8 +620,17 @@ pub async fn create(app: &AppState, auth: &Auth, req: CreateCall) -> ApiResult<C
     let device_id = (!silicon).then(|| auth.device_id().to_string());
     let media_identity = media.as_ref().map(|m| m.identity.clone());
     let mut fx = Effects::default();
-    let created = app.db.tx(|tx| -> rusqlite::Result<InvitationRow> {
-        let busy = callee.kind == AccountKind::Silicon && reserved_elsewhere(tx, &callee.uuid, &ringid)?;
+    let created = app.db.tx(|tx| -> ApiResult<(InvitationRow, bool)> {
+        // Checked in the transaction, so a deletion that has begun always sees this call.
+        if crate::deletion::pending(tx, &caller.uuid)? {
+            return Err(ApiError::session_expired());
+        }
+        // A call from someone the callee blocked rings silently until it times out unanswered.
+        let hidden = crate::blocks::is_blocked(tx, &callee.uuid, &caller.uuid)?;
+        // A callee whose Ring account is deleted (or being deleted) is like one not on Ring:
+        // nothing rings, and the call times out unanswered without voicemail.
+        let gone = crate::deletion::gone(tx, &callee.uuid)?;
+        let busy = !hidden && !gone && callee.kind == AccountKind::Silicon && reserved_elsewhere(tx, &callee.uuid, &ringid)?;
         let now = now_ms();
         tx.execute(
             "INSERT INTO calls (ringid, state, created_by, created_at) VALUES (?1, 'ringing', ?2, ?3)",
@@ -634,7 +650,8 @@ pub async fn create(app: &AppState, auth: &Auth, req: CreateCall) -> ApiResult<C
                 start
             ],
         )?;
-        let inv = new_invitation(&ringid, &caller.uuid, &callee.uuid, if busy { InvitationState::Busy } else { InvitationState::Ringing });
+        let mut inv = new_invitation(&ringid, &caller.uuid, &callee.uuid, if busy { InvitationState::Busy } else { InvitationState::Ringing });
+        inv.hidden = hidden;
         insert_invitation(tx, &inv)?;
         let entry = append(tx, &ringid, EntryKind::CallStarted, Some(&caller), None, json!({}), None)?;
         fx.entry(entry, None);
@@ -646,10 +663,12 @@ pub async fn create(app: &AppState, auth: &Auth, req: CreateCall) -> ApiResult<C
             ting_busy(tx, &data, &inv, &mut fx)?;
             settle(app, tx, &ringid, VoicemailReason::Busy, None, &mut fx)?;
         } else {
-            if callee.kind == AccountKind::Silicon {
-                ting_incoming(tx, &data, &inv, &mut fx)?;
+            if !hidden && !gone {
+                if callee.kind == AccountKind::Silicon {
+                    ting_incoming(tx, &data, &inv, &mut fx)?;
+                }
+                fx.incoming.push(inv.invitation_id.clone());
             }
-            fx.incoming.push(inv.invitation_id.clone());
             fx.schedule_expiry.push(inv.clone());
             // A silicon caller's representative connects while the call rings, so it is ready
             // to speak the moment the callee answers (ring-media holds the start text until then).
@@ -657,10 +676,10 @@ pub async fn create(app: &AppState, auth: &Auth, req: CreateCall) -> ApiResult<C
                 start_representatives(app, tx, &ringid, std::slice::from_ref(&caller.uuid), &mut fx)?;
             }
         }
-        Ok(inv)
+        Ok((inv, gone))
     });
-    let invitation = match created {
-        Ok(invitation) => invitation,
+    let (invitation, callee_gone) = match created {
+        Ok(created) => created,
         Err(error) => {
             if silicon {
                 let _ = app.db.with(|c| release(c, &caller.uuid, &ringid));
@@ -670,11 +689,15 @@ pub async fn create(app: &AppState, auth: &Auth, req: CreateCall) -> ApiResult<C
             tokio::spawn(async move {
                 let _ = app.livekit.delete_room(&ringid).await;
             });
-            return Err(error.into());
+            return Err(error);
         }
     };
     tracing::info!(ringid = %ringid, caller_kind = caller.kind.as_str(), callee_kind = callee.kind.as_str(), "call created");
-    if !silicon && invitation.state == InvitationState::Ringing {
+    if !silicon
+        && invitation.state == InvitationState::Ringing
+        && !invitation.hidden
+        && !callee_gone
+    {
         // A carbon caller who reaches voicemail hears the callee's greeting: have it ready.
         match app.db.with(|c| settings::load(c, &callee.uuid)) {
             Ok(stored) => settings::prepare_greetings(app, &stored.settings, &callee),
@@ -718,7 +741,7 @@ fn invitation_for<'a>(
     uuid: &str,
     invitation_id: Option<&str>,
 ) -> ApiResult<&'a InvitationRow> {
-    let mine = data.invitations.iter().filter(|i| i.to_uuid == uuid);
+    let mine = data.visible_invitations().filter(|i| i.to_uuid == uuid);
     let inv = match invitation_id {
         Some(id) => mine.clone().find(|i| i.invitation_id == id),
         None => mine
@@ -831,6 +854,9 @@ pub async fn accept(
     let mut fx = Effects::default();
     let device_id = auth.device_id().to_string();
     app.db.tx(|tx| -> ApiResult<()> {
+        if crate::deletion::pending(tx, &account.uuid)? {
+            return Err(ApiError::session_expired());
+        }
         if silicon && !reserve(tx, &account.uuid, ringid)? {
             return Err(ApiError::already_in_call());
         }
@@ -1159,11 +1185,28 @@ pub async fn invite(
             invitee.id
         )));
     }
+    // This call stopped being theirs when they deleted their Ring account.
+    if data.departed.contains(&invitee.uuid) {
+        return Err(ApiError::conflict(format!(
+            "{} can't be added back to this call.",
+            invitee.id
+        ))
+        .hint("Start a new call."));
+    }
     let mut fx = Effects::default();
-    let inv = app.db.tx(|tx| -> rusqlite::Result<InvitationRow> {
-        let busy =
-            invitee.kind == AccountKind::Silicon && reserved_elsewhere(tx, &invitee.uuid, ringid)?;
-        let inv = new_invitation(
+    let inv = app.db.tx(|tx| -> ApiResult<InvitationRow> {
+        if crate::deletion::pending(tx, &inviter.uuid)? {
+            return Err(ApiError::session_expired());
+        }
+        // An invitation from someone the invitee blocked rings silently until it times out.
+        let hidden = crate::blocks::is_blocked(tx, &invitee.uuid, &inviter.uuid)?;
+        // So does one to an account whose Ring account is deleted (or being deleted).
+        let gone = crate::deletion::gone(tx, &invitee.uuid)?;
+        let busy = !hidden
+            && !gone
+            && invitee.kind == AccountKind::Silicon
+            && reserved_elsewhere(tx, &invitee.uuid, ringid)?;
+        let mut inv = new_invitation(
             ringid,
             &inviter.uuid,
             &invitee.uuid,
@@ -1173,6 +1216,7 @@ pub async fn invite(
                 InvitationState::Ringing
             },
         );
+        inv.hidden = hidden;
         insert_invitation(tx, &inv)?;
         let entry = append(
             tx,
@@ -1198,10 +1242,12 @@ pub async fn invite(
             fx.entry(entry, None);
             ting_busy(tx, &after, &inv, &mut fx)?;
         } else {
-            if invitee.kind == AccountKind::Silicon {
-                ting_incoming(tx, &after, &inv, &mut fx)?;
+            if !hidden && !gone {
+                if invitee.kind == AccountKind::Silicon {
+                    ting_incoming(tx, &after, &inv, &mut fx)?;
+                }
+                fx.incoming.push(inv.invitation_id.clone());
             }
-            fx.incoming.push(inv.invitation_id.clone());
             fx.schedule_expiry.push(inv.clone());
         }
         fx.call_updated = true;
@@ -1332,11 +1378,21 @@ pub async fn expire_invitation(app: &AppState, ringid: &str, invitation_id: &str
             None,
         )?;
         fx.entry(entry, None);
-        fx.stop(&inv, RingingStoppedReason::Missed, None);
-        fx.missed.push(inv.clone());
+        // The invitation never rang an invitee who blocked the inviter, or whose Ring account is
+        // deleted (or being deleted), and nothing tells it that it missed a call.
+        let unreachable = inv.hidden || crate::deletion::gone(tx, &inv.to_uuid)?;
+        if !unreachable {
+            fx.stop(&inv, RingingStoppedReason::Missed, None);
+            fx.missed.push(inv.clone());
+        }
         let payload =
             json!({"ringid": ringid, "invitation_id": inv.invitation_id, "invitee": invitee});
-        for uuid in [&inv.to_uuid, &inv.from_uuid] {
+        let notified = if unreachable {
+            vec![&inv.from_uuid]
+        } else {
+            vec![&inv.to_uuid, &inv.from_uuid]
+        };
+        for uuid in notified {
             if data.is_silicon(uuid) {
                 let recipient = data.account(uuid);
                 fx.ting |= ting::enqueue(
@@ -1513,6 +1569,87 @@ pub async fn representative_status(
     fx.apply(app, ringid).await;
 }
 
+// ---- account deletion ----------------------------------------------------------------------------
+
+/// Takes an account whose Ring account is being deleted off every live call: it leaves the calls
+/// it is on, invitations to or from it stop ringing, and a voicemail being left for it ends.
+pub async fn withdraw(app: &AppState, uuid: &str) -> ApiResult<()> {
+    let ringids: Vec<String> = app.db.with(|c| {
+        let mut stmt = c.prepare(
+            "SELECT ringid FROM calls WHERE state != 'ended' AND (created_by = ?1
+               OR ringid IN (SELECT ringid FROM participants WHERE account_uuid = ?1)
+               OR ringid IN (SELECT ringid FROM invitations WHERE to_uuid = ?1 OR from_uuid = ?1))",
+        )?;
+        let rows = stmt.query_map([uuid], |r| r.get(0))?;
+        rows.collect()
+    })?;
+    for ringid in ringids {
+        let _guard = app.call_locks.lock(&ringid).await;
+        let Some(data) = app.db.with(|c| load(c, &ringid))? else {
+            continue;
+        };
+        if data.call.state == CallState::Ended {
+            continue;
+        }
+        let mut fx = Effects::default();
+        app.db.tx(|tx| withdraw_tx(app, tx, &data, uuid, &mut fx))?;
+        drop(_guard);
+        fx.apply(app, &ringid).await;
+    }
+    Ok(())
+}
+
+fn withdraw_tx(
+    app: &AppState,
+    tx: &Transaction<'_>,
+    data: &CallData,
+    uuid: &str,
+    fx: &mut Effects,
+) -> ApiResult<()> {
+    let ringid = data.call.ringid.as_str();
+    let mut stopped = false;
+    for inv in data
+        .ringing()
+        .filter(|i| i.to_uuid == uuid || i.from_uuid == uuid)
+    {
+        set_invitation_state(
+            tx,
+            &inv.invitation_id,
+            InvitationState::Cancelled,
+            None,
+            None,
+        )?;
+        fx.stop(inv, RingingStoppedReason::Cancelled, None);
+        app.timers.cancel(&format!("expiry:{}", inv.invitation_id));
+        stopped = true;
+    }
+    let data = load(tx, ringid)?.ok_or_else(ApiError::internal)?;
+    if data.participant(uuid).is_some_and(|p| p.joined()) {
+        return leave_tx(app, tx, &data, uuid, fx);
+    }
+    let callee = data.is_direct() && data.invitations.first().is_some_and(|i| i.to_uuid == uuid);
+    match data.call.state {
+        // Nobody would receive the message.
+        CallState::Voicemail if callee => {
+            let reason = data
+                .call
+                .voicemail_reason
+                .as_deref()
+                .and_then(super::enum_from::<VoicemailReason>)
+                .unwrap_or(VoicemailReason::Missed);
+            end_call_tx(app, tx, &data, voicemail_reason_to_end(reason), fx)?;
+        }
+        // Like a decline with voicemail off.
+        CallState::Ringing if stopped && data.ringing().next().is_none() => {
+            end_call_tx(app, tx, &data, EndReason::Declined, fx)?;
+        }
+        CallState::Active if stopped => continuation(app, tx, &data, fx)?,
+        _ => {}
+    }
+    fx.call_updated |= stopped;
+    Ok(())
+}
+
 /// On startup no call can still be live: end each leftover one and delete its room.
 pub async fn end_leftover_calls(app: &AppState) {
     let ringids: Vec<String> = app
@@ -1599,7 +1736,13 @@ pub async fn leave_text_voicemail(
     let voicemail_id = new_id(ring_proto::prefix::VOICEMAIL);
     let voice = app.db.with(|c| settings::load(c, &uuid))?.settings.voice;
     let mut fx = Effects::default();
-    app.db.tx(|tx| -> rusqlite::Result<()> {
+    let left = app.db.tx(|tx| -> rusqlite::Result<bool> {
+        // The callee began deleting its Ring account after the call went to voicemail: it takes
+        // no voicemail, so the call just ends.
+        if crate::deletion::gone(tx, &callee_uuid)? {
+            end_call_tx(app, tx, &data, voicemail_reason_to_end(reason), &mut fx)?;
+            return Ok(false);
+        }
         let now = now_ms();
         tx.execute(
             "INSERT INTO voicemails (voicemail_id, ringid, from_uuid, to_uuid, reason, decline_reason, created_at, audio_status, transcript,
@@ -1618,10 +1761,13 @@ pub async fn leave_text_voicemail(
         let after = load(tx, ringid)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         end_call_tx(app, tx, &after, voicemail_reason_to_end(reason), &mut fx)?;
         fx.ting |= crate::voicemail::deliver_tx(tx, &voicemail_id)?;
-        Ok(())
+        Ok(true)
     })?;
     drop(_guard);
     fx.apply(app, ringid).await;
+    if !left {
+        return Err(ApiError::call_ended());
+    }
     crate::voicemail::announce(app, &voicemail_id, true);
     let vm = app
         .db

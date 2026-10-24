@@ -260,6 +260,19 @@ Both redirects are `302 Found`. On errors the callback instead redirects (`302`)
 - `GET /v1/me` → `{"account":{Account},"device":{Device}}`
 - `DELETE /v1/session` → `204`. Signs out this device and revokes its Accounts sign-in.
 
+### `DELETE /v1/me`: delete your Ring account
+
+Request `{"confirm":"delete"}`; any other body returns `400 invalid_input`. Response `204`. It works for carbons and silicons, and a web cookie session needs `X-Ring-Client: web` like any other mutation (the response also clears the cookie).
+
+In order, the server:
+1. Takes the account off every live call on every device. It leaves the calls it is on; ringing invitations to or from it are cancelled. A direct call still ringing it ends as `declined` with no voicemail, and a voicemail being left for it ends.
+2. Signs out every device: sessions, push tokens and Web Push subscriptions are revoked, each device's Accounts sign-in is revoked as `DELETE /v1/session` does, open WebSockets get `session.revoked`, and a silicon's Ting subscription is revoked.
+3. Deletes the account's own data: settings, greetings, the default context and context approvals, the blocks it made, voicemails left for it (with their audio), and its private transcript entries, delegations and messages.
+4. Removes its calls from its history. A call is deleted entirely (transcript, recording, participants, invitations, delegations and voicemails) once nobody else on it still has it, that is, no one else on it uses Ring. Someone it called or invited after they blocked it never saw that invitation, so it does not keep the call for them. Otherwise the call stays for the others unchanged, the deleted account still shown as it was on it.
+5. Marks the account's Ring profile deleted. Signing in again later with the same Silicon Account starts an empty Ring profile: none of the earlier calls or voicemails are visible to it, and it cannot be invited back into one of them.
+
+The deletion is recorded before step 1 and completes in the same transaction as steps 3 to 5, so it always finishes: if it fails part-way the response is `500 internal` (`retryable: true`) and the server retries it in the background (after 1, 2, 4 … minutes, at most an hour apart, and after a restart). Until it finishes, the account cannot sign in again (`409 conflict`, "Your Ring account is still being deleted.") and cannot start, answer or invite to a call or change its settings (`401 session_expired`). From the moment it is recorded, calls and invitations to the account ring none of its devices and take no voicemail (see `POST /v1/calls`). Stored audio (recordings and voicemail audio) is deleted from S3 after the commit; the keys are recorded in the same transaction and retried until S3 confirms. ring-media is told to drop the account's cached voicemail greetings. Repeating the request with a session this deletion signed out returns `204` again, and finishes the deletion if it is still pending. Ring never deletes the Silicon Account; that is managed at `accounts_url`.
+
 ## Devices
 
 ### `PUT /v1/devices/current`
@@ -301,6 +314,20 @@ Unknown or inactive ids return `404 account_not_found`.
 ```
 `q` filters by id or display name.
 
+### Blocking
+
+| Request | Result |
+|---|---|
+| `GET /v1/blocks` | `{"items":[Account]}`, the accounts you blocked, most recent first |
+| `PUT /v1/blocks/{ref}` | `204`. `ref` is `c:handle`, `si:handle` or a uuid. Blocking yourself returns `400 invalid_input`; an unknown or inactive account returns `404 account_not_found`. Blocking again is a no-op. |
+| `DELETE /v1/blocks/{ref}` | `204`, also when the account was not blocked or does not exist |
+
+They are session-authenticated like the other endpoints (a web cookie session needs `X-Ring-Client: web` for `PUT` and `DELETE`). Silicons can block too.
+
+A blocked account can still call you, but nothing reaches you: none of your devices ring, and there is no push, no Ting, no `call.incoming` or other event, no voicemail and no missed-call notice. The call is not in your `GET /v1/calls` or `GET /v1/people/recent`, and `GET /v1/calls/{ringid}` returns `403 not_participant`. To the caller it looks like a call nobody answers: the invitation rings for the normal `ringing_seconds` (60), then becomes `missed` and a direct call ends with `end_reason: "missed"` (as if you had voicemail off). The same happens when a blocked account invites you into another call; the rest of that call is unaffected. Blocking someone whose call is ringing you right now stops it ringing on your devices (`call.ringing_stopped` with `reason: "cancelled"`, and a cancel push), and that call then goes on as unanswered; there is no need to decline it as well. Blocking never changes calls you make, nor calls someone else invites you to. Deleting your Ring account deletes the blocks you made.
+
+Reporting has no endpoint: the apps open an email to lords@teamofsilicons.com with the reported account's id (and the `ringid`, when reporting from a call).
+
 ## Calls
 
 ### `POST /v1/calls`
@@ -325,6 +352,8 @@ Errors:
 - `404 account_not_found`.
 
 If the callee is a busy silicon, the response still has status `201`, but the invitation has `state:"busy"` and the call has `state:"voicemail"`.
+
+Calling an account whose Ring account is deleted, or still being deleted, works like calling one that is not on Ring, except that it takes no voicemail. The invitation rings none of its devices (no push, Ting or event) for the normal `ringing_seconds`. It then becomes `missed` with no missed-call notice, and a direct call ends with `end_reason: "missed"` (as if voicemail were off). This lasts until the account signs in to Ring again. Inviting such an account into a call works the same way.
 
 ### Listing and reading calls
 
@@ -453,7 +482,7 @@ Allowed only while you are the caller and the call is in `voicemail` state. Retu
 | `GET /v1/voicemails?unread=true&from=&since=&until=&limit=&cursor=` | Voicemails you received. Without `unread=true`, read ones are included. |
 | `GET /v1/voicemails/{id}` | `Voicemail` plus `"audio_url"` (presigned, 10 min) when ready |
 | `PATCH /v1/voicemails/{id}` with `{"read":true}` | `Voicemail` |
-| `DELETE /v1/voicemails/{id}` | `204` |
+| `DELETE /v1/voicemails/{id}` | `204`. The transcript (or a silicon's text) is deleted with it, and the audio is deleted from S3 (retried until it is gone). |
 
 ## Settings and voices
 
@@ -567,6 +596,7 @@ FCM data differs in three ways:
 ```
 - `from` is the caller (the inviter, for an invitation to a call in progress). `kind` is `carbon` or `silicon`.
 - `participants` are the people already on the call.
+- `call.cancelled` goes only to the devices that were sent that invitation's `call.incoming` push (except the device that answered or declined). A device with ringing off, or a browser that was online and rang through its WebSocket, gets none.
 - Older servers send no `kind` in `from`, and no `uuid` or `kind` in `participants`.
 
 How each channel carries them:
@@ -601,6 +631,7 @@ Ring sends notifications from app `ring` to silicons who enabled notifications. 
 ## Webhooks
 
 - **`POST /v1/accounts/webhook`:** Silicon Accounts webhooks. This route is public, and every request is verified with HMAC (`X-Accounts-Timestamp`, `X-Accounts-Signature: v1=<hex>`). A bad signature returns `401`, and a webhook for another app returns `403`. Each event is handled once, by its event id; the response is `204`.
+  - `account.deleted` runs the same deletion as `DELETE /v1/me` (without revoking Accounts sign-ins, which Accounts has already ended) and marks the account `deleted`. The event is marked handled in the same transaction that records the deletion, so the deletion is retried until it completes; if that transaction fails the response is `500` and Accounts delivers the event again.
 
 ## Internal (loopback only, not for clients)
 
@@ -624,6 +655,7 @@ ring-server → ring-media:
 | `voicemail.start` | `ringid, voicemail_id, caller_identity, greeting_text, voice, max_seconds, token, s3_key` |
 | `voicemail.stop` | `voicemail_id` |
 | `greeting.prepare` | `voice, text` |
+| `greeting.forget` | `voice, texts:[string]` |
 | `voicemail.synthesize` | `voicemail_id, text, voice, s3_key` |
 | `call.closed` | `ringid` |
 
@@ -634,6 +666,7 @@ ring-server → ring-media:
 - `greeting.prepare` asks ring-media to synthesise a greeting and cache it, so a caller never waits for synthesis. Nothing is reported back. The server sends each voice and text once per run (and not while ring-media is disconnected):
   - when a carbon's call starts ringing to a callee with voicemail enabled, for the callee's three effective greetings (busy, declined, missed) in the callee's voice;
   - when an account changes its voice, greetings or voicemail setting.
+- `greeting.forget` asks ring-media to delete these greetings from its cache. The server sends it after deleting a Ring account, for that account's three effective greetings, and queues it while ring-media is away. ring-media also deletes any cached greeting nobody used for 30 days (a cache hit counts as use), at startup and every 6 hours.
 
 ring-media → ring-server:
 

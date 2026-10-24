@@ -70,8 +70,29 @@ pub async fn accounts_webhook(
     {
         return ApiError::forbidden("This webhook is for another app.").into_response();
     }
-    if !first_delivery(&app, "accounts", &event.event_id) {
-        return StatusCode::NO_CONTENT.into_response();
+    // The event is marked handled in the same transaction that queues an account deletion, so a
+    // deletion is never lost; when that fails, Accounts gets a 500 and delivers the event again.
+    let deleted = match &event.payload {
+        WebhookPayload::AccountDeleted(e) => Some(e.uuid.clone()),
+        _ => None,
+    };
+    let fresh = app.db.tx(|tx| -> rusqlite::Result<bool> {
+        let fresh = tx.execute(
+            "INSERT OR IGNORE INTO webhook_events (event_id, source, received_at) VALUES (?1, 'accounts', ?2)",
+            params![format!("accounts:{}", event.event_id), now_ms()],
+        )? == 1;
+        if fresh && let Some(uuid) = &deleted {
+            crate::deletion::enqueue(tx, uuid, crate::deletion::Initiator::Accounts)?;
+        }
+        Ok(fresh)
+    });
+    match fresh {
+        Ok(true) => {}
+        Ok(false) => return StatusCode::NO_CONTENT.into_response(),
+        Err(error) => {
+            tracing::error!(%error, "could not record an Accounts webhook");
+            return ApiError::internal().into_response();
+        }
     }
     tracing::info!(event_type = event.event_type.as_str(), "Accounts webhook");
     let occurred = event
@@ -108,13 +129,9 @@ pub async fn accounts_webhook(
                 });
             }
             WebhookPayload::AccountDeleted(e) => {
-                crate::sessions::revoke_account(&app, &e.uuid, "accounts_deleted", None).await;
-                let _ = app.db.with(|c| {
-                    c.execute(
-                        "UPDATE accounts SET on_ring = 0, status = 'deleted' WHERE uuid = ?1",
-                        [&e.uuid],
-                    )
-                });
+                // The same deletion as DELETE /v1/me, queued above; Accounts has already ended the
+                // sign-ins. A failure is retried by the deletion worker.
+                let _ = crate::deletion::attempt(&app, &e.uuid).await;
             }
             _ => {}
         }

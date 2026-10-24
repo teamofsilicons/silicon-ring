@@ -129,6 +129,18 @@ pub fn get(conn: &Connection, uuid: &str) -> rusqlite::Result<Option<Account>> {
     Ok(get_row(conn, uuid)?.map(|r| r.account))
 }
 
+/// When the account last deleted its Ring account. Calls created before then are no longer its
+/// own, even after it signs in to Ring again.
+pub fn ring_deleted_at(conn: &Connection, uuid: &str) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT ring_deleted_at FROM accounts WHERE uuid = ?1",
+        [uuid],
+        |r| r.get(0),
+    )
+    .optional()
+    .map(Option::flatten)
+}
+
 /// Accounts for every uuid in `uuids`; unknown uuids get a placeholder so rendering never fails.
 pub fn load_many<'a>(
     conn: &Connection,
@@ -268,9 +280,13 @@ pub async fn refresh_profile(app: &App, uuid: &str) -> Option<Account> {
                 let member = user.status == "active";
                 let display_name = non_empty(&user.display_name);
                 let pfp_url = user.pfp_url.as_deref().and_then(non_empty);
+                // Accounts still lists someone who deleted their Ring account as a member, so
+                // they are on Ring again only once they sign in again (which recreates settings).
                 c.execute(
                     "UPDATE accounts SET display_name = COALESCE(?2, display_name), pfp_url = COALESCE(?3, pfp_url),
-                       id = COALESCE(?4, id), on_ring = ?5, profile_checked_at = ?6, updated_at = ?6 WHERE uuid = ?1",
+                       id = COALESCE(?4, id),
+                       on_ring = ?5 AND (ring_deleted_at IS NULL OR EXISTS (SELECT 1 FROM settings s WHERE s.account_uuid = ?1)),
+                       profile_checked_at = ?6, updated_at = ?6 WHERE uuid = ?1",
                     params![uuid, display_name, pfp_url, user.id.as_deref().map(str::to_ascii_lowercase), member as i64, now],
                 )?;
             }

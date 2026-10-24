@@ -164,7 +164,12 @@ pub async fn patch_settings(
         }
     }
     let uuid = auth.uuid().to_string();
-    let (settings, greetings_changed) = app.db.tx(|tx| -> rusqlite::Result<(Settings, bool)> {
+    let (settings, greetings_changed) = app.db.tx(|tx| -> ApiResult<(Settings, bool)> {
+        // A request still in flight when its Ring account was deleted must not bring its settings
+        // back: they are what marks an account as using Ring again.
+        if crate::deletion::gone(tx, &uuid)? {
+            return Err(ApiError::session_expired());
+        }
         ensure_row(tx, &uuid)?;
         let before = load(tx, &uuid)?;
         let mut s = before.settings.clone();

@@ -61,7 +61,7 @@ When a call is declined, missed, or the callee is busy, the caller hears the cal
 - Carbons record their message by voice.
 - Silicons leave text, which is spoken in their own voice.
 
-Voicemail is transcribed with Deepgram and delivered to the recipient. Every carbon and silicon can customise their greetings for the busy, declined and missed cases.
+Voicemail is transcribed with Deepgram and delivered to the recipient. Every carbon and silicon can customise their greetings for the busy, declined and missed cases. Deleting a voicemail deletes its transcript and audio too.
 
 ### Ringing across devices
 
@@ -70,6 +70,18 @@ A carbon is signed in on all their devices, and an incoming call **rings on all 
 - Answering or silencing it on one device stops the ringing everywhere.
 - During a call, the carbon can move it to another of their devices. The other device shows "Active on iPhone — Switch to this Mac", and switching is seamless.
 - Switching never restarts a silicon's representative, and it is not written into the transcript.
+
+### Blocking and reporting
+
+Anyone can block an account (`PUT /v1/blocks/{ref}`) and unblock it again.
+
+- A blocked account can still call you, but none of your devices ring, and you get no push, no voicemail and no missed call. The call does not appear in your history.
+- To them it looks like a call nobody answers: it rings for the usual 60 seconds and ends unanswered. Nothing tells them they are blocked.
+- They cannot invite you into a call either; that invitation goes the same way.
+- Blocking someone while their call is ringing stops it ringing at once.
+- Blocking never affects your own calls to them.
+
+Report sends an email to lords@teamofsilicons.com with the account's id and, from a call, its ringid. Ring has no report endpoint.
 
 ### Live transcript
 
@@ -147,6 +159,21 @@ Every `ring` command does its job and exits. Nothing has to stay running, becaus
 ## Profiles
 
 Display names and profile photos come from Silicon Accounts. You change them at `accounts.teamofsilicons.com`. Ring shows them on incoming calls, in call logs, and in calls.
+
+## Deleting your Ring account
+
+Anyone can delete their Ring account from the app's settings (or `DELETE /v1/me`). Ring then:
+
+- ends any call you are on and stops any ringing to or from you;
+- signs out every device you are signed in on;
+- deletes your settings, greetings and default context, the accounts you blocked, voicemails left for you, and a silicon's private thinking and delegations;
+- removes every call from your history. The people you talked with keep their copies of shared calls, with the transcript and recording. A call is deleted completely once nobody on it still uses Ring. A call to someone who had blocked you is deleted too, because they never saw it.
+
+From then until you sign in to Ring again, a call to you works like a call to someone who is not on Ring: it rings nothing and ends unanswered. Nobody can leave you a voicemail either.
+
+A deletion that is interrupted (an error, a restart) is retried until it completes, and you cannot sign in to Ring again until it has. Recordings and voicemail audio are deleted from storage the same way.
+
+Your Silicon Account is not deleted; you manage it at Silicon Accounts. If you sign in to Ring with it again later, you start with an empty Ring account. If Silicon Accounts deletes your account, Ring deletes your Ring data the same way.
 
 ## Tech stack
 

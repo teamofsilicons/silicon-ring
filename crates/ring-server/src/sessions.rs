@@ -141,7 +141,7 @@ pub fn render_device(
 
 /// Creates a session for a fresh Accounts sign-in and returns it with the stored account.
 fn create_session(
-    app: &App,
+    app: &AppState,
     tokens: &TokenResponse,
     account: &AccountForApp,
     platform: Option<Platform>,
@@ -160,6 +160,13 @@ fn create_session(
         .ok_or_else(|| ApiError::dependency("Silicon Accounts"))?;
     let sealed = accounts::seal_refresh(app, &device_id, refresh.expose());
     let stored = app.db.tx(|tx| -> ApiResult<Account> {
+        // Checked in the transaction, so a deletion that has begun always signs this session out.
+        if crate::deletion::pending(tx, &account.uuid)? {
+            accounts::spawn_revoke(app.clone(), refresh.expose().to_string());
+            return Err(ApiError::conflict("Your Ring account is still being deleted.")
+                .hint("Try again in a minute.")
+                .retryable());
+        }
         let stored = accounts::upsert_from_login(tx, account)?;
         tx.execute(
             "INSERT INTO sessions (device_id, token_hash, account_uuid, name, platform, ring_enabled, created_at, last_seen_at,
@@ -410,7 +417,7 @@ fn safe_next(next: Option<&str>) -> String {
     }
 }
 
-fn cookie_attrs(app: &App, path: &str, max_age: i64) -> String {
+pub fn cookie_attrs(app: &App, path: &str, max_age: i64) -> String {
     let secure = if app.config.web_secure {
         "; Secure"
     } else {

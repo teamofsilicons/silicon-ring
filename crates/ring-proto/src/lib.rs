@@ -311,6 +311,22 @@ pub struct Me {
     pub device: Device,
 }
 
+/// `DELETE /v1/me`: deletes the caller's Ring account. `confirm` must be `"delete"`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeleteAccount {
+    pub confirm: String,
+}
+
+impl DeleteAccount {
+    pub const CONFIRM: &'static str = "delete";
+
+    pub fn confirmed() -> DeleteAccount {
+        DeleteAccount {
+            confirm: Self::CONFIRM.into(),
+        }
+    }
+}
+
 /// `POST /v1/auth/silicon`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SiliconLogin {

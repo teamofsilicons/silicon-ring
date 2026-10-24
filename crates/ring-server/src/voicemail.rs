@@ -123,9 +123,11 @@ pub fn announce(app: &AppState, id: &str, received: bool) {
         if vm.to.kind == ring_proto::AccountKind::Carbon {
             crate::push::voicemail(app, &vm);
         }
-        let from = vm.from.uuid.clone();
-        app.hub
-            .send_account(&from, &Event::VoicemailUpdated { voicemail: vm });
+        if sender_keeps(app, &vm) {
+            let from = vm.from.uuid.clone();
+            app.hub
+                .send_account(&from, &Event::VoicemailUpdated { voicemail: vm });
+        }
     } else {
         app.hub.send_account(
             &vm.to.uuid,
@@ -133,10 +135,21 @@ pub fn announce(app: &AppState, id: &str, received: bool) {
                 voicemail: vm.clone(),
             },
         );
-        let from = vm.from.uuid.clone();
-        app.hub
-            .send_account(&from, &Event::VoicemailUpdated { voicemail: vm });
+        if sender_keeps(app, &vm) {
+            let from = vm.from.uuid.clone();
+            app.hub
+                .send_account(&from, &Event::VoicemailUpdated { voicemail: vm });
+        }
     }
+}
+
+/// False once the sender has deleted the Ring account it left this voicemail from.
+fn sender_keeps(app: &AppState, vm: &Voicemail) -> bool {
+    app.db
+        .with(|c| accounts::ring_deleted_at(c, &vm.from.uuid))
+        .ok()
+        .flatten()
+        .is_none_or(|at| vm.created_at.millis() >= at)
 }
 
 /// ring-media finished recording/transcribing or synthesising a voicemail.
@@ -153,9 +166,14 @@ pub async fn finished(
         .filter(|t| !t.is_empty());
     // (announce as received?, None when nothing is announced; Ting queued; ringid; new entry)
     type Done = (Option<bool>, bool, String, Option<TranscriptEntry>);
+    let mut gone = false;
     let result = app.db.tx(|tx| -> rusqlite::Result<Option<Done>> {
-        let Some(r) = load_row(tx, id)? else { return Ok(None) };
+        let Some(r) = load_row(tx, id)? else {
+            gone = true;
+            return Ok(None);
+        };
         if r.deleted || r.vm.audio_status == AudioStatus::Ready {
+            gone = r.deleted;
             return Ok(None);
         }
         let empty = r.recorded && transcript.is_none() && duration_ms.is_none_or(|d| d < MIN_MESSAGE_MS);
@@ -192,6 +210,10 @@ pub async fn finished(
             error = error.as_str(),
             "ring-media reported a voicemail problem"
         );
+    }
+    // The voicemail was deleted (or its Ring account was) while the audio was uploading.
+    if gone && let Some(key) = s3_key.clone() {
+        crate::deletion::delete_stored(app, vec![key]);
     }
     match result {
         Ok(Some((received, queued, ringid, entry))) => {
@@ -336,9 +358,12 @@ pub async fn list(
     }))
 }
 
-fn visible(auth: &Auth, r: &Row) -> bool {
+/// The recipient sees a delivered voicemail; the sender sees what it left, unless that was from a
+/// Ring account it has since deleted (`mine_since`).
+fn visible(auth: &Auth, r: &Row, mine_since: i64) -> bool {
     !r.deleted
-        && (r.vm.to.uuid == auth.account.uuid && r.delivered || r.vm.from.uuid == auth.account.uuid)
+        && (r.vm.to.uuid == auth.account.uuid && r.delivered
+            || r.vm.from.uuid == auth.account.uuid && r.vm.created_at.millis() >= mine_since)
 }
 
 pub async fn get(
@@ -346,10 +371,14 @@ pub async fn get(
     auth: Auth,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Voicemail>> {
-    let r = app
-        .db
-        .with(|c| load_row(c, &id))?
-        .filter(|r| visible(&auth, r))
+    let (row, mine_since) = app.db.with(|c| {
+        Ok((
+            load_row(c, &id)?,
+            accounts::ring_deleted_at(c, auth.uuid())?.unwrap_or(0),
+        ))
+    })?;
+    let r = row
+        .filter(|r| visible(&auth, r, mine_since))
         .ok_or_else(|| ApiError::not_found("Voicemail"))?;
     let mut vm = r.vm;
     if vm.audio_status == AudioStatus::Ready
@@ -400,18 +429,20 @@ pub async fn delete(
         .with(|c| load_row(c, &id))?
         .filter(|r| !r.deleted && r.delivered && r.vm.to.uuid == auth.account.uuid)
         .ok_or_else(|| ApiError::not_found("Voicemail"))?;
-    app.db.with(|c| {
-        c.execute(
-            "UPDATE voicemails SET deleted_at = ?2 WHERE voicemail_id = ?1",
+    // The row stays as a marker (the call still points at it); its words and audio go. The audio
+    // is deleted from S3 durably, retried until it is gone.
+    app.db.tx(|tx| -> rusqlite::Result<()> {
+        tx.execute(
+            "UPDATE voicemails SET deleted_at = ?2, transcript = NULL, text = NULL, audio_key = NULL WHERE voicemail_id = ?1",
             params![id, now_ms()],
-        )
+        )?;
+        // A silicon's notification carried the transcript.
+        tx.execute(
+            "DELETE FROM ting_outbox WHERE key = ?1",
+            [format!("voicemail:{id}")],
+        )?;
+        crate::deletion::queue_files(tx, r.audio_key.iter())
     })?;
-    if let (Some(key), Some(s3)) = (r.audio_key, app.s3.clone()) {
-        tokio::spawn(async move {
-            if let Err(error) = s3.delete(&key).await {
-                tracing::warn!(%error, "could not delete voicemail audio");
-            }
-        });
-    }
+    crate::deletion::flush_files(&app);
     Ok(StatusCode::NO_CONTENT)
 }
