@@ -45,8 +45,9 @@ struct RecordingNoticeRequest: Identifiable, Equatable, Sendable {
         /// Moving this call here from another device.
         case switchHere(Call)
         /// A call this device already carries, connected before it agreed (answered from the system
-        /// call screen, or with a newer notice). Nothing waits: the call and its audio go on, and
-        /// the notice shows on its call screen above the controls.
+        /// call screen, or with a newer notice). It goes on with this device's microphone off
+        /// (`CallSession.waitsForNotice`), and the notice shows on its call screen above the
+        /// controls: agreeing turns the microphone on, "Not now" ends the call.
         case answered
 
         var ring: IncomingRing? {
@@ -68,7 +69,7 @@ struct RecordingNoticeRequest: Identifiable, Equatable, Sendable {
 enum RecordingNoticePlacement: Equatable, Sendable {
     /// Over the whole window; nothing underneath responds until it is answered.
     case window
-    /// On the screen of the live call it is about, over the people and transcript, leaving the
-    /// call controls (mute, end) usable.
+    /// On the screen of the live call it is about, over the people and transcript, leaving end
+    /// and the audio route usable (mute stays on until the notice is answered).
     case callScreen
 }

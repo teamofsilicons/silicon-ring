@@ -437,7 +437,8 @@ struct InCallView: View {
                     .padding(.horizontal, 20)
             }
             // A call that connected before this device agreed to the recording notice: the notice
-            // covers the people and the transcript, and mute and end stay in reach below it.
+            // covers the people and the transcript, and end stays in reach below it. The
+            // microphone stays off until it is answered.
             .overlay {
                 if let request = recordingNotice {
                     RecordingNoticeView(request: request, placement: .callScreen)
@@ -550,6 +551,7 @@ struct InCallView: View {
         HStack(spacing: Metrics.isTouch ? 26 : 32) {
             RoundCallButton(symbol: session.muted ? "mic.slash.fill" : "mic.slash", label: session.muted ? "Unmute" : "Mute",
                             kind: session.muted ? .toggled : .normal, size: 60, onMoment: false) { model.toggleMute() }
+                .disabled(session.waitsForNotice)
             AudioRouteButton(onMoment: false, size: 60)
             RoundCallButton(symbol: "person.badge.plus", label: "Add", size: 60, onMoment: false) { inviting = true }
             RoundCallButton(symbol: "phone.down.fill", label: session.isLive ? "End" : "Close", kind: .danger, size: 60, onMoment: false) {

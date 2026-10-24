@@ -40,7 +40,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Ring calls are voice only and never use the camera.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Ring uses the microphone so the people and silicons you call can hear you.</string>
+	<string>Ring uses the microphone so the people and silicons you call can hear you. Calls are recorded and transcribed.</string>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>INStartCallIntent</string>

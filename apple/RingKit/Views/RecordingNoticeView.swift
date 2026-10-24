@@ -2,8 +2,9 @@ import SwiftUI
 
 /// After sign-in, and before a call until this device agrees: Ring records and transcribes calls,
 /// and which providers process the audio. "Agree and continue" carries on with the call; "Not now"
-/// drops it. Over a call already on (`.callScreen`), it covers the people and the transcript and
-/// leaves the call controls below it usable.
+/// drops it. Over a call that connected before this device agreed (`.callScreen`), with its
+/// microphone off, it covers the people and the transcript and leaves end and the audio route
+/// below it usable; "Agree and continue" turns the microphone on and "Not now" ends the call.
 struct RecordingNoticeView: View {
     var request: RecordingNoticeRequest
     var placement: RecordingNoticePlacement = .window
@@ -78,7 +79,7 @@ struct RecordingNoticeView: View {
     private var context: String? {
         guard request.action.isAnswered else { return nil }
         return placement == .callScreen
-            ? "This call is recorded and transcribed, like every Ring call."
+            ? "This call is recorded and transcribed, like every Ring call. Your microphone stays off until you agree; Not now ends the call."
             : "Your last call was recorded and transcribed, like every Ring call."
     }
 
@@ -115,7 +116,7 @@ struct RecordingNoticeView: View {
         case .place: "Doesn't place the call"
         case .answer: "Doesn't answer the call"
         case .switchHere: "Leaves the call on your other device"
-        case .answered: placement == .callScreen ? "Closes the notice. The call goes on." : "Closes the notice"
+        case .answered: placement == .callScreen ? "Ends the call" : "Closes the notice"
         }
     }
 

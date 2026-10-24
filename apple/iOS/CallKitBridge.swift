@@ -323,6 +323,9 @@ extension CallKitBridge: @preconcurrency CXProviderDelegate {
             update.supportsUngrouping = false
             update.supportsDTMF = false
             provider.reportCall(with: uuid, updated: update)
+            // A call that starts muted (moved here before this device agreed to the recording
+            // notice) shows muted on the system call screen too.
+            if session.muted { _ = requestMute(session, muted: true) }
         }
         if pendingConnected.remove(uuid) != nil {
             provider.reportOutgoingCall(with: uuid, connectedAt: Date())

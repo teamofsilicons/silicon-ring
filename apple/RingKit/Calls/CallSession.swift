@@ -67,8 +67,12 @@ final class CallSession: Identifiable {
     var invitationID: String?
     var phase: Phase
     var muted = false
-    /// Muted by the app because the microphone has no access yet, not by the person.
+    /// Muted by the app because the microphone has no access yet, or waits for the recording
+    /// notice, not by the person.
     @ObservationIgnored var mutedForMicrophone = false
+    /// Connected before this device agreed to the recording notice (answered from the system call
+    /// screen): the microphone stays off, not even started, until it agrees.
+    var waitsForNotice = false
     var mediaState: CallMedia.State = .idle
     var speakingIdentities: Set<String> = []
     /// Final lines in transcript order.

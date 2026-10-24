@@ -149,8 +149,9 @@ extension AppModel {
                 call: accepted.call, invitationID: ring.invitationID)
             activeCall = session
             remember(accepted.call)
-            // Answered from the system call screen before this device agreed: the call goes ahead.
-            showRecordingNoticeOverCall()
+            // Answered from the system call screen before this device agreed: the call connects
+            // with the microphone off.
+            waitForRecordingNotice(session)
             Task { await join(session, grant: grant) }
             return true
         } catch {
@@ -241,6 +242,10 @@ extension AppModel {
 
     func toggleMute() {
         guard let session = activeCall, session.isLive else { return }
+        if session.waitsForNotice {
+            askBeforeUnmuting(session)
+            return
+        }
         let muted = !session.muted
         if callSystem?.requestMute(session, muted: muted) == true { return }
         Task { await applyMute(muted) }
@@ -319,7 +324,7 @@ extension AppModel {
                 remember(moved.call)
                 movedNotice = nil
                 // Rejoining a call this device carried before a restart, from before it agreed.
-                showRecordingNoticeOverCall()
+                waitForRecordingNotice(session)
                 callSystem?.began(session)
                 callSystem?.connected(session)
                 await join(session, grant: grant)
@@ -344,7 +349,7 @@ extension AppModel {
         explainMicrophoneDenied()
         DevLog.log("join \(session.ringid) audioActive=\(audioActive) mic=\(AVAudioApplication.shared.recordPermission.rawValue)")
         do {
-            try await media.connect(grant, muted: session.muted)
+            try await media.connect(grant, muted: session.muted, held: session.waitsForNotice)
             DevLog.log("joined \(session.ringid)")
             guard activeCall === session, session.isLive else {
                 await media.disconnect()
@@ -598,9 +603,33 @@ extension AppModel {
         return true
     }
 
-    /// A call connected on this device before it agreed (answered from the system call screen, or
-    /// agreed to an older notice). The call and its audio go on; the notice shows over the call,
-    /// in place of whatever call action was waiting for it, since this call now comes first.
+    /// A call connects on this device before it agreed (answered from the system call screen, or
+    /// agreed to an older notice): it joins with the microphone held (CallMedia starts and publishes
+    /// none), so none of this person's audio reaches the room, the recording, the transcription or
+    /// a representative, and the notice shows over it. The call shows muted meanwhile, as for a
+    /// microphone without access, and an unmute snaps back (`microphoneUnavailable`). "Agree and
+    /// continue" releases the microphone; "Not now" ends the call. Runs before the call joins and
+    /// before the system call UI starts carrying it.
+    func waitForRecordingNotice(_ session: CallSession) {
+        guard needsRecordingNotice else { return }
+        session.waitsForNotice = true
+        session.muted = true
+        session.mutedForMicrophone = true
+        // The system call screen shows it muted too (CallKit; for a call it doesn't carry yet,
+        // its start action does this).
+        _ = callSystem?.requestMute(session, muted: true)
+        showRecordingNoticeOverCall()
+    }
+
+    /// Unmute while the call waits for the recording notice: the notice comes forward instead.
+    func askBeforeUnmuting(_ session: CallSession) {
+        session.minimized = false
+        showRecordingNoticeOverCall()
+        callSystem?.showRecordingNotice(for: nil)
+    }
+
+    /// The notice over the live call that waits for it, in place of whatever call action was
+    /// waiting for it, since this call now comes first.
     func showRecordingNoticeOverCall() {
         guard needsRecordingNotice, recordingNotice?.action.isAnswered != true else { return }
         recordingNotice = RecordingNoticeRequest(action: .answered)
@@ -610,6 +639,13 @@ extension AppModel {
     func agreeToRecordingNotice() {
         guard let request = recordingNotice else { return }
         RecordingNotice.accept()
+        // The call that waited with the microphone held goes on with it: closing the notice
+        // publishes it (restoreCallMicrophone, after the system prompt if access is undecided),
+        // and once it is published the app's mute is lifted (microphoneUnavailable).
+        if let session = activeCall, session.waitsForNotice {
+            session.waitsForNotice = false
+            media.releaseMicrophone()
+        }
         closeRecordingNotice()
         switch request.action {
         case .place(let ref):
@@ -624,12 +660,16 @@ extension AppModel {
         }
     }
 
-    /// "Not now": drops the call action that waited; a call already on goes on. The notice comes
-    /// back before the next call, and the one after sign-in only after the next sign-in.
+    /// "Not now": drops the call action that waited, and over a call that waits with the
+    /// microphone off, ends that call. The notice comes back before the next call, and the one
+    /// after sign-in only after the next sign-in.
     func dismissRecordingNotice() {
-        guard recordingNotice != nil else { return }
+        guard let request = recordingNotice else { return }
         RecordingNotice.markOffered()
         closeRecordingNotice()
+        if request.action.isAnswered, let session = activeCall, session.isLive, session.waitsForNotice {
+            hangUp()
+        }
     }
 
     /// A notice waiting to answer a ring, or to move a call here, goes away with that ring or call:
