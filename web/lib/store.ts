@@ -70,6 +70,8 @@ export interface RingState {
   clockOffset: number;
   /** Server time, refreshed when a ring expires. */
   now: number;
+  /** What the sign-in screen says about why this browser is signed out, such as after deleting the account. */
+  signedOutNotice: Notice | null;
 }
 
 export interface IncomingRing {
@@ -117,6 +119,7 @@ function initialState(): RingState {
     pushActive: false,
     clockOffset: 0,
     now: Date.now(),
+    signedOutNotice: null,
   };
 }
 
@@ -180,6 +183,12 @@ export class RingStore {
   private lastSessionCheck = 0;
   private notice: (notice: Notice) => void = () => undefined;
   private started = false;
+  /**
+   * While `DELETE /v1/me` runs. The server signs out every device of the account, this browser included, often before
+   * it answers, so a sign-out seen meanwhile is part of the deletion rather than a reason to stop.
+   */
+  private deleting = false;
+  private revokedWhileDeleting = false;
 
   getState = () => this.state;
 
@@ -255,14 +264,18 @@ export class RingStore {
     }
   }
 
-  private signedOut() {
+  private signedOut(notice: Notice | null = null) {
+    if (this.deleting) {
+      this.revokedWhileDeleting = true;
+      return;
+    }
     this.realtime?.stop();
     this.realtime = null;
     this.media?.disconnect();
     this.releaseMediaLock?.();
     this.releaseMediaLock = null;
     sounds.setLoops([]);
-    this.set({ ...initialState(), status: 'signed-out', meta: this.state.meta });
+    this.set({ ...initialState(), status: 'signed-out', meta: this.state.meta, signedOutNotice: notice });
   }
 
   // ------------------------------------------------------------------------------------------------ derived effects
@@ -372,6 +385,13 @@ export class RingStore {
         break;
       }
       case 'session.revoked':
+        if (this.deleting) {
+          // The deletion signed this browser out; deleteAccount finishes once the request returns.
+          this.revokedWhileDeleting = true;
+          this.realtime?.stop();
+          this.realtime = null;
+          break;
+        }
         this.notice({ type: 'warning', title: 'This browser was signed out' });
         this.signedOut();
         break;
@@ -849,5 +869,62 @@ export class RingStore {
       // Signing out locally still matters if the server is unreachable.
     }
     this.signedOut();
+  }
+
+  /**
+   * Deletes the Ring account on every device (`DELETE /v1/me`), then shows the sign-in screen with a notice. Throws when
+   * the account was not deleted.
+   */
+  async deleteAccount() {
+    this.deleting = true;
+    this.revokedWhileDeleting = false;
+    let failure: unknown = null;
+    try {
+      await api.deleteAccount();
+    } catch (error) {
+      failure = error;
+    }
+    const lost = failure instanceof ApiError && failure.code === 'network';
+    if (failure && (this.revokedWhileDeleting || lost)) {
+      // The answer was lost, or the server signed this browser out as part of the deletion and then stopped partway.
+      // Asking again with the same session says which: the server answers 204 for a session its deletion signed out,
+      // and finishes an interrupted deletion.
+      try {
+        await api.deleteAccount();
+        failure = null;
+      } catch (error) {
+        failure = error;
+      }
+    }
+    const revoked = this.revokedWhileDeleting;
+    this.deleting = false;
+    this.revokedWhileDeleting = false;
+
+    if (failure) {
+      if (revoked) {
+        // Signed out everywhere, but the data may still be there. Signing in again shows which.
+        this.signedOut({
+          type: 'warning',
+          title: 'Ring couldn’t confirm the deletion',
+          description: 'Your devices were signed out, but the deletion may not have finished. Sign in again: if your calls are still in Recents, delete your Ring account again.',
+        });
+        return;
+      }
+      // A session that had already ended can't delete anything; sign in again first.
+      if (isUnauthenticated(failure)) this.signedOut();
+      throw failure;
+    }
+    try {
+      await unsubscribePush();
+    } catch {
+      // The server dropped every push subscription of the account with it.
+    }
+    // Signing in again starts a new, empty profile, so it opens on Recents rather than here.
+    window.history.replaceState(window.history.state, '', '/');
+    this.signedOut({
+      type: 'success',
+      title: 'Your Ring account is deleted',
+      description: 'Your Silicon Account is still there; manage or delete it at Silicon Accounts. Signing in again starts a new, empty Ring profile.',
+    });
   }
 }

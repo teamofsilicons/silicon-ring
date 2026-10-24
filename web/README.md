@@ -50,7 +50,8 @@ The HTML pages carry a `<meta>` CSP that pins Next's inline scripts. The server'
 
 | Path | What |
 |---|---|
-| `app/` | routes (`/`, `/voicemail`, `/settings`, `/call`, `/history`, `/docs`), the root layout, `tokens.css` (the product theme) and the fonts |
+| `app/` | routes (`/`, `/voicemail`, `/settings`, `/call`, `/history`, and the public `/docs`, `/privacy`, `/support`), the root layout, `tokens.css` (the product theme) and the fonts |
+| `content/` | the privacy policy and support text, rendered at `/privacy` and `/support` at build time |
 | `lib/api.ts` | REST client: same-origin `/v1`, cookies, `X-Ring-Client: web` on every mutation, typed `ApiError` |
 | `lib/realtime.ts` | the `/v1/ws` socket with jittered reconnect, 25 s pings and a dead-socket check |
 | `lib/store.ts` | session, live calls, transcripts and the one call this tab carries audio for; reconciles with `GET /v1/calls?state=ringing,active,voicemail` on every (re)connect |

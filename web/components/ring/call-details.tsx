@@ -3,19 +3,20 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Phone, PhoneIncoming, PhoneMissed, PhoneOff, UserPlus, Voicemail as VoicemailIcon } from 'lucide-react';
+import { ArrowLeft, Ban, Flag, Phone, PhoneIncoming, PhoneMissed, PhoneOff, UserCheck, UserPlus, Voicemail as VoicemailIcon } from 'lucide-react';
 import { Alert } from '@teamofsilicons/silicon-ui/alert';
 import { Button } from '@teamofsilicons/silicon-ui/button';
 import { ButtonLink } from '@teamofsilicons/silicon-ui/button-link';
+import { DropdownMenu } from '@teamofsilicons/silicon-ui/dropdown-menu';
 import { EmptyState } from '@teamofsilicons/silicon-ui/empty-state';
 import { Skeleton } from '@teamofsilicons/silicon-ui/skeleton';
 import { Timeline, type TimelineEvent } from '@teamofsilicons/silicon-ui/timeline';
 import { useToastStack } from '@teamofsilicons/silicon-ui/toast-stack';
-import { api, errorMessage, fullTranscript, newIdempotencyKey } from '@/lib/api';
+import { api, errorMessage, fullTranscript, newIdempotencyKey, reportLink } from '@/lib/api';
 import { callDuration, clock, duration, fullDate, label, otherPeople, outcome, outcomeLabel, spokenDuration } from '@/lib/format';
-import type { Call, Recording, TranscriptEntry } from '@/lib/types';
+import type { Account, Call, Recording, TranscriptEntry } from '@/lib/types';
 import { AudioPlayer } from './audio-player';
-import { useMe } from './hooks';
+import { useBlocks, useMe } from './hooks';
 import { NameBlock, PersonAvatar, Pixel, SiliconBadge } from './identity';
 import { useRing, useRingStore } from './ring-context';
 import { RingRings } from './ring-mark';
@@ -94,6 +95,7 @@ function CallDetails({ ringid }: { ringid: string }) {
   const store = useRingStore();
   const router = useRouter();
   const { toast } = useToastStack();
+  const blocks = useBlocks();
   const revision = useRing(state => state.revision.calls);
   const [call, setCall] = useState<Call | null>(null);
   const [entries, setEntries] = useState<TranscriptEntry[] | null>(null);
@@ -205,6 +207,7 @@ function CallDetails({ ringid }: { ringid: string }) {
                 </span>
                 <span />
               </span>
+              {participant.account.uuid === meUuid ? null : <PersonActions account={participant.account} ringid={call.ringid} blocks={blocks} />}
             </li>
           ))}
           {call.invitations.filter(invitation => invitation.state !== 'accepted').map(invitation => (
@@ -222,6 +225,7 @@ function CallDetails({ ringid }: { ringid: string }) {
                 </span>
                 <span />
               </span>
+              {invitation.to.uuid === meUuid ? null : <PersonActions account={invitation.to} ringid={call.ringid} blocks={blocks} />}
             </li>
           ))}
         </ul>
@@ -269,6 +273,51 @@ function CallDetails({ ringid }: { ringid: string }) {
         )}
       </section>
     </article>
+  );
+}
+
+/**
+ * Block (or Unblock) and Report for someone on the call. A blocked account's calls and invitations end unanswered
+ * without ringing any of your devices, and it isn't told. Reporting opens an email to Team of Silicons.
+ */
+function PersonActions({ account, ringid, blocks }: { account: Account; ringid: string; blocks: ReturnType<typeof useBlocks> }) {
+  const { toast } = useToastStack();
+  const name = label(account);
+  const blocked = blocks.isBlocked(account);
+
+  async function block() {
+    try {
+      await blocks.block(account);
+      toast({
+        type: 'success',
+        title: `Blocked ${name}`,
+        description: 'Their calls and invitations won’t ring for you. They aren’t told.',
+        action: { label: 'Undo', onClick: () => void unblock() },
+      });
+    } catch (failure) {
+      toast({ type: 'error', title: `Couldn’t block ${name}`, description: errorMessage(failure) });
+    }
+  }
+
+  async function unblock() {
+    try {
+      await blocks.unblock(account);
+      toast({ type: 'success', title: `Unblocked ${name}` });
+    } catch (failure) {
+      toast({ type: 'error', title: `Couldn’t unblock ${name}`, description: errorMessage(failure) });
+    }
+  }
+
+  return (
+    <DropdownMenu
+      label="More"
+      items={[
+        blocked
+          ? { label: `Unblock ${name}`, icon: <UserCheck size={16} strokeWidth={1.75} />, onSelect: () => void unblock() }
+          : { label: `Block ${name}`, icon: <Ban size={16} strokeWidth={1.75} />, destructive: true, onSelect: () => void block() },
+        { label: `Report ${name}`, icon: <Flag size={16} strokeWidth={1.75} />, onSelect: () => window.location.assign(reportLink(account, ringid)) },
+      ]}
+    />
   );
 }
 

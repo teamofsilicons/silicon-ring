@@ -1,5 +1,5 @@
 import type {
-  AccountLookup, Call, CallWithMedia, CreatedCall, Device, DeviceUpdate, Invitation, Me, Meta, Page, RecentPerson, Recording,
+  Account, AccountLookup, Call, CallWithMedia, CreatedCall, Device, DeviceUpdate, Invitation, Me, Meta, Page, RecentPerson, Recording,
   Settings, SettingsPatch, TranscriptPage, Voicemail,
 } from './types';
 
@@ -100,6 +100,7 @@ export const api = {
   meta: () => request<Meta>('GET', '/v1/meta'),
   me: () => request<Me>('GET', '/v1/me'),
   signOut: () => request<void>('DELETE', '/v1/session'),
+  deleteAccount: () => request<void>('DELETE', '/v1/me', { body: { confirm: 'delete' } }),
 
   updateCurrentDevice: (update: DeviceUpdate) => request<Device>('PUT', '/v1/devices/current', { body: update }),
   devices: () => request<{ items: Device[] }>('GET', '/v1/devices'),
@@ -108,6 +109,12 @@ export const api = {
 
   lookup: (ref: string, signal?: AbortSignal) => request<AccountLookup>('GET', `/v1/accounts/${enc(ref)}`, { signal }),
   recentPeople: (q = '', limit = 20, signal?: AbortSignal) => request<{ items: RecentPerson[] }>('GET', `/v1/people/recent${query({ q, limit })}`, { signal }),
+
+  /** The accounts you blocked. Their calls and invitations to you end unanswered without ringing any of your devices. */
+  blocks: () => request<{ items: Account[] }>('GET', '/v1/blocks'),
+  /** `ref` is a c:/si: id or a uuid. Both are idempotent. */
+  block: (ref: string) => request<void>('PUT', `/v1/blocks/${enc(ref)}`),
+  unblock: (ref: string) => request<void>('DELETE', `/v1/blocks/${enc(ref)}`),
 
   calls: (params: { state?: string; direction?: string; with?: string; limit?: number; cursor?: string | null } = {}) =>
     request<Page<Call>>('GET', `/v1/calls${query(params)}`),
@@ -145,6 +152,17 @@ export async function fullTranscript(ringid: string, afterSeq = 0) {
     cursor = result.next_after_seq;
   }
   return entries;
+}
+
+/** Where reports go: an email, so the person can say what happened in their own words. */
+export const REPORT_EMAIL = 'lords@teamofsilicons.com';
+
+/** A mailto: link reporting `account`, naming the call it happened on when there is one. */
+export function reportLink(account: Pick<Account, 'id' | 'uuid'>, ringid?: string | null) {
+  const lines = [`Account: ${account.id} (${account.uuid})`];
+  if (ringid) lines.push(`Call: ${ringid}`);
+  lines.push('', 'What happened:', '');
+  return `mailto:${REPORT_EMAIL}?subject=${enc(`Report: ${account.id}`)}&body=${enc(lines.join('\r\n'))}`;
 }
 
 export function errorMessage(error: unknown) {

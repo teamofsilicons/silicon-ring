@@ -1,7 +1,8 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { ExternalLink, LogOut, Monitor, Smartphone, Terminal } from 'lucide-react';
+import { ExternalLink, LogOut, Monitor, Smartphone, Terminal, Trash2 } from 'lucide-react';
 import { Alert } from '@teamofsilicons/silicon-ui/alert';
 import { Badge } from '@teamofsilicons/silicon-ui/badge';
 import { Button } from '@teamofsilicons/silicon-ui/button';
@@ -15,12 +16,13 @@ import { Switch } from '@teamofsilicons/silicon-ui/switch';
 import { Textarea } from '@teamofsilicons/silicon-ui/textarea';
 import { useToastStack } from '@teamofsilicons/silicon-ui/toast-stack';
 import { api, errorMessage } from '@/lib/api';
-import { codePoints, platformName, when } from '@/lib/format';
+import { codePoints, label, platformName, when } from '@/lib/format';
 import { APP_VERSION } from '@/lib/store';
 import { readAppearance, saveAppearance, type Appearance } from '@/lib/theme';
-import type { Device, Greetings, Settings, Voice } from '@/lib/types';
+import type { Account, Device, Greetings, Settings, Voice } from '@/lib/types';
 import { GetTheApps } from './get-apps';
-import { PersonAvatar, Pixel } from './identity';
+import { useBlocks } from './hooks';
+import { PersonAvatar, Pixel, SiliconBadge } from './identity';
 import { PageHeader } from './page';
 import { useRing, useRingStore } from './ring-context';
 import lists from './lists.module.css';
@@ -36,9 +38,11 @@ export function SettingsScreen() {
         <DevicesSection />
         <AppsSection />
         <VoicemailSection />
+        <BlockedSection />
         <AppearanceSection />
         <AboutSection />
         <SignOutSection />
+        <DeleteAccountSection />
       </div>
     </>
   );
@@ -370,6 +374,60 @@ function GreetingEditor({ label, description, value, limit, disabled, onSave }: 
   );
 }
 
+function BlockedSection() {
+  const { toast } = useToastStack();
+  const { blocked, loaded, error, block, unblock } = useBlocks();
+  const [busy, setBusy] = useState<string | null>(null);
+
+  async function undoBlock(account: Account) {
+    setBusy(account.uuid);
+    try {
+      await unblock(account);
+      toast({
+        type: 'success',
+        title: `Unblocked ${label(account)}`,
+        action: { label: 'Undo', onClick: () => void block(account).catch(() => undefined) },
+      });
+    } catch (failure) {
+      toast({ type: 'error', title: `Couldn’t unblock ${label(account)}`, description: errorMessage(failure) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Group
+      title="Blocked"
+      description="Blocked accounts can still call you, but your devices don’t ring and you get no voicemail or missed-call notice. They aren’t told."
+    >
+      {error ? <Alert tone="danger" title="Blocked accounts didn’t load">{error}</Alert> : null}
+      {!loaded && !error ? <Skeleton lines={2} label="Loading blocked accounts" /> : null}
+      {loaded && !blocked.length ? (
+        <p className={styles.description}>You haven’t blocked anyone. To block someone, open a call with them in Recents and choose More.</p>
+      ) : null}
+      {blocked.length ? (
+        <ul className={styles.people}>
+          {blocked.map(account => (
+            <li key={account.uuid} className={styles.person}>
+              <PersonAvatar account={account} size="md" />
+              <span className={lists.rowText}>
+                <span className={lists.rowTitle}>
+                  <span className={lists.ellipsis}>{label(account)}</span>
+                  <SiliconBadge account={account} />
+                </span>
+                {account.display_name?.trim() ? <Pixel keepCase>{account.id}</Pixel> : null}
+              </span>
+              <Button size="sm" variant="secondary" loading={busy === account.uuid} disabled={Boolean(busy)} onClick={() => void undoBlock(account)}>
+                Unblock
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </Group>
+  );
+}
+
 function AppearanceSection() {
   const [appearance, setAppearance] = useState<Appearance>(readAppearance);
   return (
@@ -407,6 +465,8 @@ function AboutSection() {
           <ExternalLink size={14} strokeWidth={1.75} aria-hidden="true" />
         </ButtonLink>
         <ButtonLink href="/docs" variant="ghost" size="sm">ring CLI for silicons</ButtonLink>
+        <ButtonLink href="/privacy" variant="ghost" size="sm">Privacy policy</ButtonLink>
+        <ButtonLink href="/support" variant="ghost" size="sm">Support</ButtonLink>
       </div>
     </Group>
   );
@@ -429,5 +489,56 @@ function SignOutSection() {
         Sign out of this browser
       </Button>
     </div>
+  );
+}
+
+function DeleteAccountSection() {
+  const store = useRingStore();
+  const { toast } = useToastStack();
+  const accountsUrl = useRing(state => state.meta?.accounts_url ?? 'https://accounts.teamofsilicons.com');
+  return (
+    <Group title="Delete Ring account">
+      <div className={styles.deleteText}>
+        <p>
+          Deletes your Ring profile, settings, greetings, blocks and voicemails, signs out all your devices, ends any call
+          you’re on, and removes every call from your history.
+        </p>
+        <p>
+          A call you shared stays for everyone else who was part of it until none of them has a Ring account, then it’s
+          deleted with its transcript and recording. Signing in again later starts a new, empty Ring profile.{' '}
+          <Link href="/privacy#deleting-your-account" className={styles.link}>More in the privacy policy</Link>
+        </p>
+        <p>
+          Ring doesn’t delete your Silicon Account. It’s the separate sign-in Ring uses, like Sign in with Google, and
+          other apps may use it too. To delete it as well, go to Silicon Account settings.
+        </p>
+      </div>
+      <div className={styles.deleteActions}>
+        <ConfirmMorph
+          label="Delete Ring account"
+          icon={<Trash2 size={16} strokeWidth={1.75} aria-hidden="true" />}
+          prompt="Hold to confirm"
+          confirmLabel="Delete"
+          pendingLabel="Deleting"
+          doneLabel="Deleted"
+          tone="danger"
+          confirmMode="hold"
+          holdDuration={1500}
+          onConfirm={async () => {
+            try {
+              // On success this browser is signed out and the sign-in screen says the account is deleted.
+              await store.deleteAccount();
+            } catch (failure) {
+              toast({ type: 'error', title: 'Couldn’t delete your Ring account', description: errorMessage(failure) });
+              throw failure;
+            }
+          }}
+        />
+        <ButtonLink href={`${accountsUrl}/settings`} target="_blank" rel="noreferrer" variant="ghost" size="sm">
+          Silicon Account settings
+          <ExternalLink size={14} strokeWidth={1.75} aria-hidden="true" />
+        </ButtonLink>
+      </div>
+    </Group>
   );
 }

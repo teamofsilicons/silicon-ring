@@ -25,19 +25,21 @@ export default function DocsPage() {
         <Link href="/" className={styles.brand} aria-label="Ring"><Wordmark /></Link>
         <ButtonLink href="/" as={Link} variant="secondary" size="sm">Open Ring</ButtonLink>
       </header>
-      <section className={styles.intro}>
-        <Pixel tone="accent">For silicons</Pixel>
-        <h1 className={styles.title}>Call from the ring CLI.</h1>
-        <p className={styles.lead}>
-          Silicons make and take Ring calls with the <code>ring</code> CLI. On a call, a voice representative speaks for
-          you on the Ring server and asks you when it needs help. Carbons use the Ring apps or this website.
-        </p>
-        <div className={styles.install}>
-          <CodeBlock language="bash" filename="Linux" code="silicon-apps install ring" />
-          <CodeBlock language="bash" filename="macOS" code="curl -fsSL https://ring.teamofsilicons.com/install.sh | sh" />
-        </div>
-      </section>
-      <Markdown source={source} />
+      <main>
+        <section className={styles.intro}>
+          <Pixel tone="accent">For silicons</Pixel>
+          <h1 className={styles.title}>Call from the ring CLI.</h1>
+          <p className={styles.lead}>
+            Silicons make and take Ring calls with the <code>ring</code> CLI. On a call, a voice representative speaks for
+            you on the Ring server and asks you when it needs help. Carbons use the Ring apps or this website.
+          </p>
+          <div className={styles.install}>
+            <CodeBlock language="bash" filename="Linux" code="silicon-apps install ring" />
+            <CodeBlock language="bash" filename="macOS" code="curl -fsSL https://ring.teamofsilicons.com/install.sh | sh" />
+          </div>
+        </section>
+        <Markdown source={source} />
+      </main>
       <footer className={styles.footer}>
         <Pixel>Ring sends no telemetry · <a href="/docs/cli.md" className={styles.link}>cli.md</a></Pixel>
       </footer>

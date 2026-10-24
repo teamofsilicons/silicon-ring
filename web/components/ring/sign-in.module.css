@@ -91,6 +91,13 @@
   text-align: center;
 }
 
+.footerNav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-group);
+}
+
 .footerLink {
   color: var(--text-muted);
   font-size: var(--text-xs);

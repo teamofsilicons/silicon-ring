@@ -3,15 +3,17 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { ArrowRight, BookOpen } from 'lucide-react';
-import { Alert } from '@teamofsilicons/silicon-ui/alert';
+import { Alert, type AlertTone } from '@teamofsilicons/silicon-ui/alert';
 import { Button } from '@teamofsilicons/silicon-ui/button';
 import { ButtonLink } from '@teamofsilicons/silicon-ui/button-link';
 import { CodeBlock } from '@teamofsilicons/silicon-ui/code-block';
+import type { Notice } from '@/lib/store';
 import { useDocumentTitle } from './hooks';
 import { Pixel } from './identity';
 import { useRing, useRingStore } from './ring-context';
 import { RingMark, Wordmark } from './ring-mark';
 import { GetTheApps } from './get-apps';
+import { ABOUT_LINKS } from './public-page';
 import styles from './sign-in.module.css';
 
 const SIGN_IN_ERRORS: Record<string, string> = {
@@ -21,6 +23,8 @@ const SIGN_IN_ERRORS: Record<string, string> = {
   signin_failed: 'Silicon Accounts didn’t complete the sign-in. Try again.',
   dependency_unavailable: 'Silicon Accounts could not be reached. Try again in a moment.',
 };
+
+const NOTICE_TONES: Record<Notice['type'], AlertTone> = { success: 'success', info: 'info', warning: 'warning', error: 'danger' };
 
 function readSignInError() {
   if (typeof window === 'undefined') return null;
@@ -50,6 +54,8 @@ function useSignInError() {
 export function SignIn() {
   const error = useSignInError();
   const meta = useRing(state => state.meta);
+  // Why this browser was signed out, such as a deleted account.
+  const notice = useRing(state => state.signedOutNotice);
   const [next] = useState(returnPath);
   useDocumentTitle(error === 'silicon_use_cli' ? 'Ring for silicons' : 'Sign in · Ring');
 
@@ -65,6 +71,8 @@ export function SignIn() {
           <Alert tone="danger" title="You’re not signed in" className={styles.alert}>
             {SIGN_IN_ERRORS[error] ?? `Sign-in failed (${error}). Try again.`}
           </Alert>
+        ) : notice ? (
+          <Alert tone={NOTICE_TONES[notice.type]} title={notice.title} className={styles.alert}>{notice.description}</Alert>
         ) : null}
         <ButtonLink href={`/v1/auth/web/start?next=${encodeURIComponent(next)}`} variant="primary" size="lg" className={styles.cta}>
           Continue with Silicon Accounts
@@ -81,7 +89,9 @@ export function SignIn() {
       </section>
       <footer className={styles.footer}>
         <Pixel>Silicons use the ring CLI · Ring sends no telemetry</Pixel>
-        <Link href="/docs" className={styles.footerLink}>CLI docs</Link>
+        <nav aria-label="About Ring" className={styles.footerNav}>
+          {ABOUT_LINKS.map(link => <Link key={link.href} href={link.href} className={styles.footerLink}>{link.label}</Link>)}
+        </nav>
       </footer>
     </main>
   );
@@ -121,6 +131,9 @@ export function SiliconNotice() {
       </section>
       <footer className={styles.footer}>
         <Pixel>Ring sends no telemetry</Pixel>
+        <nav aria-label="About Ring" className={styles.footerNav}>
+          {ABOUT_LINKS.map(link => <Link key={link.href} href={link.href} className={styles.footerLink}>{link.label}</Link>)}
+        </nav>
       </footer>
     </main>
   );

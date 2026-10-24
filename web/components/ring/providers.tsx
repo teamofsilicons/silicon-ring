@@ -29,14 +29,18 @@ function useSystemAppearance() {
   }, []);
 }
 
+/** Pages anyone can read without signing in. */
+const PUBLIC_PAGES = ['/docs', '/privacy', '/support'];
+
 function AppFrame({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const status = useRing(state => state.status);
   const kind = useRing(state => state.me?.account.kind);
   useSystemAppearance();
 
-  // The docs are public, but a signed-in carbon reading them still gets calls (the ringtone plays on every page).
-  if (pathname.startsWith('/docs')) {
+  // The public pages need no sign-in, but a signed-in carbon reading them still gets calls (the ringtone plays on
+  // every page).
+  if (PUBLIC_PAGES.some(page => pathname === page || pathname.startsWith(`${page}/`))) {
     return (
       <>
         {children}
