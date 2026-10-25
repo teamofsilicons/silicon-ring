@@ -110,6 +110,18 @@ jobs:
           $status = ring login status --json | ConvertFrom-Json
           if ($status.authenticated -ne $false) { throw 'login status --json is not authenticated:false' }
           ring --help | Out-Null
+          # Silicon Apps keeps a successful install script's output to itself: run it once more to show it.
+          $script = Get-ChildItem -Path (Join-Path $env:USERPROFILE '.apps') -Recurse -Filter 'install.cmd' | Select-Object -First 1
+          if (-not $script) { throw 'cannot find the installed install.cmd' }
+          $root = Split-Path -Parent (Split-Path -Parent $script.FullName)
+          "installed package: $root"
+          "client-style APPS_INSTALL_DIR: \\?\$root"
+          $env:APPS_INSTALL_DIR = '\\?\' + $root
+          $env:APPS_INSTALL_SCRIPT = '.\scripts\install.cmd'
+          Push-Location $root
+          $show = Start-Process -FilePath cmd.exe -ArgumentList '/D /V:OFF /S /C ""%APPS_INSTALL_SCRIPT%""' -NoNewWindow -Wait -PassThru
+          Pop-Location
+          "install script exit $($show.ExitCode)"
           $app = Join-Path $env:LOCALAPPDATA 'Programs\Ring'
           $exe = Get-ChildItem -Path (Join-Path $app 'app-*\Ring.exe') -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $exe) { throw 'the desktop app was not installed' }
@@ -122,7 +134,7 @@ jobs:
           $script = Get-ChildItem -Path (Join-Path $env:USERPROFILE '.apps') -Recurse -Filter 'install.cmd' | Select-Object -First 1
           if (-not $script) { throw 'cannot find the installed install.cmd' }
           $root = Split-Path -Parent (Split-Path -Parent $script.FullName)
-          $env:APPS_INSTALL_DIR = $root
+          $env:APPS_INSTALL_DIR = '\\?\' + $root
           $env:APPS_INSTALL_SCRIPT = '.\scripts\install.cmd'
           Push-Location $root
           $start = Get-Date
