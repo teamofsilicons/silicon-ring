@@ -170,7 +170,12 @@ try {
         exit 0
     }
 
-    $zip = Join-Path $env:APPS_INSTALL_DIR 'desktop\Ring-windows-x64.zip'
+    # The client passes an extended-length path (\\?\C:\... or \\?\UNC\server\...), which Windows
+    # PowerShell 5.1's path cmdlets cannot use.
+    $package = $env:APPS_INSTALL_DIR
+    if ($package.StartsWith('\\?\UNC\')) { $package = '\\' + $package.Substring(8) }
+    elseif ($package.StartsWith('\\?\')) { $package = $package.Substring(4) }
+    $zip = Join-Path $package 'desktop\Ring-windows-x64.zip'
     if (-not (Test-Path -LiteralPath $zip)) { throw "$zip is missing from the package" }
     $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.Substring(0, 16).ToLowerInvariant()
     $build = Join-Path $app "app-$hash"

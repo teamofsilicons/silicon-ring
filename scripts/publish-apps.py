@@ -31,8 +31,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 STATE = ROOT / 'secrets' / 'platform'
 PACKAGES = ROOT / 'dist' / 'apps' / 'packages.json'
 APP = 'ring'
-# Targets with a live Apps validation runner (silicon-apps capabilities); macOS and Windows ARM have none.
-LIVE_TARGETS = ('linux-x86_64', 'linux-aarch64', 'linux-i686', 'linux-armv7hf', 'windows-x86_64')
+# Linux packages are checked by Apps' hosted runners. Windows and macOS packages are uploaded with
+# --confirm-platform-checks, which says the three commands were run on that platform: package-apps.py
+# records that run (native_check) for macOS on an Apple silicon Mac, and windows-x86_64 here is the
+# package Apps' own Windows runner accepted on 2026-10-25, before it moved to confirmations.
+SERVER_TARGETS = ('linux-x86_64', 'linux-aarch64', 'linux-i686', 'linux-armv7hf')
+CONFIRMED_TARGETS = ('windows-x86_64', 'macos-aarch64')
+LIVE_TARGETS = SERVER_TARGETS + CONFIRMED_TARGETS
 
 
 def fail(message):
@@ -104,12 +109,13 @@ def plan(version, packages):
     lines = [
         '# Read-only preflight',
         'silicon-apps login status --json',
-        f'silicon-apps capabilities --require {",".join("target:" + t for t in LIVE_TARGETS)} --json',
+        f'silicon-apps capabilities --require {",".join("target:" + t for t in SERVER_TARGETS)} --json',
         f'silicon-apps show {APP} --json',
         '# Mutations (each with its own stored --idempotency-key)',
     ]
     for p in packages:
-        lines.append(f"silicon-apps upload {APP} --target {p['target']} {shlex.quote(p['archive'])} --json")
+        confirm = ' --confirm-platform-checks' if p['target'] in CONFIRMED_TARGETS else ''
+        lines.append(f"silicon-apps upload {APP} --target {p['target']} {shlex.quote(p['archive'])}{confirm} --json")
     lines += [
         f'silicon-apps release {APP} --version {version} ' + ' '.join(f'--package <{p["target"]} package id>' for p in packages)
         + ' --notes "…" --json',
@@ -127,19 +133,33 @@ def preflight():
     account = status.get('account') or {}
     if not status.get('authenticated') or account.get('id') != 'si:tos':
         fail('silicon-apps is not signed in as si:tos')
-    read_only('capabilities', '--require', ','.join('target:' + t for t in LIVE_TARGETS))
+    read_only('capabilities', '--require', ','.join('target:' + t for t in SERVER_TARGETS))
     app = read_only('show', APP)
     print(json.dumps({'signed_in_as': account.get('id'), 'targets_live': list(LIVE_TARGETS),
                       'app': app.get('app_id'), 'published': app.get('published')}, indent=2))
 
 
-def upload(version, packages):
+def upload(version, packages, confirmed=None):
+    """confirmed: {target: binary sha256} the operator ran the three commands of, on that platform."""
+    confirmed = confirmed or {}
     ids = {}
     for p in packages:
         if p['target'] not in LIVE_TARGETS:
             print(f"skipping {p['target']}: no live validation runner", file=sys.stderr)
             continue
-        result = mutation(version, f"upload-{p['target']}", ['upload', APP, '--target', p['target'], p['archive']])
+        args = ['upload', APP, '--target', p['target'], p['archive']]
+        if p['target'] in CONFIRMED_TARGETS:
+            done = (STATE / f"apps-{version}-upload-{p['target']}-result.json").is_file()
+            checked = (p.get('native_check') and all(v == 'passed' for v in p['native_check'].values())) \
+                or confirmed.get(p['target']) == p['binary_sha256']
+            if not done and not checked:
+                how = ('run scripts/package-apps.py on an Apple silicon Mac so it records native_check'
+                       if p['target'].startswith('macos-') else
+                       f"run its bin/ring --help, accounts --json and login status --json on {p['target']}, signed out "
+                       f"with an empty SILICON_HOME, then pass --confirmed {p['target']}={p['binary_sha256']}")
+                fail(f"{p['target']} has no hosted runner, and Apps takes our word for it (--confirm-platform-checks): {how}")
+            args.append('--confirm-platform-checks')
+        result = mutation(version, f"upload-{p['target']}", args)
         failed = [v for v in result.get('validation', []) if not v.get('passed')]
         if failed:
             fail(f"{p['target']} failed hosted validation: {json.dumps(failed)[:600]}")
@@ -147,8 +167,8 @@ def upload(version, packages):
     return ids
 
 
-def release(version, packages, notes):
-    ids = upload(version, packages)
+def release(version, packages, notes, confirmed=None):
+    ids = upload(version, packages, confirmed)
     args = ['release', APP, '--version', version]
     for target in sorted(ids):
         args += ['--package', str(ids[target])]
@@ -156,8 +176,8 @@ def release(version, packages, notes):
     return mutation(version, 'release', args)
 
 
-def promote(version, packages, notes):
-    development = release(version, packages, notes)
+def promote(version, packages, notes, confirmed=None):
+    development = release(version, packages, notes, confirmed)
     return mutation(version, 'promote', ['promote', APP, str(development['id']), '--version', version])
 
 
@@ -183,8 +203,12 @@ def main():
     parser.add_argument('step', choices=['plan', 'preflight', 'upload', 'release', 'promote', 'readiness', 'publish',
                                          'verify', 'all'])
     parser.add_argument('--notes', help='release notes (default: "Silicon Ring <version>. Ring sends no telemetry.")')
+    parser.add_argument('--confirmed', action='append', default=[], metavar='TARGET=BINARY_SHA256',
+                        help='you ran --help, accounts --json and login status --json of this exact packaged binary on '
+                             'TARGET, signed out with an empty SILICON_HOME (targets without a hosted runner)')
     args = parser.parse_args()
     version, packages = load_packages()
+    confirmed = dict(c.split('=', 1) for c in args.confirmed)
     notes = args.notes or f'Silicon Ring {version}. Ring sends no telemetry.'
 
     if args.step == 'plan':
@@ -192,11 +216,11 @@ def main():
     elif args.step == 'preflight':
         preflight()
     elif args.step == 'upload':
-        print(json.dumps(upload(version, packages), indent=2))
+        print(json.dumps(upload(version, packages, confirmed), indent=2))
     elif args.step == 'release':
-        print(json.dumps(release(version, packages, notes), indent=2))
+        print(json.dumps(release(version, packages, notes, confirmed), indent=2))
     elif args.step == 'promote':
-        print(json.dumps(promote(version, packages, notes), indent=2))
+        print(json.dumps(promote(version, packages, notes, confirmed), indent=2))
     elif args.step == 'readiness':
         readiness()
     elif args.step == 'publish':
@@ -206,7 +230,7 @@ def main():
         verify(packages)
     else:
         preflight()
-        promote(version, packages, notes)
+        promote(version, packages, notes, confirmed)
         readiness()
         mutation(version, 'publish', ['publish', APP])
         verify(packages)

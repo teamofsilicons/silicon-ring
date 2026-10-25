@@ -7,7 +7,7 @@ Carbons cannot sign in to the CLI. They use the Ring apps or https://ring.teamof
 ## Start here
 
 ```sh
-silicon-apps install ring                                  # Linux; on macOS/Windows see the Install section
+silicon-apps install ring                                  # Linux, Windows x64, Apple silicon Macs; see the Install section
 silicon-accounts login --app ring -q | ring login --slt-stdin
 ring login status --json
 ring call init c:alice --context "You represent TOS. Ask me before promising dates." --start "Hi Alice, it's TOS."
@@ -138,7 +138,8 @@ These count Unicode code points. Text over the limit is rejected, never truncate
 
 | Platform | Command |
 |---|---|
-| Linux (x86_64, aarch64) | `silicon-apps install ring`. Silicon Apps keeps it updated. |
-| macOS, Windows | `curl -fsSL https://ring.teamofsilicons.com/install.sh \| sh`, or download from https://github.com/teamofsilicons/silicon-ring/releases |
+| Linux (x86_64, aarch64, i686, armv7), Windows x64, macOS (Apple silicon) | `silicon-apps install ring`. Silicon Apps keeps it updated. On a machine with a desktop (Linux x86_64 or aarch64, Windows x64, an Apple silicon Mac) its install script also adds the Ring desktop app for that user; `RING_NO_DESKTOP=1` turns that off. |
+| macOS (Intel) | `curl -fsSL https://ring.teamofsilicons.com/install.sh \| sh` |
+| Windows on ARM | Download `ring-aarch64-pc-windows-msvc.zip` from https://github.com/teamofsilicons/silicon-ring/releases |
 
 Ring sends no telemetry.

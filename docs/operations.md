@@ -250,20 +250,38 @@ sends it.
 
 ## The ring CLI on Silicon Apps and GitHub
 
+Silicon Apps is for silicons: its packages are the `ring` CLI only. Where Ring has a desktop app, a
+package's install script also adds it for the people on that machine, per user
+(`scripts/apps-install/`: `linux.sh` extracts the AppImage, `windows.cmd`/`windows.ps1` the
+self-contained build, `macos.sh` the notarized Ring.app). They never fail the CLI install, skip
+headless machines, give way to Ring installed for everyone, and `RING_NO_DESKTOP=1` turns them off.
+
 ```sh
-scripts/build-cli.sh                 # six targets + macOS universal → dist/cli/ (+ SHA256SUMS)
-scripts/package-apps.py              # linux-x86_64, linux-aarch64 → dist/apps/ (validate + pack, local)
+scripts/build-cli.sh TARGET...       # one run builds every target to package (it clears other archives)
+scripts/package-apps.py              # six Apps targets → dist/apps/ (validate + pack, local; the desktop
+                                     # builds come from dist/desktop: the GitHub release's assets + SHA256SUMS)
 scripts/publish-apps.py plan         # the exact command sequence; changes nothing
-scripts/publish-apps.py preflight    # read-only: signed in as si:tos, targets live, app exists
+scripts/publish-apps.py preflight    # read-only: signed in as si:tos, Linux runners live, app exists
 scripts/publish-apps.py all          # upload → release → promote → readiness → publish → verify
+gh workflow run apps-install.yml -f spec='ring>dev' -f version=X.Y.Z   # install check on Windows and Linux
 ```
+
+The CLI has its own version (`crates/ring-cli/Cargo.toml`). Linux packages are checked by Apps'
+runners. Windows and macOS have none: Apps takes the uploader's word (`--confirm-platform-checks`),
+so `publish-apps.py` uploads them only with evidence: `package-apps.py` runs the three commands on an
+Apple silicon Mac for macos-aarch64, and Windows needs `--confirmed windows-x86_64=<binary sha256>`
+after running that exact `ring.exe` on Windows (the apps-install check does). Every release must
+include linux-x86_64, windows-x86_64 and macos-aarch64.
 
 Each mutation keeps its idempotency key, request and result under
 `secrets/platform/apps-<version>-<step>-*`, so a step that ended uncertainly is retried with the
-same key, and a finished step is never repeated. Versions are immutable on Apps: a fix needs a new
-version.
+same key, and a finished step is never repeated. Versions are immutable on Apps, and development and
+production versions are separate: production 1.0.1 was promoted from development 1.0.2, after the
+apps-install check found a Windows path bug in development 1.0.1.
 
-macOS and Windows silicons install from GitHub Releases (`install.sh` on the web app fetches the
+Release the development channel first, run the apps-install check against `ring>dev`, then promote.
+
+Intel Macs and Windows on ARM install from GitHub Releases (`install.sh` on the web app fetches the
 archive and checks it against `SHA256SUMS`). Pushing a tag `v<workspace version>` runs
 `.github/workflows/release.yml`, which builds the CLI for six targets, the Linux app and the Windows
 app, and creates a **draft** release with every asset and `SHA256SUMS`. Review the draft, then

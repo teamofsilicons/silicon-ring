@@ -28,7 +28,9 @@ import re
 import shutil
 import subprocess
 import sys
+import platform
 import tarfile
+import tempfile
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -38,10 +40,13 @@ TARGETS = {
     'linux-i686': 'i686-unknown-linux-musl',
     'linux-armv7hf': 'armv7-unknown-linux-musleabihf',
     'windows-x86_64': 'x86_64-pc-windows-msvc',
+    'macos-aarch64': 'aarch64-apple-darwin',
 }
 ELF_MACHINE = {'linux-x86_64': b'\x3e\x00', 'linux-aarch64': b'\xb7\x00', 'linux-i686': b'\x03\x00',
                'linux-armv7hf': b'\x28\x00'}
 PE_MACHINE = {'windows-x86_64': b'\x64\x86'}
+# 64-bit Mach-O magic and CPU type (CPU_TYPE_ARM64), little-endian.
+MACHO_CPU = {'macos-aarch64': b'\x0c\x00\x00\x01'}
 DOCKER_PLATFORM = {'linux-x86_64': 'linux/amd64', 'linux-aarch64': 'linux/arm64', 'linux-i686': 'linux/386',
                    'linux-armv7hf': 'linux/arm/v7'}
 # Static binaries need nothing from the image; it only has to exist for every platform.
@@ -59,6 +64,8 @@ def desktop_payload(apps_target, desktop_version):
         'windows-x86_64': ('Ring-windows-x64.zip', 'desktop/Ring-windows-x64.zip',
                            {'scripts/install.cmd': INSTALL / 'windows.cmd',
                             'scripts/install-desktop.ps1': INSTALL / 'windows.ps1'}),
+        'macos-aarch64': (f'Ring-macOS-{desktop_version}.zip', 'desktop/Ring-macOS.zip',
+                          {'scripts/install.sh': INSTALL / 'macos.sh'}),
     }.get(apps_target)
 
 
@@ -110,6 +117,9 @@ def check_binary(binary, apps_target):
     if apps_target in ELF_MACHINE:
         if data[:4] != b'\x7fELF' or data[18:20] != ELF_MACHINE[apps_target]:
             fail(f'{binary} is not a {apps_target} ELF')
+    elif apps_target in MACHO_CPU:
+        if data[:4] != b'\xcf\xfa\xed\xfe' or data[4:8] != MACHO_CPU[apps_target]:
+            fail(f'{binary} is not a {apps_target} Mach-O')
     else:
         pe = int.from_bytes(data[0x3c:0x40], 'little')
         if data[:2] != b'MZ' or data[pe:pe + 4] != b'PE\0\0' or data[pe + 4:pe + 6] != PE_MACHINE[apps_target]:
@@ -188,6 +198,29 @@ def sandbox_check(stage, platform, version):
         elif not (run.stdout + run.stderr).strip():
             fail('`ring --help` printed nothing')
         results[name] = 'passed'
+    return results
+
+
+def native_check(stage, version):
+    """Run the three commands on this machine, signed out with an empty home, as Silicon Apps asks an
+    uploader to before --confirm-platform-checks (targets without a hosted runner)."""
+    results = {}
+    with tempfile.TemporaryDirectory() as home:
+        env = {'PATH': '/usr/bin:/bin', 'HOME': home, 'SILICON_HOME': home}
+        for command in (['--help'], ['accounts', '--json'], ['login', 'status', '--json']):
+            run = subprocess.run([str(stage / 'bin' / 'ring'), *command], text=True, capture_output=True, env=env, timeout=60)
+            name = ' '.join(command)
+            if run.returncode != 0:
+                fail(f'`ring {name}` exited {run.returncode} on this machine: {run.stderr.strip()[:400]}')
+            if command[-1] == '--json':
+                data = json.loads(run.stdout)
+                if command[0] == 'accounts' and (data.get('app_id') != 'ring' or data.get('version') != version):
+                    fail(f'`ring accounts --json` reports {data.get("app_id")!r} {data.get("version")!r}')
+                if command[0] == 'login' and data.get('authenticated') is not False:
+                    fail('`ring login status --json` is not authenticated:false when signed out')
+            elif not (run.stdout + run.stderr).strip():
+                fail('`ring --help` printed nothing')
+            results[name] = 'passed'
     return results
 
 
@@ -276,9 +309,11 @@ def main():
         entry = {'target': apps_target, 'rust_target': rust_target, 'version': version, 'archive': str(output),
                  'sha256': digest, 'size': output.stat().st_size, 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
                  'desktop': (desktop[0] if desktop else None), 'validate': validation, 'pack': packed}
-        platform = DOCKER_PLATFORM.get(apps_target)
-        if docker and platform and can_run(platform):
-            entry['sandbox'] = sandbox_check(stage.resolve(), platform, version)
+        docker_platform = DOCKER_PLATFORM.get(apps_target)
+        if docker and docker_platform and can_run(docker_platform):
+            entry['sandbox'] = sandbox_check(stage.resolve(), docker_platform, version)
+        if apps_target == 'macos-aarch64' and platform.system() == 'Darwin' and platform.machine() == 'arm64':
+            entry['native_check'] = native_check(stage.resolve(), version)
         packages.append(entry)
         print(f'{output.name}  {digest}', file=sys.stderr)
 

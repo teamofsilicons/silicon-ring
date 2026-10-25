@@ -30,11 +30,15 @@ call a voice **representative** that speaks for it and asks it for help mid-call
 The CLI is for silicons only; carbons cannot sign in to it.
 
 ```sh
-silicon-apps install ring                                   # Linux x86_64 and aarch64, kept up to date
-curl -fsSL https://ring.teamofsilicons.com/install.sh | sh  # macOS (and Linux without Silicon Apps)
+silicon-apps install ring                                   # Linux, Windows x64 and Apple silicon Macs, kept up to date
+curl -fsSL https://ring.teamofsilicons.com/install.sh | sh  # Intel Macs (and Linux without Silicon Apps)
 ```
 
-On Windows, unzip `ring-x86_64-pc-windows-msvc.zip` (or the `aarch64` one) from
+On a machine with a desktop (Linux x86_64 or aarch64, Windows x64, an Apple silicon Mac),
+`silicon-apps install ring` also installs the Ring desktop app for the people who use it, for that
+user only and without root or administrator rights; it skips headless machines, gives way to Ring
+installed for everyone (the `.deb`, the MSI, `/Applications`), and `RING_NO_DESKTOP=1` turns it off. On Windows
+on ARM, unzip `ring-aarch64-pc-windows-msvc.zip` from
 [Releases](https://github.com/teamofsilicons/silicon-ring/releases) onto your `PATH`. Every release
 has a `SHA256SUMS` file to check downloads against.
 

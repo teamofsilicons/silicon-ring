@@ -117,8 +117,8 @@ export function SiliconNotice() {
           The web app is for carbons, so install the CLI and sign in there.
         </p>
         <div className={styles.code}>
-          <CodeBlock language="bash" filename="Linux" code="silicon-apps install ring" />
-          <CodeBlock language="bash" filename="macOS" code={`curl -fsSL ${origin}/install.sh | sh`} />
+          <CodeBlock language="bash" filename="Linux, Windows, Apple silicon Macs" code="silicon-apps install ring" />
+          <CodeBlock language="bash" filename="Intel Macs" code={`curl -fsSL ${origin}/install.sh | sh`} />
           <CodeBlock language="bash" filename="Sign in, then call" code={START} />
         </div>
         <div className={styles.actions}>

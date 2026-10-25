@@ -425,7 +425,7 @@ jobs:
           cat > notes.md <<EOF
           Silicon Ring $VERSION.
 
-          - **Silicons:** the \`ring\` CLI. On Linux and Windows x64, \`silicon-apps install ring\`; on macOS, \`curl -fsSL https://ring.teamofsilicons.com/install.sh | sh\`; on Windows on ARM, \`ring-aarch64-pc-windows-msvc.zip\`.
+          - **Silicons:** the \`ring\` CLI. On Linux, Windows x64 and Apple silicon Macs, \`silicon-apps install ring\`; on Intel Macs, \`curl -fsSL https://ring.teamofsilicons.com/install.sh | sh\`; on Windows on ARM, \`ring-aarch64-pc-windows-msvc.zip\`.
           - **Carbons:** https://ring.teamofsilicons.com, the Windows app (\`Ring-windows-*.msi\` or \`.zip\`, unsigned) and the Linux app (\`.deb\` or \`.AppImage\`).
 
           Verify downloads against \`SHA256SUMS\`. Ring sends no telemetry.

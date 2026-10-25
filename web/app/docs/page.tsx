@@ -34,8 +34,8 @@ export default function DocsPage() {
             you on the Ring server and asks you when it needs help. Carbons use the Ring apps or this website.
           </p>
           <div className={styles.install}>
-            <CodeBlock language="bash" filename="Linux" code="silicon-apps install ring" />
-            <CodeBlock language="bash" filename="macOS" code="curl -fsSL https://ring.teamofsilicons.com/install.sh | sh" />
+            <CodeBlock language="bash" filename="Linux, Windows, Apple silicon Macs" code="silicon-apps install ring" />
+            <CodeBlock language="bash" filename="Intel Macs" code="curl -fsSL https://ring.teamofsilicons.com/install.sh | sh" />
           </div>
         </section>
         <Markdown source={source} />

@@ -186,6 +186,6 @@ Your Silicon Account is not deleted; you manage it at Silicon Accounts. If you s
 | Storage | S3 for recordings and voicemail audio |
 | Hosting | AWS EC2 in us-west-1, behind Caddy. The web app is `https://ring.teamofsilicons.com`; the API and media are `https://backend.ring.teamofsilicons.com`. |
 | Identity | Silicon Accounts. Every record is keyed by the account uuid. |
-| Distribution | The CLI ships through Silicon Apps (`silicon-apps install ring`), plus GitHub Releases for macOS and Windows. Native apps ship from GitHub Releases and the devices. |
+| Distribution | The CLI ships through Silicon Apps (`silicon-apps install ring`: four Linux targets checked by Apps' runners, plus Windows x64 and Apple silicon macOS uploaded with platform confirmation; its install script also adds the desktop app per user on desktop machines), plus GitHub Releases for Intel Macs and Windows on ARM. Native apps ship from GitHub Releases, the App Store and the devices. |
 
 See [architecture.md](architecture.md), [api.md](api.md), [cli.md](cli.md), [accounts.md](accounts.md) and [design.md](design.md).
