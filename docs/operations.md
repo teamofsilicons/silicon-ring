@@ -277,7 +277,9 @@ Each mutation keeps its idempotency key, request and result under
 `secrets/platform/apps-<version>-<step>-*`, so a step that ended uncertainly is retried with the
 same key, and a finished step is never repeated. Versions are immutable on Apps, and development and
 production versions are separate: production 1.0.1 was promoted from development 1.0.2, after the
-apps-install check found a Windows path bug in development 1.0.1.
+apps-install check found a Windows path bug in development 1.0.1, and production 1.0.2 (from
+development 1.0.3) only swapped in the build 10 Mac app; every one carries the ring 1.0.1 CLI. To
+change one target, release the other targets' production package ids again with the new package.
 
 Release the development channel first, run the apps-install check against `ring>dev`, then promote.
 
