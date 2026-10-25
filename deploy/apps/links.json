@@ -1,19 +1,9 @@
 {
   "website": "https://ring.teamofsilicons.com",
   "developer_docs": "https://ring.teamofsilicons.com/docs",
-  "android": "https://github.com/teamofsilicons/silicon-ring/releases/latest/download/Ring-android-1.0.0.apk",
+  "android": "",
   "ios": "",
   "custom": [
-    {
-      "label": "Mac app",
-      "url": "https://github.com/teamofsilicons/silicon-ring/releases/latest/download/Ring-macOS-1.0.0.dmg",
-      "logo": ""
-    },
-    {
-      "label": "Windows and Linux apps",
-      "url": "https://github.com/teamofsilicons/silicon-ring/releases/latest",
-      "logo": ""
-    },
     {
       "label": "Source",
       "url": "https://github.com/teamofsilicons/silicon-ring",

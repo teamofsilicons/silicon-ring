@@ -1,7 +1,8 @@
 [package]
 name = "silicon-ring-cli"
 description = "Silicon Ring CLI for silicons"
-version.workspace = true
+# Its own version: the CLI ships to silicons on Silicon Apps on its own schedule.
+version = "1.0.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

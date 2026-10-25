@@ -35,6 +35,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
+      cli_version: ${{ steps.version.outputs.cli_version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -44,6 +45,9 @@ jobs:
           version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
           [ "v$version" = "$RELEASE_TAG" ] || { echo "tag $RELEASE_TAG does not match workspace version $version"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          # The CLI has its own version (crates/ring-cli/Cargo.toml), else the workspace's.
+          cli=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"/\1/p' crates/ring-cli/Cargo.toml)
+          echo "cli_version=${cli:-$version}" >> "$GITHUB_OUTPUT"
 
   cli-linux:
     name: CLI (${{ matrix.target }})
@@ -76,7 +80,7 @@ jobs:
         run: |
           bin=target/${{ matrix.target }}/release/ring
           home=$(mktemp -d)
-          "$bin" --version | grep -q "${{ needs.version.outputs.version }}"
+          "$bin" --version | grep -qx "ring ${{ needs.version.outputs.cli_version }}"
           HOME=$home SILICON_HOME=$home "$bin" --help > /dev/null
           HOME=$home SILICON_HOME=$home "$bin" accounts --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["app_id"] == "ring"'
           HOME=$home SILICON_HOME=$home "$bin" login status --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["authenticated"] is False'
@@ -119,7 +123,7 @@ jobs:
         run: |
           bin=target/universal-apple-darwin/release/ring
           home=$(mktemp -d)
-          "$bin" --version | grep -q "${{ needs.version.outputs.version }}"
+          "$bin" --version | grep -qx "ring ${{ needs.version.outputs.cli_version }}"
           HOME=$home SILICON_HOME=$home "$bin" accounts --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["app_id"] == "ring"'
           HOME=$home SILICON_HOME=$home "$bin" login status --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["authenticated"] is False'
       - name: Archive
@@ -421,7 +425,7 @@ jobs:
           cat > notes.md <<EOF
           Silicon Ring $VERSION.
 
-          - **Silicons:** the \`ring\` CLI. On Linux, \`silicon-apps install ring\`; on macOS, \`curl -fsSL https://ring.teamofsilicons.com/install.sh | sh\`; on Windows, \`ring-<arch>-pc-windows-msvc.zip\`.
+          - **Silicons:** the \`ring\` CLI. On Linux and Windows x64, \`silicon-apps install ring\`; on macOS, \`curl -fsSL https://ring.teamofsilicons.com/install.sh | sh\`; on Windows on ARM, \`ring-aarch64-pc-windows-msvc.zip\`.
           - **Carbons:** https://ring.teamofsilicons.com, the Windows app (\`Ring-windows-*.msi\` or \`.zip\`, unsigned) and the Linux app (\`.deb\` or \`.AppImage\`).
 
           Verify downloads against \`SHA256SUMS\`. Ring sends no telemetry.

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Builds the ring CLI (silicons only) and packages one archive per target into dist/cli/:
 #
-#   ring-{x86_64,aarch64}-unknown-linux-musl.tar.gz   static, cargo zigbuild
+#   ring-{x86_64,aarch64,i686}-unknown-linux-musl.tar.gz,
+#   ring-armv7-unknown-linux-musleabihf.tar.gz        static, cargo zigbuild
 #   ring-{x86_64,aarch64}-apple-darwin.tar.gz         native (macOS host), plus
 #   ring-universal-apple-darwin.tar.gz                lipo of the two
 #   ring-{x86_64,aarch64}-pc-windows-msvc.zip         cargo xwin, static CRT
 #   SHA256SUMS
 #
 #   scripts/build-cli.sh                 all targets this host can build
-#   scripts/build-cli.sh TARGET...       only these Rust targets
+#   scripts/build-cli.sh TARGET...       only these Rust targets (removes every other archive in dist/cli)
 #
 # Environment: CARGO_TARGET_DIR (default target/infra), RING_CODESIGN_IDENTITY (optional macOS
 # Developer ID to sign with the hardened runtime; otherwise binaries keep the linker's ad-hoc
@@ -18,8 +19,8 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target/infra}
 OUT="$ROOT/dist/cli"
-ALL=(x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin
-  x86_64-pc-windows-msvc aarch64-pc-windows-msvc)
+LINUX=(x86_64-unknown-linux-musl aarch64-unknown-linux-musl i686-unknown-linux-musl armv7-unknown-linux-musleabihf)
+ALL=("${LINUX[@]}" aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc aarch64-pc-windows-msvc)
 
 log() { printf '==> %s\n' "$*" >&2; }
 die() { printf 'build-cli: %s\n' "$*" >&2; exit 1; }
@@ -28,13 +29,17 @@ if [[ $# -gt 0 ]]; then
   TARGETS=("$@")
 else
   TARGETS=("${ALL[@]}")
-  [[ "$(uname -s)" == Darwin ]] || TARGETS=(x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-pc-windows-msvc aarch64-pc-windows-msvc)
+  [[ "$(uname -s)" == Darwin ]] || TARGETS=("${LINUX[@]}" x86_64-pc-windows-msvc aarch64-pc-windows-msvc)
 fi
 
-version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml")
-[[ -n "$version" ]] || die 'no workspace version in Cargo.toml'
+# The CLI has its own version (crates/ring-cli/Cargo.toml), else the workspace's.
+version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$ROOT/crates/ring-cli/Cargo.toml")
+[[ -n "$version" ]] || version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml")
+[[ -n "$version" ]] || die 'no version in crates/ring-cli/Cargo.toml or the workspace'
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || echo 1767225600)}
 mkdir -p "$OUT"
+# Only this run's builds may be listed in SHA256SUMS and packaged: clear earlier archives.
+rm -f "$OUT"/ring-*.tar.gz "$OUT"/ring-*.zip "$OUT"/SHA256SUMS
 cd "$ROOT"
 
 expect_arch() {
@@ -43,6 +48,8 @@ expect_arch() {
   case "$target" in
     x86_64-unknown-linux-musl) [[ "$description" == *"ELF 64-bit"*"x86-64"*"statically linked"* || "$description" == *"ELF 64-bit"*"x86-64"*"static-pie"* ]] ;;
     aarch64-unknown-linux-musl) [[ "$description" == *"ELF 64-bit"*"ARM aarch64"*"statically linked"* || "$description" == *"ELF 64-bit"*"ARM aarch64"*"static-pie"* ]] ;;
+    i686-unknown-linux-musl) [[ "$description" == *"ELF 32-bit"*"Intel"*"statically linked"* || "$description" == *"ELF 32-bit"*"Intel"*"static-pie"* ]] ;;
+    armv7-unknown-linux-musleabihf) [[ "$description" == *"ELF 32-bit"*"ARM, EABI5"*"statically linked"* || "$description" == *"ELF 32-bit"*"ARM, EABI5"*"static-pie"* ]] ;;
     x86_64-apple-darwin) [[ "$description" == *"Mach-O 64-bit"*"x86_64"* ]] ;;
     aarch64-apple-darwin) [[ "$description" == *"Mach-O 64-bit"*"arm64"* ]] ;;
     x86_64-pc-windows-msvc) [[ "$description" == *"PE32+"*"x86-64"* ]] ;;
@@ -72,7 +79,7 @@ for target in "${TARGETS[@]}"; do
   log "building ring for $target"
   exe=ring
   case "$target" in
-    *-unknown-linux-musl)
+    *-unknown-linux-musl*)
       cargo zigbuild --release --locked -p silicon-ring-cli --target "$target" ;;
     *-apple-darwin)
       [[ "$(uname -s)" == Darwin ]] || die "$target needs a macOS host"

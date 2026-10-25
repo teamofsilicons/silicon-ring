@@ -20,11 +20,19 @@ pub fn sandboxed() -> bool {
     ashpd::is_sandboxed()
 }
 
-/// The command that relaunches this build: the AppImage itself, the installed binary on PATH,
-/// or the absolute path of a development build.
+/// The command that relaunches this build: the AppImage itself, the AppRun of an extracted AppImage
+/// (as Silicon Apps installs it, which sets up the bundled GTK), the installed binary on PATH, or
+/// the absolute path of a development build.
 fn launch_command() -> String {
     if let Some(appimage) = std::env::var_os("APPIMAGE") {
         return quote(&appimage.to_string_lossy());
+    }
+    // Checked after APPIMAGE: a mounted AppImage's APPDIR is a temporary mount point.
+    if let Some(dir) = std::env::var_os("APPDIR") {
+        let run = std::path::Path::new(&dir).join("AppRun");
+        if run.is_file() {
+            return quote(&run.to_string_lossy());
+        }
     }
     match std::env::current_exe() {
         Ok(exe) if exe.starts_with("/usr/") => "ring-desktop".to_string(),

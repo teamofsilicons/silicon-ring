@@ -31,7 +31,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 STATE = ROOT / 'secrets' / 'platform'
 PACKAGES = ROOT / 'dist' / 'apps' / 'packages.json'
 APP = 'ring'
-LIVE_TARGETS = ('linux-x86_64', 'linux-aarch64')
+# Targets with a live Apps validation runner (silicon-apps capabilities); macOS and Windows ARM have none.
+LIVE_TARGETS = ('linux-x86_64', 'linux-aarch64', 'linux-i686', 'linux-armv7hf', 'windows-x86_64')
 
 
 def fail(message):

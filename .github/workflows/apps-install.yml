@@ -1,0 +1,135 @@
+name: Silicon Apps install check
+
+# Installs ring from Silicon Apps exactly as a silicon (or the person on that machine) would, on
+# each target with a hosted runner, and checks the CLI and the desktop app the install script adds.
+# Run it on the development channel before promoting a release:
+#
+#   gh workflow run apps-install.yml -f spec='ring>dev'
+
+on:
+  workflow_dispatch:
+    inputs:
+      spec:
+        description: What to install, as silicon-apps install takes it (ring, 'ring>dev', 'ring@1.2.3')
+        required: true
+        default: ring>dev
+      version:
+        description: The ring --version it must report (empty to skip)
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x86_64, os: ubuntu-24.04 }
+          - { target: linux-aarch64, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      SILICON_APPS_NO_DAEMON: '1'
+    steps:
+      - name: Install silicon-apps
+        run: |
+          curl -fsSL https://apps.teamofsilicons.com/install.sh -o install-apps.sh
+          bash install-apps.sh --server https://apps.teamofsilicons.com --no-startup
+          echo "$HOME/.apps/bin" >> "$GITHUB_PATH"
+      - name: Headless install (CLI only)
+        run: |
+          silicon-apps install '${{ inputs.spec }}' --yes | tee install.txt
+          want=production; case '${{ inputs.spec }}' in *'>dev'*) want=development ;; esac
+          silicon-apps installed --json | python3 -c "import json,sys; r=[i for i in json.load(sys.stdin)['items'] if i['app_id']=='ring'][0]; assert r['channel']=='$want', r['channel']"
+          ring --version
+          [ -z '${{ inputs.version }}' ] || ring --version | grep -F 'ring ${{ inputs.version }}'
+          ring accounts --json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["app_id"] == "ring", d'
+          ring login status --json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["authenticated"] is False, d'
+          ring --help >/dev/null
+          test ! -e "$HOME/.local/share/silicon-ring/desktop" || { echo 'desktop app installed on a headless machine'; exit 1; }
+      - name: Desktop machine (CLI plus the desktop app)
+        run: |
+          # The libraries every desktop has and the AppImage takes from the system.
+          sudo apt-get update -qq && sudo apt-get install -y -qq libgtk-4-1 libpulse0 >/dev/null
+          # A runner has no desktop session; make it look like a machine with one.
+          sudo mkdir -p /usr/share/xsessions
+          printf '[Desktop Entry]\nName=GNOME\n' | sudo tee /usr/share/xsessions/gnome.desktop >/dev/null
+          silicon-apps uninstall ring
+          start=$(date +%s)
+          silicon-apps install '${{ inputs.spec }}' --yes
+          echo "install took $(( $(date +%s) - start ))s"
+          app="$HOME/.local/share/silicon-ring/desktop"
+          test -x "$app/AppRun"
+          test -x "$app/usr/bin/ring-desktop"
+          grep -F "Exec=\"$app/AppRun\"" "$HOME/.local/share/applications/com.teamofsilicons.Ring.desktop"
+          grep -F "\"$app/AppRun\" --gapplication-service" "$HOME/.local/share/dbus-1/services/com.teamofsilicons.Ring.service"
+          ring accounts --json >/dev/null
+          # Run the installed script again, as an update that brings the same build would.
+          script=$(find "$HOME/.apps" -path '*/scripts/install.sh' | head -1)
+          test -n "$script"
+          root=$(dirname "$(dirname "$script")")
+          (cd "$root" && APPS_INSTALL_DIR="$root" /bin/sh scripts/install.sh) | tee second.txt
+          grep -q 'up to date' second.txt
+          test -x "$app/AppRun"
+
+  windows:
+    name: windows-x86_64
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      SILICON_APPS_NO_DAEMON: '1'
+    steps:
+      - name: Install silicon-apps
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-WebRequest -UseBasicParsing https://apps.teamofsilicons.com/install.ps1 -OutFile install-apps.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\install-apps.ps1 -Server https://apps.teamofsilicons.com -NoStartup
+          if ($LASTEXITCODE -ne 0) { throw 'Silicon Apps installation failed' }
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:USERPROFILE '.apps\bin')
+      - name: Install ring with the desktop app
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $start = Get-Date
+          # silicon-apps is a .cmd shim here: --% keeps the quotes, so cmd does not read '>' as a redirect.
+          silicon-apps --% install "${{ inputs.spec }}" --yes
+          if ($LASTEXITCODE -ne 0) { throw 'silicon-apps install failed' }
+          $want = if ('${{ inputs.spec }}' -match '>dev') { 'development' } else { 'production' }
+          $ring = (silicon-apps installed --json | ConvertFrom-Json).items | Where-Object { $_.app_id -eq 'ring' }
+          if ($ring.channel -ne $want) { throw "installed ring from $($ring.channel), expected $want" }
+          "install took $([int]((Get-Date) - $start).TotalSeconds)s"
+          ring --version
+          if ('${{ inputs.version }}' -and -not ((ring --version) -match [regex]::Escape('ring ${{ inputs.version }}'))) { throw 'wrong version' }
+          $accounts = ring accounts --json | ConvertFrom-Json
+          if ($accounts.app_id -ne 'ring') { throw "accounts --json: $($accounts | ConvertTo-Json -Compress)" }
+          $status = ring login status --json | ConvertFrom-Json
+          if ($status.authenticated -ne $false) { throw 'login status --json is not authenticated:false' }
+          ring --help | Out-Null
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\Ring'
+          $exe = Get-ChildItem -Path (Join-Path $app 'app-*\Ring.exe') -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'the desktop app was not installed' }
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Ring.lnk'
+          if (-not (Test-Path $lnk)) { throw 'no Start menu shortcut' }
+          $target = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath
+          if ($target -ne $exe.FullName) { throw "shortcut points at $target, not $($exe.FullName)" }
+          "desktop app at $($exe.FullName), shortcut in place"
+          # Run the installed script again, as an update that brings the same build would.
+          $script = Get-ChildItem -Path (Join-Path $env:USERPROFILE '.apps') -Recurse -Filter 'install.cmd' | Select-Object -First 1
+          if (-not $script) { throw 'cannot find the installed install.cmd' }
+          $root = Split-Path -Parent (Split-Path -Parent $script.FullName)
+          $env:APPS_INSTALL_DIR = $root
+          $env:APPS_INSTALL_SCRIPT = '.\scripts\install.cmd'
+          Push-Location $root
+          $start = Get-Date
+          # The exact command line the Silicon Apps client uses, passed verbatim.
+          $run = Start-Process -FilePath cmd.exe -ArgumentList '/D /V:OFF /S /C ""%APPS_INSTALL_SCRIPT%""' -NoNewWindow -Wait -PassThru
+          $code = $run.ExitCode
+          Pop-Location
+          "second run exit $code in $([int]((Get-Date) - $start).TotalSeconds)s"
+          if ($code -ne 0) { throw 'the install script failed on its second run' }
+          if (@(Get-ChildItem -Path (Join-Path $app 'app-*') -Directory).Count -ne 1) { throw 'a second run left more than one build' }
