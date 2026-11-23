@@ -186,6 +186,7 @@ deploy/secrets.py --apply             # write it
 | `RING_ACCOUNTS_APP_SECRET` | `secrets/platform/ring-app.private.json` (`app_secret`) |
 | `RING_ACCOUNTS_WEBHOOK_SECRET` | the `whsec_…` value in `secrets/platform/accounts-webhook.private.json` (saved `silicon-apps webhook ring set\|rotate --json` output); kept from the current secret when that file is absent |
 | `OPENAI_API_KEY`, `DEEPGRAM_API_KEY`, `RING_APNS_KEY_ID`, `RING_APNS_TEAM_ID`, `RING_APNS_BUNDLE_ID` | `secrets/dev.env` |
+| `RING_DELEGATION_MODEL` (optional) | `secrets/dev.env`. Unset, representatives delegate to `gpt-6.1-terra`; `client` sends every delegation straight to the silicon, the quick fallback if delegation to the model fails (ring-media logs `the delegation backend failed` or `responses_validation_failed`) |
 | `RING_APNS_KEY_BASE64` | `secrets/AuthKey_<key id>.p8` |
 | `RING_FCM_SERVICE_ACCOUNT_BASE64` | `secrets/firebase-service-account.json` |
 | `RING_VAPID_PRIVATE_KEY`, `RING_VAPID_PUBLIC_KEY` | `secrets/vapid/{private,public}.b64url` |

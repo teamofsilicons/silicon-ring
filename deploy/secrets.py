@@ -108,6 +108,10 @@ def from_files():
 
     for key in ('OPENAI_API_KEY', 'DEEPGRAM_API_KEY'):
         put(key, dev.get(key), 'secrets/dev.env')
+    # Optional: the model representatives delegate to (ring-media defaults to gpt-6.1-terra;
+    # `client` sends every delegation straight to the silicon).
+    if dev.get('RING_DELEGATION_MODEL'):
+        put('RING_DELEGATION_MODEL', dev['RING_DELEGATION_MODEL'], 'secrets/dev.env')
     put('RING_APNS_KEY_ID', dev.get('RING_APNS_KEY_ID', '4T8HU7N96S'), 'secrets/dev.env')
     put('RING_APNS_TEAM_ID', dev.get('RING_APNS_TEAM_ID', 'LTBSK59BJ2'), 'secrets/dev.env')
     put('RING_APNS_BUNDLE_ID', dev.get('RING_APNS_BUNDLE_ID', 'com.teamofsilicons.ring'), 'secrets/dev.env')

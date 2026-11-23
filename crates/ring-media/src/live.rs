@@ -88,7 +88,8 @@ pub fn client_delegation() -> Value {
 pub fn responses_delegation(model: &str, instructions: &str, tools: Vec<Value>) -> Value {
     let mut all = vec![
         json!({"type": "web_search"}),
-        json!({"type": "code_interpreter"}),
+        // Responses requires the container even though Live's reference shows none.
+        json!({"type": "code_interpreter", "container": {"type": "auto"}}),
     ];
     all.extend(tools);
     json!({
