@@ -13,6 +13,7 @@ use ring_proto::{
     Account, AccountKind, MessageKind, RepresentativeStatus,
     internal::{FromMedia, RosterMember},
 };
+use serde_json::{Value, json};
 
 use crate::{
     audio::{self, Buffering, Clock, Feeds, LIVE_RATE},
@@ -86,6 +87,8 @@ const RESUME_DELAYS: [Duration; 3] = [
 ];
 /// A session that fails again this soon after being replaced is not retried.
 const MIN_RESUME_INTERVAL: Duration = Duration::from_secs(30);
+/// The function the Responses backend asks the silicon with.
+const ASK_SILICON: &str = "ask_silicon";
 
 pub async fn run(supervisor: Arc<Supervisor>, params: Params, mut session: Session<RepControl>) {
     let report = |status, error| {
@@ -122,6 +125,8 @@ async fn serve(
     let api_key = supervisor.config.openai_key()?.to_owned();
     let roster = Roster::new(p.roster.clone());
     let instructions = instructions(&p.silicon, &p.context, &roster);
+    let backend = supervisor.config.delegation_model.clone();
+    let delegation = delegation(backend.as_deref(), &p.silicon, &p.context, &roster);
     let start = p
         .start
         .as_deref()
@@ -133,7 +138,13 @@ async fn serve(
     let opening = start.as_deref().map(opening_request);
     // Not cancellable: a half-finished join would leave a participant behind in the room.
     let (live, joined) = tokio::join!(
-        Live::connect(&api_key, &p.voice, &instructions, opening.as_deref()),
+        Live::connect(
+            &api_key,
+            &p.voice,
+            &instructions,
+            opening.as_deref(),
+            &delegation
+        ),
         room::join(
             &supervisor.config.livekit_url,
             &p.token,
@@ -179,6 +190,10 @@ async fn serve(
         delegations: Vec::new(),
         delegation_ids: HashMap::new(),
         unanswered: HashMap::new(),
+        backend,
+        asks: HashMap::new(),
+        backend_notes: Vec::new(),
+        backend_sent: HashMap::new(),
         last_output: joined_at,
         last_commentary: None,
         last_update: None,
@@ -251,17 +266,7 @@ fn instructions(silicon: &Account, context: &str, roster: &Roster) -> String {
          it is relevant, never read it out. Commentary is for the others to hear now: say it right away in \
          your own words, without waiting for anyone to speak first, then pause and listen.\n\n"
     );
-    let others: Vec<String> = roster
-        .members()
-        .filter(|m| m.uuid != silicon.uuid)
-        .map(|m| {
-            let kind = match m.kind {
-                AccountKind::Carbon => "a person",
-                AccountKind::Silicon => "a silicon",
-            };
-            format!("{}, {kind}", describe(m.display_name.as_deref(), &m.id))
-        })
-        .collect();
+    let others = others_on_call(silicon, roster);
     if others.is_empty() {
         // Not "nobody is on the call yet": a silicon caller's representative opens the call while
         // it rings (its opening is held until someone answers), and saying nobody is there makes
@@ -280,6 +285,94 @@ fn instructions(silicon: &Account, context: &str, roster: &Roster) -> String {
         ));
     }
     text
+}
+
+/// Everyone on the call but the silicon, as "Name (id), a person".
+fn others_on_call(silicon: &Account, roster: &Roster) -> Vec<String> {
+    roster
+        .members()
+        .filter(|m| m.uuid != silicon.uuid)
+        .map(|m| {
+            let kind = match m.kind {
+                AccountKind::Carbon => "a person",
+                AccountKind::Silicon => "a silicon",
+            };
+            format!("{}, {kind}", describe(m.display_name.as_deref(), &m.id))
+        })
+        .collect()
+}
+
+/// Where GPT-Live delegates: to `backend`, an OpenAI model with web search that asks the silicon
+/// through `ask_silicon` when it needs to, or without one straight to the silicon.
+fn delegation(backend: Option<&str>, silicon: &Account, context: &str, roster: &Roster) -> Value {
+    match backend {
+        Some(model) => live::responses_delegation(
+            model,
+            &backend_instructions(silicon, context, roster),
+            vec![ask_silicon_tool(silicon)],
+        ),
+        None => live::client_delegation(),
+    }
+}
+
+/// The backend works for the silicon, behind its voice: what it returns is said on the call.
+fn backend_instructions(silicon: &Account, context: &str, roster: &Roster) -> String {
+    let name = silicon.label();
+    let me = describe(silicon.display_name.as_deref(), &silicon.id);
+    let mut text = format!(
+        "You work behind the voice of {me} on a live Silicon Ring voice call. {name} is a silicon, an \
+         AI agent that cannot speak on calls itself: a voice model speaks for it, as {name}, and hands \
+         you what needs looking up, working out or asking. What you return is said aloud on the call, \
+         so answer in a few plain spoken sentences, the answer first: no lists, formatting, links or \
+         citations.\n\n\
+         Use web search for public and current facts, and code for calculations.\n\
+         Use {ASK_SILICON} for anything only {name} knows, has or decides: its memory and its own data, \
+         tools, messages and schedule; anything to do or send on its behalf; and decisions, \
+         commitments, plans, permissions or opinions it has not already given on this call. Ask one \
+         clear, self-contained question that says who wants what; {name} also sees the call's recent \
+         transcript. Its answer can take a while. Never guess or invent {name}'s facts, decisions or \
+         promises: ask. Messages from {name} can also reach you on their own; take them into account."
+    );
+    let others = others_on_call(silicon, roster);
+    if !others.is_empty() {
+        text.push_str(&format!(
+            "\n\nOn the call when it started: {}.",
+            others.join("; ")
+        ));
+    }
+    let context = context.trim();
+    if !context.is_empty() {
+        text.push_str(&format!(
+            "\n\nWhat {name} wants its voice to know for this call:\n{context}"
+        ));
+    }
+    text
+}
+
+fn ask_silicon_tool(silicon: &Account) -> Value {
+    let name = silicon.label();
+    json!({
+        "type": "function",
+        "name": ASK_SILICON,
+        "description": format!(
+            "Sends a question or request to {name}, the silicon this call's voice speaks for, and \
+             returns its answer, which can take a while."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": format!(
+                        "What you need from {name}, self-contained: who on the call wants what."
+                    ),
+                },
+            },
+            "required": ["message"],
+            "additionalProperties": false,
+        },
+        "strict": true,
+    })
 }
 
 /// A delegation still waiting for the silicon's commentary. It stays after both progress updates,
@@ -465,8 +558,18 @@ struct Bridge {
     delegations: Vec<(String, Option<i64>, Instant)>,
     /// Ring delegation id → GPT-Live delegation id.
     delegation_ids: HashMap<String, String>,
-    /// Delegations the silicon has not answered with commentary yet, by GPT-Live delegation id.
+    /// Delegations the silicon has not answered with commentary yet, by GPT-Live delegation id
+    /// (or, with a backend, its `ask_silicon` calls by Ring delegation id).
     unanswered: HashMap<String, Unanswered>,
+    /// The OpenAI model GPT-Live delegates to, or None when delegations go to the silicon.
+    backend: Option<String>,
+    /// The backend's `ask_silicon` calls waiting for the silicon: Ring delegation id → call id.
+    asks: HashMap<String, String>,
+    /// What the silicon sent on its own while the backend waits for a call's result, for the
+    /// backend once it can continue.
+    backend_notes: Vec<String>,
+    /// The silicon's answers given to the backend, by message id, for GPT-Live if it refuses one.
+    backend_sent: HashMap<String, PendingMessage>,
     /// When GPT-Live last sent audible speech, the silicon last sent commentary, and the last
     /// progress update went out.
     last_output: Instant,
@@ -723,11 +826,24 @@ impl Bridge {
             .map(opening_request);
         self.opening = opening.as_ref().map(|_| Opening::default());
         let (api_key, voice) = (self.api_key.clone(), self.voice.clone());
+        let delegation = delegation(
+            self.backend.as_deref(),
+            &self.silicon,
+            &self.context,
+            &self.roster,
+        );
         let mut last_error = cause;
         for (attempt, delay) in RESUME_DELAYS.into_iter().enumerate() {
             let connect = async {
                 tokio::time::sleep(delay).await;
-                Live::connect(&api_key, &voice, &instructions, opening.as_deref()).await
+                Live::connect(
+                    &api_key,
+                    &voice,
+                    &instructions,
+                    opening.as_deref(),
+                    &delegation,
+                )
+                .await
             };
             let connected = tokio::select! {
                 _ = stop.cancelled() => return Ok(false),
@@ -742,8 +858,12 @@ impl Bridge {
                     self.reminded = false;
                     // Replies the old session never acknowledged go to the new one. It does
                     // not know the old delegations, so they are sent without one, and their
-                    // progress updates stop.
+                    // progress updates stop. The old backend's calls went with it: answers to
+                    // them go straight to GPT-Live.
                     self.unanswered.clear();
+                    self.asks.clear();
+                    self.backend_notes.clear();
+                    self.backend_sent.clear();
                     let unacknowledged: Vec<_> = self.awaiting.drain().collect();
                     for (message_id, message) in unacknowledged {
                         live.append(&message.kind, &message.text, None, Some(&message_id))
@@ -891,6 +1011,14 @@ impl Bridge {
                 self.rejected(live, client_event_id, &code, &message)
                     .await?
             }
+            Event::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            } => self.function_call(live, call_id, &name, &arguments).await?,
+            Event::BackendFailed { message } => {
+                tracing::warn!(ringid = %self.ringid, "the delegation backend failed: {message}")
+            }
             Event::Closed { reason } => bail!("GPT-Live ended the session ({reason})"),
             Event::Appended { .. } | Event::Other => {}
         }
@@ -917,10 +1045,15 @@ impl Bridge {
                     // Already sent; its acknowledgement reports the delivery.
                     return Ok(());
                 }
-                let delegation_id = delegation_id.map(|id| self.live_delegation_id(&id));
                 if kind == MessageKind::Commentary {
                     self.last_commentary = Some(Instant::now());
                 }
+                if self.backend.is_some() {
+                    return self
+                        .relay_with_backend(live, message_id, kind, text, delegation_id)
+                        .await;
+                }
+                let delegation_id = delegation_id.map(|id| self.live_delegation_id(&id));
                 match (kind, &delegation_id) {
                     // Commentary is the answer the caller is waiting for. It also settles every
                     // earlier delegation (a correction delegates again and only the newest one
@@ -984,6 +1117,152 @@ impl Bridge {
         Ok(())
     }
 
+    /// The backend asks the silicon something (`ask_silicon`): it reaches the silicon as a Ring
+    /// delegation, and the silicon's commentary on it becomes the call's result.
+    async fn function_call(
+        &mut self,
+        live: &mut Live,
+        call_id: String,
+        name: &str,
+        arguments: &str,
+    ) -> Result<()> {
+        let message = serde_json::from_str::<Value>(arguments)
+            .ok()
+            .and_then(|args| args["message"].as_str().map(|m| m.trim().to_owned()))
+            .filter(|m| !m.is_empty());
+        let message = match message {
+            Some(message) if name == ASK_SILICON => message,
+            _ => {
+                tracing::warn!(ringid = %self.ringid, name, "the delegation backend made a call Ring cannot run");
+                let output = format!("There is no tool {name:?} taking these arguments.");
+                live.function_output(&call_id, &output, None).await?;
+                return self.continue_backend(live).await;
+            }
+        };
+        let ring_id = format!("dlg_{}", call_id.strip_prefix("call_").unwrap_or(&call_id));
+        tracing::info!(ringid = %self.ringid, delegation_id = %ring_id, "the delegation backend asks the silicon");
+        let now = Instant::now();
+        self.asks.insert(ring_id.clone(), call_id);
+        self.unanswered.insert(
+            ring_id.clone(),
+            Unanswered {
+                created: now,
+                since: now,
+                updates: 0,
+                request: Some(message.clone()),
+            },
+        );
+        self.reporter.send(FromMedia::DelegationCreated {
+            ringid: self.ringid.clone(),
+            silicon_uuid: self.silicon.uuid.clone(),
+            delegation_id: ring_id,
+            request: Some(message),
+        });
+        Ok(())
+    }
+
+    /// With a backend, the silicon's commentary on one of its `ask_silicon` calls is that call's
+    /// result, and commentary without one answers every call still waiting (as it settles every
+    /// delegation without a backend). Anything else goes straight to GPT-Live as before, and to
+    /// the backend too, so that what it does next knows it.
+    async fn relay_with_backend(
+        &mut self,
+        live: &mut Live,
+        message_id: String,
+        kind: MessageKind,
+        text: String,
+        delegation_id: Option<String>,
+    ) -> Result<()> {
+        let name = self.silicon.label().to_owned();
+        // An id the backend no longer waits on (its call ended) answers nothing here.
+        let unaddressed = delegation_id.is_none();
+        let asked = delegation_id.filter(|id| self.asks.contains_key(id));
+        let answer = match (kind, asked) {
+            (MessageKind::Commentary, Some(id)) => Some((vec![id], text.clone())),
+            (MessageKind::Commentary, None) if unaddressed && !self.asks.is_empty() => Some((
+                self.asks.keys().cloned().collect(),
+                format!("{name} sent this without saying which question it answers: {text}"),
+            )),
+            (MessageKind::Thinking, Some(id)) => {
+                // The silicon is working on it: give it more time.
+                if let Some(open) = self.unanswered.get_mut(&id) {
+                    open.since = Instant::now();
+                }
+                None
+            }
+            _ => None,
+        };
+        if let Some((ring_ids, output)) = answer {
+            self.backend_sent.insert(
+                message_id.clone(),
+                PendingMessage {
+                    kind: kind.as_str().into(),
+                    text,
+                    delegation_id: None,
+                },
+            );
+            self.answer_asks(live, ring_ids, &output, Some(&message_id))
+                .await?;
+            self.delivered.insert(message_id.clone());
+            self.reporter.send(FromMedia::MessageDelivered {
+                ringid: self.ringid.clone(),
+                message_id,
+            });
+            return Ok(());
+        }
+        let note = match kind {
+            MessageKind::Commentary => format!("{name} told the call: {text}"),
+            MessageKind::Thinking => format!("Background from {name}: {text}"),
+        };
+        live.append(kind.as_str(), &text, None, Some(&message_id))
+            .await?;
+        self.awaiting.insert(
+            message_id,
+            PendingMessage {
+                kind: kind.as_str().into(),
+                text,
+                delegation_id: None,
+            },
+        );
+        if self.asks.is_empty() {
+            live.backend_message(&note, None).await
+        } else {
+            // Not between a call and its result.
+            self.backend_notes.push(note);
+            Ok(())
+        }
+    }
+
+    /// Gives the backend `output` as the result of its calls `ring_ids`, then lets it continue.
+    async fn answer_asks(
+        &mut self,
+        live: &mut Live,
+        ring_ids: Vec<String>,
+        output: &str,
+        mut event_id: Option<&str>,
+    ) -> Result<()> {
+        for ring_id in ring_ids {
+            self.unanswered.remove(&ring_id);
+            if let Some(call_id) = self.asks.remove(&ring_id) {
+                live.function_output(&call_id, output, event_id.take())
+                    .await?;
+            }
+        }
+        self.continue_backend(live).await
+    }
+
+    /// The backend continues once every call it made has a result, with what the silicon sent
+    /// on its own meanwhile.
+    async fn continue_backend(&mut self, live: &mut Live) -> Result<()> {
+        if !self.asks.is_empty() {
+            return Ok(());
+        }
+        for note in std::mem::take(&mut self.backend_notes) {
+            live.backend_message(&note, None).await?;
+        }
+        live.run_backend().await
+    }
+
     fn live_delegation_id(&self, ring_id: &str) -> String {
         match self.delegation_ids.get(ring_id) {
             Some(id) => id.clone(),
@@ -1004,6 +1283,19 @@ impl Bridge {
         code: &str,
         message: &str,
     ) -> Result<()> {
+        if let Some(pending) = event_id
+            .as_ref()
+            .and_then(|id| self.backend_sent.remove(id))
+        {
+            // The backend no longer waits for that call (its response ended, for example): the
+            // silicon's answer goes to GPT-Live instead.
+            let message_id = event_id.unwrap_or_default();
+            tracing::info!(ringid = %self.ringid, %message_id, code, "the delegation backend refused an answer, giving it to GPT-Live: {message}");
+            live.append(&pending.kind, &pending.text, None, Some(&message_id))
+                .await?;
+            self.awaiting.insert(message_id, pending);
+            return Ok(());
+        }
         let Some(pending) = event_id.as_ref().and_then(|id| self.awaiting.remove(id)) else {
             tracing::warn!(ringid = %self.ringid, code, "GPT-Live reported an error: {message}");
             return Ok(());
@@ -1054,21 +1346,31 @@ impl Bridge {
             .unanswered
             .iter_mut()
             .filter(|(_, open)| open.due(UPDATE_SPACING) == Some(stage))
-            .map(|(_, open)| {
+            .map(|(id, open)| {
                 open.updates += 1;
-                (open.created, open.request.clone())
+                (open.created, id.clone(), open.request.clone())
             })
             .collect();
-        covered.sort_by_key(|(created, _)| *created);
-        let requests: Vec<String> = covered.into_iter().filter_map(|(_, r)| r).collect();
+        covered.sort_by_key(|(created, ..)| *created);
+        let ids: Vec<String> = covered.iter().map(|(_, id, _)| id.clone()).collect();
+        let requests: Vec<String> = covered.into_iter().filter_map(|(.., r)| r).collect();
         self.last_update = Some(Instant::now());
-        live.append(
-            "commentary",
-            &progress_update(stage, &requests),
-            Some(&id),
-            None,
-        )
-        .await
+        let update = progress_update(stage, &requests);
+        if self.backend.is_none() {
+            return live.append("commentary", &update, Some(&id), None).await;
+        }
+        if stage == 0 {
+            // GPT-Live delegated to the backend, not to these calls: no delegation id.
+            return live.append("commentary", &update, None, None).await;
+        }
+        // The backend waits for these calls: the follow-up is their result, so it can carry on,
+        // and the silicon's answer goes straight to the call when it comes.
+        let name = self.silicon.label().to_owned();
+        let output = format!(
+            "No answer from {name} yet. Tell them you will come back to it as soon as you have \
+             it, and carry on; {name}'s answer reaches the call by itself when it comes."
+        );
+        self.answer_asks(live, ids, &output, None).await
     }
 
     fn flush_delegations(&mut self, all: bool) {

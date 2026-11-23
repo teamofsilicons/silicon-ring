@@ -41,6 +41,8 @@ Environment:
   RING_MEDIA_SECRET       shared secret for that socket
   RING_LIVEKIT_URL        LiveKit URL (http(s):// or ws(s)://), default ws://127.0.0.1:7880
   OPENAI_API_KEY          GPT-Live, for representatives and Natural Voice synthesis
+  RING_DELEGATION_MODEL   the OpenAI model representatives delegate to, default gpt-6.1-terra;
+                          client sends every delegation straight to the silicon
   DEEPGRAM_API_KEY        speech-to-text
   RING_S3_BUCKET          bucket for recordings and voicemail
   AWS_REGION              region of that bucket

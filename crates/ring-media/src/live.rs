@@ -1,5 +1,5 @@
-//! OpenAI GPT-Live (`gpt-live-1`) over its WebSocket API, and Natural Voice synthesis by
-//! Live readback.
+//! OpenAI GPT-Live (`gpt-live-1`) over its WebSocket API, its delegation (to Ring itself, or to
+//! an OpenAI model through Responses), and Natural Voice synthesis by Live readback.
 
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,8 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 pub const SILENCE_LIMIT: Duration = Duration::from_secs(20);
 /// Upper bound for one `session.input_audio.append`.
 const MAX_APPEND_SAMPLES: usize = LIVE_RATE as usize;
+/// The Responses backend's reasoning effort.
+const DELEGATION_EFFORT: &str = "medium";
 
 pub fn is_natural_voice(voice: &str) -> bool {
     ring_proto::natural_voices().iter().any(|v| v.id == voice)
@@ -46,6 +48,17 @@ pub enum Event {
         id: String,
         offset_ms: Option<i64>,
     },
+    /// The Responses backend called one of the client's own function tools; it waits for the
+    /// result (`function_output`, then `run_backend`).
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    /// A Responses backend response failed.
+    BackendFailed {
+        message: String,
+    },
     /// Acknowledgement of a `session.{kind}.append` we sent with `event_id`.
     Appended {
         client_event_id: Option<String>,
@@ -65,16 +78,41 @@ pub struct Live {
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
 }
 
+/// Delegation to Ring itself: each one is a `session.delegation.created` for the client.
+pub fn client_delegation() -> Value {
+    json!({"type": "client"})
+}
+
+/// Delegation to `model` through Responses, which OpenAI runs with its hosted tools (web search
+/// and code interpreter) besides the client's own function `tools`.
+pub fn responses_delegation(model: &str, instructions: &str, tools: Vec<Value>) -> Value {
+    let mut all = vec![
+        json!({"type": "web_search"}),
+        json!({"type": "code_interpreter"}),
+    ];
+    all.extend(tools);
+    json!({
+        "type": "responses",
+        "responses": {
+            "model": model,
+            "instructions": instructions,
+            "reasoning": {"effort": DELEGATION_EFFORT},
+            "tools": all,
+        },
+    })
+}
+
 impl Live {
-    /// Opens a session with client delegation and returns once `session.started` arrives.
-    /// `opening` asks GPT-Live to speak first; it is given at startup as a developer message,
-    /// which is what GPT-Live follows most reliably and soonest (a greeting appended after the
-    /// start can take many seconds, or never come).
+    /// Opens a session and returns once `session.started` arrives. `delegation` is
+    /// `client_delegation()` or `responses_delegation(…)`. `opening` asks GPT-Live to speak first;
+    /// it is given at startup as a developer message, which is what GPT-Live follows most reliably
+    /// and soonest (a greeting appended after the start can take many seconds, or never come).
     pub async fn connect(
         api_key: &str,
         voice: &str,
         instructions: &str,
         opening: Option<&str>,
+        delegation: &Value,
     ) -> Result<Self> {
         if !is_natural_voice(voice) {
             bail!("{voice:?} is not a Natural Voice");
@@ -96,7 +134,7 @@ impl Live {
                 "model": MODEL,
                 "instructions": instructions,
                 "audio": {"format": {"type": "audio/pcm", "rate": LIVE_RATE}, "output": {"voice": voice}},
-                "delegation": {"type": "client"},
+                "delegation": delegation,
             }
         });
         if let Some(opening) = opening {
@@ -146,6 +184,42 @@ impl Live {
                 .await?;
         }
         Ok(())
+    }
+
+    /// Gives the Responses backend the result of its function call `call_id`. It continues only
+    /// once every call it made has a result and `run_backend` is sent.
+    pub async fn function_output(
+        &mut self,
+        call_id: &str,
+        output: &str,
+        event_id: Option<&str>,
+    ) -> Result<()> {
+        let item = json!({"type": "function_call_output", "call_id": call_id, "output": output});
+        self.create_item(item, event_id).await
+    }
+
+    /// Adds a message to the Responses backend's conversation, for what it does next. It does
+    /// not stop work under way.
+    pub async fn backend_message(&mut self, text: &str, event_id: Option<&str>) -> Result<()> {
+        let item = json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": text}],
+        });
+        self.create_item(item, event_id).await
+    }
+
+    async fn create_item(&mut self, item: Value, event_id: Option<&str>) -> Result<()> {
+        let mut event = json!({"type": "response.item.create", "item": item});
+        if let Some(id) = event_id {
+            event["event_id"] = json!(id);
+        }
+        self.send(event).await
+    }
+
+    /// Lets the Responses backend continue with the function results it was given.
+    pub async fn run_backend(&mut self) -> Result<()> {
+        self.send(json!({"type": "response.create"})).await
     }
 
     /// `kind` is `instructions`, `thinking` or `commentary`.
@@ -200,6 +274,35 @@ impl Live {
                 }
                 _ => Event::Other,
             },
+            // The Responses backend's own streaming events: only its calls to the client's
+            // functions, and its failures, concern the client.
+            "response.event" => {
+                let inner = &event["event"];
+                let item = &inner["item"];
+                match inner["type"].as_str().unwrap_or_default() {
+                    "response.output_item.done" if item["type"] == "function_call" => {
+                        Event::FunctionCall {
+                            call_id: item["call_id"].as_str().unwrap_or_default().to_owned(),
+                            name: item["name"].as_str().unwrap_or_default().to_owned(),
+                            arguments: item["arguments"].as_str().unwrap_or_default().to_owned(),
+                        }
+                    }
+                    "response.failed" => Event::BackendFailed {
+                        message: inner["response"]["error"]["message"]
+                            .as_str()
+                            .unwrap_or("unknown error")
+                            .to_owned(),
+                    },
+                    "error" => Event::BackendFailed {
+                        message: inner["message"]
+                            .as_str()
+                            .or(inner["error"]["message"].as_str())
+                            .unwrap_or("unknown error")
+                            .to_owned(),
+                    },
+                    _ => Event::Other,
+                }
+            }
             "session.thinking.appended"
             | "session.commentary.appended"
             | "session.instructions.appended" => Event::Appended {
@@ -313,6 +416,8 @@ async fn readback(api_key: &str, voice: &str, text: &str) -> Result<Vec<i16>> {
         Some(&format!(
             "Speak first. Read exactly this message now, then stay silent: {text}"
         )),
+        // A readback never delegates.
+        &client_delegation(),
     )
     .await?;
     let mut samples: Vec<i16> = Vec::new();

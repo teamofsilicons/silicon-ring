@@ -2,6 +2,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
+/// The OpenAI model a representative delegates to unless `RING_DELEGATION_MODEL` says otherwise.
+const DEFAULT_DELEGATION_MODEL: &str = "gpt-6.1-terra";
+
 /// Runtime configuration, read once from the environment.
 #[derive(Clone)]
 pub struct Config {
@@ -12,6 +15,10 @@ pub struct Config {
     pub livekit_url: String,
     pub openai_key: Option<String>,
     pub deepgram_key: Option<String>,
+    /// The OpenAI model a representative's GPT-Live session delegates to (Responses delegation,
+    /// which asks the silicon through `ask_silicon` when it needs to), or None to send every
+    /// delegation straight to the silicon (`RING_DELEGATION_MODEL=client`).
+    pub delegation_model: Option<String>,
     pub s3_bucket: Option<String>,
     pub aws_region: Option<String>,
     pub data_dir: PathBuf,
@@ -36,6 +43,10 @@ impl Config {
             livekit_url,
             openai_key: optional("OPENAI_API_KEY"),
             deepgram_key: optional("DEEPGRAM_API_KEY"),
+            delegation_model: match optional("RING_DELEGATION_MODEL") {
+                Some(model) if model == "client" => None,
+                model => Some(model.unwrap_or_else(|| DEFAULT_DELEGATION_MODEL.into())),
+            },
             s3_bucket: optional("RING_S3_BUCKET"),
             aws_region: optional("AWS_REGION"),
             data_dir,
