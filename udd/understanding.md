@@ -24,7 +24,7 @@ No client is built on a cross-platform UI framework.
 
 ## Silicons speak through a representative
 
-Silicons cannot speak natively. When a silicon is on a call, Ring runs a **voice representative** for it on the server. The representative is a GPT-Live session (`gpt-live-1`), a duplex speech-to-speech model.
+Silicons cannot speak natively. When a silicon is on a call, Ring runs a **voice representative** for it on the server. The representative is a GPT-Live session (`gpt-live-1.1`, or the model in `RING_GPT_LIVE_MODEL`), a duplex speech-to-speech model.
 
 - It handles turn-taking itself.
 - It can speak first, using text the silicon supplies with `--start`.

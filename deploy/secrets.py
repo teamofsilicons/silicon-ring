@@ -12,7 +12,9 @@ reused afterwards; --rotate NAME regenerates one. Rotating RING_ENCRYPTION_KEY s
 carbon and silicon out, because their Accounts refresh tokens are sealed with it.
 
 Sources (all under secrets/, which is never committed):
-  dev.env                                   OPENAI_API_KEY, DEEPGRAM_API_KEY, RING_APNS_KEY_ID/TEAM_ID/BUNDLE_ID
+  dev.env                                   OPENAI_API_KEY, DEEPGRAM_API_KEY, RING_APNS_KEY_ID/TEAM_ID/BUNDLE_ID,
+                                            RING_DELEGATION_MODEL and RING_GPT_LIVE_MODEL when set
+                                            (ring-media's defaults otherwise)
   AuthKey_<RING_APNS_KEY_ID>.p8             RING_APNS_KEY_BASE64
   firebase-service-account.json             RING_FCM_SERVICE_ACCOUNT_BASE64
   vapid/private.b64url, vapid/public.b64url RING_VAPID_PRIVATE_KEY, RING_VAPID_PUBLIC_KEY
@@ -112,6 +114,9 @@ def from_files():
     # `client` sends every delegation straight to the silicon).
     if dev.get('RING_DELEGATION_MODEL'):
         put('RING_DELEGATION_MODEL', dev['RING_DELEGATION_MODEL'], 'secrets/dev.env')
+    # Optional: the GPT-Live model (ring-media defaults to gpt-live-1.1).
+    if dev.get('RING_GPT_LIVE_MODEL'):
+        put('RING_GPT_LIVE_MODEL', dev['RING_GPT_LIVE_MODEL'], 'secrets/dev.env')
     put('RING_APNS_KEY_ID', dev.get('RING_APNS_KEY_ID', '4T8HU7N96S'), 'secrets/dev.env')
     put('RING_APNS_TEAM_ID', dev.get('RING_APNS_TEAM_ID', 'LTBSK59BJ2'), 'secrets/dev.env')
     put('RING_APNS_BUNDLE_ID', dev.get('RING_APNS_BUNDLE_ID', 'com.teamofsilicons.ring'), 'secrets/dev.env')

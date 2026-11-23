@@ -1,7 +1,11 @@
-//! OpenAI GPT-Live (`gpt-live-1`) over its WebSocket API, its delegation (to Ring itself, or to
-//! an OpenAI model through Responses), and Natural Voice synthesis by Live readback.
+//! OpenAI GPT-Live over its WebSocket API, its delegation (to Ring itself, or to an OpenAI model
+//! through Responses), and Natural Voice synthesis by Live readback. The model is `gpt-live-1.1`
+//! unless `RING_GPT_LIVE_MODEL` names another (`gpt-live-1` speaks the same protocol).
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -16,7 +20,14 @@ use tokio_tungstenite::{
 use crate::audio::{self, LIVE_RATE};
 
 const LIVE_URL: &str = "wss://api.openai.com/v1/live/sessions";
-const MODEL: &str = "gpt-live-1";
+const DEFAULT_MODEL: &str = "gpt-live-1.1";
+static MODEL: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("RING_GPT_LIVE_MODEL")
+        .ok()
+        .map(|m| m.trim().to_owned())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_owned())
+});
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 /// A send that cannot complete this quickly means the connection is stalled.
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -27,6 +38,11 @@ pub const SILENCE_LIMIT: Duration = Duration::from_secs(20);
 const MAX_APPEND_SAMPLES: usize = LIVE_RATE as usize;
 /// The Responses backend's reasoning effort.
 const DELEGATION_EFFORT: &str = "medium";
+
+/// The GPT-Live model every session uses: `RING_GPT_LIVE_MODEL`, read once, or the default.
+pub fn model() -> &'static str {
+    &MODEL
+}
 
 pub fn is_natural_voice(voice: &str) -> bool {
     ring_proto::natural_voices().iter().any(|v| v.id == voice)
@@ -132,7 +148,7 @@ impl Live {
         let mut start = json!({
             "type": "session.start",
             "session": {
-                "model": MODEL,
+                "model": model(),
                 "instructions": instructions,
                 "audio": {"format": {"type": "audio/pcm", "rate": LIVE_RATE}, "output": {"voice": voice}},
                 "delegation": delegation,

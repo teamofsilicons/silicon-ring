@@ -41,6 +41,7 @@ Environment:
   RING_MEDIA_SECRET       shared secret for that socket
   RING_LIVEKIT_URL        LiveKit URL (http(s):// or ws(s)://), default ws://127.0.0.1:7880
   OPENAI_API_KEY          GPT-Live, for representatives and Natural Voice synthesis
+  RING_GPT_LIVE_MODEL     GPT-Live model, default gpt-live-1.1 (gpt-live-1 also works)
   RING_DELEGATION_MODEL   the OpenAI model representatives delegate to, default gpt-6.1-terra;
                           client sends every delegation straight to the silicon
   DEEPGRAM_API_KEY        speech-to-text
@@ -95,7 +96,12 @@ fn main() -> ExitCode {
 async fn run() -> anyhow::Result<()> {
     let config = Arc::new(Config::from_env()?);
     config.warn_missing();
-    tracing::info!(version = VERSION, livekit = %config.livekit_url, "ring-media starting");
+    tracing::info!(
+        version = VERSION,
+        livekit = %config.livekit_url,
+        gpt_live = live::model(),
+        "ring-media starting"
+    );
 
     let (reporter, outgoing) = Reporter::channel();
     let shutdown = CancellationToken::new();
