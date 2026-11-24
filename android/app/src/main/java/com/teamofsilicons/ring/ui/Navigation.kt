@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.teamofsilicons.ring.AppGraph
+import com.teamofsilicons.ring.ui.call.RecordingNoticeHost
 import com.teamofsilicons.ring.ui.details.CallDetailsScreen
 import com.teamofsilicons.ring.ui.details.VoicemailDetailScreen
 import com.teamofsilicons.ring.ui.dialer.DialerScreen
@@ -85,5 +86,7 @@ fun RingRoot(
                 is Route.VoicemailDetail -> VoicemailDetailScreen(graph, nav, route.voicemailId)
             }
         }
+        // After sign-in and before a call until this device agrees: Ring records calls.
+        RecordingNoticeHost(graph)
     }
 }

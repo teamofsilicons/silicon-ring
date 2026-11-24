@@ -60,10 +60,11 @@ android {
         applicationId = "com.teamofsilicons.ring"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1_000_004
-        versionName = "1.0.0"
+        versionCode = 1_000_005
+        versionName = "1.0.1"
         buildConfigField("String", "ACCOUNTS_URL", "\"https://accounts.teamofsilicons.com\"")
         buildConfigField("String", "SOURCE_URL", "\"https://github.com/teamofsilicons/silicon-ring\"")
+        buildConfigField("String", "PRIVACY_URL", "\"https://ring.teamofsilicons.com/privacy\"")
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }

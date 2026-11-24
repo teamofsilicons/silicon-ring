@@ -42,7 +42,8 @@ import kotlinx.coroutines.launch
  *     adb shell am start -n com.teamofsilicons.ring/.debug.DesignCatalogActivity \
  *         --es screen incoming --ez dark false
  *
- * Screens: incoming, incoming-reasons, calling, ringing, active, voicemail, ended, recents, voicemails.
+ * Screens: incoming, incoming-reasons, calling, ringing, active, active-notice (answered before
+ * agreeing to the recording notice), voicemail, ended, recents, voicemails.
  * `simulate-incoming` instead rings a local call through Telecom and the call service.
  * `media-test` (with `--es url ws://… --es token <LiveKit JWT>`) joins a LiveKit room with the
  * app's call media stack and publishes the microphone, to check media against a dev SFU.
@@ -74,6 +75,7 @@ class DesignCatalogActivity : ComponentActivity() {
                         "calling" -> ActiveCallScreen(sample(CallPhase.Calling), graph) {}
                         "ringing" -> ActiveCallScreen(sample(CallPhase.Ringing), graph) {}
                         "active" -> ActiveCallScreen(sample(CallPhase.Active), graph) {}
+                        "active-notice" -> ActiveCallScreen(sample(CallPhase.Active).copy(waitsForNotice = true), graph) {}
                         "voicemail" -> ActiveCallScreen(sample(CallPhase.Voicemail).copy(notice = "DECLINED · In a meeting"), graph) {}
                         "ended" -> ActiveCallScreen(sample(CallPhase.Ended).copy(endedText = "CALL ENDED"), graph) {}
                         else -> HomeScreen(graph, Navigator())

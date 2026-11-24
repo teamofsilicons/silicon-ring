@@ -56,6 +56,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -92,7 +93,7 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 
 @Composable
-fun CallScreen(ui: CallUi, graph: AppGraph, onAnswer: () -> Unit, onMinimize: () -> Unit) {
+fun CallScreen(ui: CallUi, graph: AppGraph, onAnswer: () -> Unit, onAgreeToNotice: () -> Unit, onMinimize: () -> Unit) {
     if (ui.phase == CallPhase.Incoming) {
         IncomingCallScreen(
             ui = ui,
@@ -101,7 +102,7 @@ fun CallScreen(ui: CallUi, graph: AppGraph, onAnswer: () -> Unit, onMinimize: ()
             onSilence = { graph.calls.silence(ui.ringid) },
         )
     } else {
-        ActiveCallScreen(ui, graph, onMinimize)
+        ActiveCallScreen(ui, graph, onAgreeToNotice, onMinimize)
     }
 }
 
@@ -235,10 +236,19 @@ private fun CallerIdentity(account: Account, nameColor: Color, idColor: Color, n
     }
 }
 
-/** Outgoing, voicemail and in-call screen. Paper in light mode, ink in dark mode. */
+/**
+ * Outgoing, voicemail and in-call screen. Paper in light mode, ink in dark mode. A call that went
+ * on before this device agreed to the recording notice shows the notice over the people and the
+ * transcript, with the microphone off until it is answered ([onAgreeToNotice]).
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ActiveCallScreen(ui: CallUi, graph: AppGraph, onMinimize: () -> Unit) {
+fun ActiveCallScreen(
+    ui: CallUi,
+    graph: AppGraph,
+    onAgreeToNotice: () -> Unit = {},
+    onMinimize: () -> Unit,
+) {
     val c = Ring.colors
     var now by remember { mutableStateOf(Instant.now()) }
     var inviting by remember { mutableStateOf(false) }
@@ -269,34 +279,59 @@ fun ActiveCallScreen(ui: CallUi, graph: AppGraph, onMinimize: () -> Unit) {
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconAction(R.drawable.ms_arrow_back, "Back to Ring", onMinimize, tint = c.textSecondary)
             Spacer(Modifier.weight(1f))
-            PixelLabel(status, color = if (ui.phase == CallPhase.Ended) c.textMuted else c.foreground, style = RingType.pixelLarge)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                PixelLabel(status, color = if (ui.phase == CallPhase.Ended) c.textMuted else c.foreground, style = RingType.pixelLarge)
+                Spacer(Modifier.height(4.dp))
+                RecordingIndicator()
+            }
             Spacer(Modifier.weight(1f))
             Spacer(Modifier.size(40.dp))
         }
 
-        if (ui.phase == CallPhase.Active) {
-            Spacer(Modifier.height(20.dp))
-            Participants(ui)
-            Spacer(Modifier.height(12.dp))
-            Transcript(ui.transcript, Modifier.weight(1f).fillMaxWidth())
-        } else {
-            Spacer(Modifier.weight(1f))
-            val ringing = ui.phase == CallPhase.Calling || ui.phase == CallPhase.Ringing || ui.phase == CallPhase.Connecting
-            ExpandingRings(120.dp, if (ui.phase == CallPhase.Voicemail) c.danger else c.ink, active = ringing || ui.phase == CallPhase.Voicemail) {
-                Avatar(ui.peer, 120.dp)
+        val heldForNotice = ui.waitsForNotice && ui.phase != CallPhase.Ended
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            // Under the recording notice the people and the transcript are out of reach, for
+            // TalkBack too.
+            Column(
+                Modifier.fillMaxSize().then(if (heldForNotice) Modifier.clearAndSetSemantics {} else Modifier),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (ui.phase == CallPhase.Active) {
+                    Spacer(Modifier.height(20.dp))
+                    Participants(ui)
+                    Spacer(Modifier.height(12.dp))
+                    Transcript(ui.transcript, Modifier.weight(1f).fillMaxWidth())
+                } else {
+                    Spacer(Modifier.weight(1f))
+                    val ringing = ui.phase == CallPhase.Calling || ui.phase == CallPhase.Ringing || ui.phase == CallPhase.Connecting
+                    ExpandingRings(120.dp, if (ui.phase == CallPhase.Voicemail) c.danger else c.ink, active = ringing || ui.phase == CallPhase.Voicemail) {
+                        Avatar(ui.peer, 120.dp)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    CallerIdentity(ui.peer, c.foreground, c.textMuted, 36)
+                    if (ui.phase == CallPhase.Voicemail) {
+                        Spacer(Modifier.height(18.dp))
+                        ui.notice?.let { PixelLabel(it, color = c.textMuted) }
+                        Spacer(Modifier.height(6.dp))
+                        PixelLabel("Leave a message after the beep", color = c.danger, style = RingType.pixelLarge)
+                    } else if (ui.notice != null && ui.phase != CallPhase.Ended) {
+                        Spacer(Modifier.height(14.dp))
+                        PixelLabel(ui.notice, color = c.textMuted)
+                    }
+                    Spacer(Modifier.weight(1f))
+                }
             }
-            Spacer(Modifier.height(8.dp))
-            CallerIdentity(ui.peer, c.foreground, c.textMuted, 36)
-            if (ui.phase == CallPhase.Voicemail) {
-                Spacer(Modifier.height(18.dp))
-                ui.notice?.let { PixelLabel(it, color = c.textMuted) }
-                Spacer(Modifier.height(6.dp))
-                PixelLabel("Leave a message after the beep", color = c.danger, style = RingType.pixelLarge)
-            } else if (ui.notice != null && ui.phase != CallPhase.Ended) {
-                Spacer(Modifier.height(14.dp))
-                PixelLabel(ui.notice, color = c.textMuted)
+            // A call that went on before this device agreed to the recording notice: the notice
+            // covers the people and the transcript, and the controls stay in reach below it.
+            if (heldForNotice) {
+                RecordingNoticeOverCall(
+                    onAgree = onAgreeToNotice,
+                    onNotNow = {
+                        graph.recordingNotice.notNow()
+                        graph.calls.hangUp(ui.ringid)
+                    },
+                )
             }
-            Spacer(Modifier.weight(1f))
         }
 
         if (ui.phase != CallPhase.Ended) {
@@ -435,27 +470,13 @@ private fun Controls(ui: CallUi, graph: AppGraph, onInvite: () -> Unit) {
     val outline = BorderStroke(1.dp, c.border)
     if (ui.phase == CallPhase.Voicemail) {
         Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
-            RoundButton(
-                icon = if (ui.muted) R.drawable.ms_mic_off_fill else R.drawable.ms_mic,
-                contentDescription = if (ui.muted) "Unmute" else "Mute",
-                onClick = { graph.calls.setMuted(ui.ringid, !ui.muted) },
-                background = if (ui.muted) c.ink else idle,
-                tint = if (ui.muted) c.background else c.foreground,
-                border = if (ui.muted) null else outline,
-            )
+            MuteButton(ui, graph, idle, outline)
             PrimaryButton("Done", onClick = { graph.calls.hangUp(ui.ringid) }, icon = R.drawable.ms_check, modifier = Modifier.widthIn(min = 160.dp))
         }
         return
     }
     Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically) {
-        RoundButton(
-            icon = if (ui.muted) R.drawable.ms_mic_off_fill else R.drawable.ms_mic,
-            contentDescription = if (ui.muted) "Unmute" else "Mute",
-            onClick = { graph.calls.setMuted(ui.ringid, !ui.muted) },
-            background = if (ui.muted) c.ink else idle,
-            tint = if (ui.muted) c.background else c.foreground,
-            border = if (ui.muted) null else outline,
-        )
+        MuteButton(ui, graph, idle, outline)
         RouteButton(ui, idle, outline) { graph.calls.setRoute(ui.ringid, it) }
         if (ui.phase == CallPhase.Active) {
             RoundButton(R.drawable.ms_person_add, "Add person", onInvite, background = idle, tint = c.foreground, border = outline)
@@ -469,6 +490,29 @@ private fun Controls(ui: CallUi, graph: AppGraph, onInvite: () -> Unit) {
             tint = Color.White,
         )
     }
+}
+
+/**
+ * Mute and unmute. While the call waits for the recording notice the microphone is off and this
+ * button can't turn it on; the notice over the call does.
+ */
+@Composable
+private fun MuteButton(ui: CallUi, graph: AppGraph, idle: Color, outline: BorderStroke) {
+    val c = Ring.colors
+    val off = ui.muted || ui.waitsForNotice
+    RoundButton(
+        icon = if (off) R.drawable.ms_mic_off_fill else R.drawable.ms_mic,
+        contentDescription = when {
+            ui.waitsForNotice -> "Microphone off until you agree to the recording notice"
+            ui.muted -> "Unmute"
+            else -> "Mute"
+        },
+        onClick = { graph.calls.setMuted(ui.ringid, !ui.muted) },
+        background = if (off) c.ink else idle,
+        tint = if (off) c.background else c.foreground,
+        border = if (off) null else outline,
+        enabled = !ui.waitsForNotice,
+    )
 }
 
 /**

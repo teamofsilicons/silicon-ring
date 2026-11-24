@@ -55,6 +55,12 @@ data class CallUi(
     val working: Boolean,
     val notice: String?,
     val endedText: String?,
+    /**
+     * The call went on here before this device agreed to the recording notice: the microphone is
+     * held (off, unpublished) and the notice shows on the call screen until it is answered.
+     * [muted] stays the person's own mute, which applies once the microphone is released.
+     */
+    val waitsForNotice: Boolean = false,
 ) {
     val live: Boolean get() = phase != CallPhase.Ended
     val joined: Boolean get() = phase in setOf(CallPhase.Calling, CallPhase.Ringing, CallPhase.Connecting, CallPhase.Active, CallPhase.Voicemail)

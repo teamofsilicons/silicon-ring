@@ -80,6 +80,16 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean(KEY_PERMISSIONS_SEEN, false)
         set(value) = prefs.edit { putBoolean(KEY_PERMISSIONS_SEEN, value) }
 
+    /** The recording notice version this device agreed to, 0 for none. Signing out keeps it. */
+    var recordingNoticeAccepted: Int
+        get() = prefs.getInt(KEY_NOTICE_ACCEPTED, 0)
+        set(value) = prefs.edit { putInt(KEY_NOTICE_ACCEPTED, value) }
+
+    /** The recording notice version last put to the person signed in here and answered "Not now". */
+    var recordingNoticeOffered: Int
+        get() = prefs.getInt(KEY_NOTICE_OFFERED, 0)
+        set(value) = prefs.edit { if (value == 0) remove(KEY_NOTICE_OFFERED) else putInt(KEY_NOTICE_OFFERED, value) }
+
     private companion object {
         const val KEY_APPEARANCE = "appearance"
         const val KEY_API_URL = "api_url"
@@ -89,5 +99,7 @@ class AppPrefs(context: Context) {
         const val KEY_PENDING_VERIFIER = "signin_verifier"
         const val KEY_PENDING_API = "signin_api"
         const val KEY_PERMISSIONS_SEEN = "permissions_seen"
+        const val KEY_NOTICE_ACCEPTED = "recording_notice_version"
+        const val KEY_NOTICE_OFFERED = "recording_notice_offered"
     }
 }

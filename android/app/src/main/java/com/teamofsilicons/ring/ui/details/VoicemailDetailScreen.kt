@@ -28,11 +28,13 @@ import androidx.compose.ui.unit.dp
 import com.teamofsilicons.ring.AppGraph
 import com.teamofsilicons.ring.R
 import com.teamofsilicons.ring.call.CallNotifications
+import com.teamofsilicons.ring.call.RecordingNotice
 import com.teamofsilicons.ring.data.ApiException
 import com.teamofsilicons.ring.data.Voicemail
 import com.teamofsilicons.ring.ui.Format
 import com.teamofsilicons.ring.ui.Navigator
 import com.teamofsilicons.ring.ui.Route
+import com.teamofsilicons.ring.ui.call.rememberRecordingNotice
 import com.teamofsilicons.ring.ui.components.Avatar
 import com.teamofsilicons.ring.ui.components.CardGroup
 import com.teamofsilicons.ring.ui.components.IconAction
@@ -56,6 +58,7 @@ fun VoicemailDetailScreen(graph: AppGraph, nav: Navigator, voicemailId: String) 
     val scope = rememberCoroutineScope()
     val player = rememberAudioPlayer()
     val permissions = rememberCallPermissions()
+    val afterNotice = rememberRecordingNotice(graph)
     var voicemail by remember { mutableStateOf<Voicemail?>(graph.repo.voicemails.value.items.firstOrNull { it.voicemailId == voicemailId }) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -125,14 +128,16 @@ fun VoicemailDetailScreen(graph: AppGraph, nav: Navigator, voicemailId: String) 
             Spacer(Modifier.height(28.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 PrimaryButton("Call back", icon = R.drawable.ms_call_fill, onClick = {
-                    permissions.withMicrophone { ok ->
-                        if (!ok) {
-                            error = "Ring needs the microphone to place calls."
-                            return@withMicrophone
-                        }
-                        scope.launch {
-                            error = graph.calls.placeCall(vm.from.id)
-                            if (error == null) graph.calls.openCallScreen()
+                    afterNotice(RecordingNotice.Action.Place) {
+                        permissions.withMicrophone { ok ->
+                            if (!ok) {
+                                error = "Ring needs the microphone to place calls. Calls are recorded and transcribed."
+                                return@withMicrophone
+                            }
+                            scope.launch {
+                                error = graph.calls.placeCall(vm.from.id)
+                                if (error == null) graph.calls.openCallScreen()
+                            }
                         }
                     }
                 })

@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.teamofsilicons.ring.AppGraph
 import com.teamofsilicons.ring.R
+import com.teamofsilicons.ring.call.RecordingNotice
 import com.teamofsilicons.ring.data.Account
 import com.teamofsilicons.ring.data.ApiException
 import com.teamofsilicons.ring.data.Call
@@ -45,6 +46,7 @@ import com.teamofsilicons.ring.data.TranscriptEntry
 import com.teamofsilicons.ring.ui.Format
 import com.teamofsilicons.ring.ui.Navigator
 import com.teamofsilicons.ring.ui.Route
+import com.teamofsilicons.ring.ui.call.rememberRecordingNotice
 import com.teamofsilicons.ring.ui.components.Avatar
 import com.teamofsilicons.ring.ui.components.CardGroup
 import com.teamofsilicons.ring.ui.components.Divider
@@ -68,6 +70,7 @@ fun CallDetailsScreen(graph: AppGraph, nav: Navigator, ringid: String) {
     val c = Ring.colors
     val scope = rememberCoroutineScope()
     val permissions = rememberCallPermissions()
+    val afterNotice = rememberRecordingNotice(graph)
     val player = rememberAudioPlayer()
     val me = graph.repo.myUuid.orEmpty()
     var call by remember { mutableStateOf(graph.repo.calls.value.items.firstOrNull { it.ringid == ringid }) }
@@ -119,14 +122,16 @@ fun CallDetailsScreen(graph: AppGraph, nav: Navigator, ringid: String) {
                 "Call ${people.first().label}",
                 icon = R.drawable.ms_call_fill,
                 onClick = {
-                    permissions.withMicrophone { ok ->
-                        if (!ok) {
-                            error = "Ring needs the microphone to place calls."
-                            return@withMicrophone
-                        }
-                        scope.launch {
-                            error = graph.calls.placeCall(people.first().id)
-                            if (error == null) graph.calls.openCallScreen()
+                    afterNotice(RecordingNotice.Action.Place) {
+                        permissions.withMicrophone { ok ->
+                            if (!ok) {
+                                error = "Ring needs the microphone to place calls. Calls are recorded and transcribed."
+                                return@withMicrophone
+                            }
+                            scope.launch {
+                                error = graph.calls.placeCall(people.first().id)
+                                if (error == null) graph.calls.openCallScreen()
+                            }
                         }
                     }
                 },

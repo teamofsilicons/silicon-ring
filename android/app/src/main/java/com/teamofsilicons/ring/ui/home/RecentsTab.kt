@@ -32,11 +32,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.teamofsilicons.ring.AppGraph
 import com.teamofsilicons.ring.R
+import com.teamofsilicons.ring.call.RecordingNotice
 import com.teamofsilicons.ring.data.Call
 import com.teamofsilicons.ring.ui.CallPermissions
 import com.teamofsilicons.ring.ui.Format
 import com.teamofsilicons.ring.ui.Navigator
 import com.teamofsilicons.ring.ui.Route
+import com.teamofsilicons.ring.ui.call.rememberRecordingNotice
 import com.teamofsilicons.ring.ui.components.Avatar
 import com.teamofsilicons.ring.ui.components.cardSegment
 import com.teamofsilicons.ring.ui.components.Divider
@@ -59,20 +61,23 @@ fun RecentsTab(graph: AppGraph, nav: Navigator, permissions: CallPermissions) {
     val scope = rememberCoroutineScope()
     val list = rememberLazyListState()
     var error by remember { mutableStateOf<String?>(null) }
+    val afterNotice = rememberRecordingNotice(graph)
 
     val nearEnd by remember { derivedStateOf { list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= list.layoutInfo.totalItemsCount - 3 } == true } }
     LaunchedEffect(nearEnd, calls.nextCursor) { if (nearEnd && calls.nextCursor != null) graph.repo.loadMoreCalls() }
 
     val redial: (Call) -> Unit = { call ->
         val target = Format.counterpart(call, me).first()
-        permissions.withMicrophone { ok ->
-            if (!ok) {
-                error = "Ring needs the microphone to place calls."
-                return@withMicrophone
-            }
-            scope.launch {
-                error = graph.calls.placeCall(target.id)
-                if (error == null) graph.calls.openCallScreen()
+        afterNotice(RecordingNotice.Action.Place) {
+            permissions.withMicrophone { ok ->
+                if (!ok) {
+                    error = "Ring needs the microphone to place calls. Calls are recorded and transcribed."
+                    return@withMicrophone
+                }
+                scope.launch {
+                    error = graph.calls.placeCall(target.id)
+                    if (error == null) graph.calls.openCallScreen()
+                }
             }
         }
     }

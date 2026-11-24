@@ -39,12 +39,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.teamofsilicons.ring.AppGraph
 import com.teamofsilicons.ring.R
+import com.teamofsilicons.ring.call.RecordingNotice
 import com.teamofsilicons.ring.data.Account
 import com.teamofsilicons.ring.data.AccountLookup
 import com.teamofsilicons.ring.data.ApiException
 import com.teamofsilicons.ring.data.RecentPerson
 import com.teamofsilicons.ring.data.normalizeActorRef
 import com.teamofsilicons.ring.ui.Navigator
+import com.teamofsilicons.ring.ui.call.rememberRecordingNotice
 import com.teamofsilicons.ring.ui.components.Avatar
 import com.teamofsilicons.ring.ui.components.Badge
 import com.teamofsilicons.ring.ui.components.CardGroup
@@ -71,6 +73,7 @@ fun DialerScreen(graph: AppGraph, nav: Navigator, prefill: String?, message: Str
     var error by remember { mutableStateOf(message) }
     var placing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val afterNotice = rememberRecordingNotice(graph)
     Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
         DialerContent(
             graph = graph,
@@ -81,18 +84,20 @@ fun DialerScreen(graph: AppGraph, nav: Navigator, prefill: String?, message: Str
             busy = placing,
             onClose = { nav.pop() },
             onPick = { account ->
-                permissions.withMicrophone { granted ->
-                    if (!granted) {
-                        error = "Ring needs the microphone to place calls."
-                        return@withMicrophone
-                    }
-                    placing = true
-                    scope.launch {
-                        error = graph.calls.placeCall(account.id)
-                        placing = false
-                        if (error == null) {
-                            nav.pop()
-                            graph.calls.openCallScreen()
+                afterNotice(RecordingNotice.Action.Place) {
+                    permissions.withMicrophone { granted ->
+                        if (!granted) {
+                            error = "Ring needs the microphone to place calls. Calls are recorded and transcribed."
+                            return@withMicrophone
+                        }
+                        placing = true
+                        scope.launch {
+                            error = graph.calls.placeCall(account.id)
+                            placing = false
+                            if (error == null) {
+                                nav.pop()
+                                graph.calls.openCallScreen()
+                            }
                         }
                     }
                 }

@@ -129,7 +129,12 @@ object CallNotifications {
             CallPhase.Connecting -> "Connecting…"
             CallPhase.Voicemail -> "Leaving a message"
             CallPhase.Ended -> ui.endedText?.lowercase()?.replaceFirstChar { it.uppercase() } ?: "Call ended"
-            else -> if (ui.muted) "On call · muted" else "On call"
+            else -> when {
+                // Held for the recording notice, which shows on the call screen.
+                ui.waitsForNotice -> "On call · microphone off"
+                ui.muted -> "On call · muted"
+                else -> "On call"
+            }
         }
         val builder = NotificationCompat.Builder(context, CHANNEL_ONGOING)
             .setSmallIcon(R.drawable.ic_stat_ring)

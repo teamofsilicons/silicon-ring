@@ -46,10 +46,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.teamofsilicons.ring.AppGraph
 import com.teamofsilicons.ring.R
 import com.teamofsilicons.ring.call.CallPhase
+import com.teamofsilicons.ring.call.RecordingNotice
 import com.teamofsilicons.ring.data.Call
 import com.teamofsilicons.ring.ui.CallPermissions
 import com.teamofsilicons.ring.ui.Navigator
 import com.teamofsilicons.ring.ui.Route
+import com.teamofsilicons.ring.ui.call.rememberRecordingNotice
 import com.teamofsilicons.ring.ui.components.PrimaryButton
 import com.teamofsilicons.ring.ui.components.RingIcon
 import com.teamofsilicons.ring.ui.components.TextAction
@@ -213,6 +215,7 @@ private fun Banners(graph: AppGraph, permissions: CallPermissions) {
     val primary by graph.calls.primary.collectAsStateWithLifecycle()
     val moved by graph.calls.movedAway.collectAsStateWithLifecycle()
     var switchError by rememberSaveable { mutableStateOf<String?>(null) }
+    val afterNotice = rememberRecordingNotice(graph)
     val me = graph.repo.myUuid.orEmpty()
     val thisDevice = if (LocalConfiguration.current.smallestScreenWidthDp >= 600) "this tablet" else "this phone"
 
@@ -232,14 +235,16 @@ private fun Banners(graph: AppGraph, permissions: CallPermissions) {
                 text = "On a call with $with on $device",
                 action = "Switch to $thisDevice",
                 onAction = {
-                    permissions.withMicrophone { ok ->
-                        if (!ok) {
-                            switchError = "Allow the microphone to take the call here."
-                            return@withMicrophone
-                        }
-                        scope.launch {
-                            switchError = graph.calls.switchHere(call.ringid)
-                            if (switchError == null) graph.calls.openCallScreen()
+                    afterNotice(RecordingNotice.Action.SwitchHere(call.ringid)) {
+                        permissions.withMicrophone { ok ->
+                            if (!ok) {
+                                switchError = "Allow the microphone to take the call here. Calls are recorded and transcribed."
+                                return@withMicrophone
+                            }
+                            scope.launch {
+                                switchError = graph.calls.switchHere(call.ringid)
+                                if (switchError == null) graph.calls.openCallScreen()
+                            }
                         }
                     }
                 },
@@ -288,7 +293,7 @@ private fun PermissionCard(permissions: CallPermissions) {
             PermissionRow("Allow notifications so calls can ring this phone.", "Allow") { permissions.requestNotifications() }
         }
         if (!permissions.microphone) {
-            PermissionRow("Allow the microphone so people can hear you.", "Allow") { permissions.withMicrophone {} }
+            PermissionRow("Allow the microphone so people can hear you. Calls are recorded and transcribed.", "Allow") { permissions.withMicrophone {} }
         }
         if (!permissions.fullScreen) {
             PermissionRow("Let Ring show incoming calls on the lock screen.", "Open settings") { permissions.openFullScreenSettings() }

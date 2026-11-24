@@ -15,6 +15,7 @@ import com.google.firebase.messaging.FirebaseMessaging
 import com.teamofsilicons.ring.auth.SignIn
 import com.teamofsilicons.ring.call.CallController
 import com.teamofsilicons.ring.call.CallNotifications
+import com.teamofsilicons.ring.call.RecordingNotice
 import com.teamofsilicons.ring.data.AppPrefs
 import com.teamofsilicons.ring.data.Realtime
 import com.teamofsilicons.ring.data.RingApi
@@ -64,7 +65,8 @@ class AppGraph(val app: Application) {
     val api = RingApi(http, sessions, prefs, BuildConfig.VERSION_NAME)
     val realtime = Realtime(app, http, sessions, scope)
     val repo = RingRepository(app, api, sessions, prefs, scope)
-    val calls = CallController(app, api, repo, realtime, scope)
+    val recordingNotice = RecordingNotice(prefs)
+    val calls = CallController(app, api, repo, realtime, recordingNotice, scope)
     val signIn = SignIn(api, prefs)
 
     init {
@@ -86,6 +88,9 @@ class AppGraph(val app: Application) {
         }
         if (sessions.current != null) {
             registerPush()
+            // Signed in before this notice existed, or before it changed: it shows once, unless this
+            // device agreed.
+            recordingNotice.offer()
         }
     }
 
@@ -107,6 +112,9 @@ class AppGraph(val app: Application) {
         repo.refreshAll()
         scope.launch { repo.registerDevice(force = true) }
         registerPush()
+        // The recording notice, before the home screen and its permission prompts, unless this
+        // device agreed before.
+        recordingNotice.offer()
     }
 
     /** Turns on FCM (off until signed in) and registers this device's token with Ring. */
@@ -142,6 +150,8 @@ class AppGraph(val app: Application) {
     fun signOutLocally() {
         if (sessions.current == null) return
         calls.shutdown()
+        // The next sign-in shows the recording notice again, unless this device agreed.
+        recordingNotice.signedOut()
         sessions.clear()
         repo.clear()
         prefs.fcmToken = null

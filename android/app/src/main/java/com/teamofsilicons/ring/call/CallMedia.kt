@@ -60,6 +60,14 @@ class CallMedia(
     private var events: Job? = null
     private var closing = false
     private var muted = false
+    /**
+     * No microphone until this device agrees to the recording notice (a call answered from Telecom
+     * or the notification before it did): nothing is started or published, pre-roll included, so
+     * nothing this person says reaches the room. [releaseMicrophone] lifts it.
+     */
+    private var micHeld = false
+    /** The microphone was not published because it was held; [releaseMicrophone] publishes it. */
+    private var micWaiting = false
     private var preroll: Preroll? = null
     private var focus: AudioFocusRequest? = null
     private val localRoutes = LocalRoutes(context.getSystemService(AudioManager::class.java))
@@ -73,11 +81,16 @@ class CallMedia(
     /** The route the call plays through while it [ownsAudio]. */
     val route: StateFlow<CallEndpointCompat?> = localRoutes.current.asStateFlow()
 
-    /** Joins the room in [grant]. Returns false when the connection failed. */
-    suspend fun connect(grant: MediaGrant, startMuted: Boolean, ownAudioMode: Boolean): Boolean {
+    /**
+     * Joins the room in [grant]. Returns false when the connection failed. [held] keeps the
+     * microphone off, unpublished, until [releaseMicrophone].
+     */
+    suspend fun connect(grant: MediaGrant, startMuted: Boolean, ownAudioMode: Boolean, held: Boolean = false): Boolean {
         disconnectRoom()
         closing = false
         muted = startMuted
+        micHeld = held
+        micWaiting = false
         identity = grant.identity
         if (ownAudioMode) takeAudioMode() else releaseAudioMode()
         val room = LiveKit.create(
@@ -140,13 +153,20 @@ class CallMedia(
         return try {
             // The microphone starts now rather than once the room is joined: what it hears meanwhile
             // (often the first words after answering) is the pre-roll, which ring-media puts in
-            // front of the published track.
-            val prerollTo = grant.prerollTo?.takeIf { !startMuted }
+            // front of the published track. A held microphone has no pre-roll.
+            val prerollTo = grant.prerollTo?.takeIf { !startMuted && !held }
             val preroll = prerollTo?.let { Preroll.start(room, scope) }
             this.preroll = preroll
             room.connect(grant.url, grant.token)
             if (prerollTo != null) preroll?.open(room, prerollTo)
-            publishMicrophone(room)
+            // Still held for the recording notice: nothing is published until releaseMicrophone. A
+            // release while the room joined lands here unheld and publishes as usual.
+            if (micHeld) {
+                micWaiting = true
+                Log.i(TAG, "The microphone waits for the recording notice")
+            } else {
+                publishMicrophone(room)
+            }
             preroll?.published(room)
             _status.value = Status.Connected
             true
@@ -176,8 +196,24 @@ class CallMedia(
         muted = value
         // Nothing more is heard once muted, pre-roll included.
         if (value) preroll?.stop()
+        // Held for the recording notice: the mute is remembered for when the microphone is
+        // released, and nothing starts now (enabling the microphone would publish it).
+        if (micHeld || micWaiting) return
         runCatching { room?.localParticipant?.setMicrophoneEnabled(!value) }
             .onFailure { Log.w(TAG, "Mute change failed", it) }
+    }
+
+    /**
+     * The person agreed to the recording notice: the microphone starts and is published, muted if
+     * they muted the call meanwhile. A room still joining publishes it itself.
+     */
+    suspend fun releaseMicrophone() {
+        micHeld = false
+        if (!micWaiting) return
+        micWaiting = false
+        val room = room ?: return
+        publishMicrophone(room)
+        Log.i(TAG, "The microphone was released after the recording notice")
     }
 
     /** Plays the call through [endpoint] (one of [routes]); false when that did not work. */
@@ -185,6 +221,8 @@ class CallMedia(
 
     fun disconnect() {
         closing = true
+        micHeld = false
+        micWaiting = false
         disconnectRoom()
         releaseAudioMode()
         _status.value = Status.Idle

@@ -44,6 +44,7 @@ class CallController(
     private val api: RingApi,
     private val repo: RingRepository,
     private val realtime: Realtime,
+    private val recordingNotice: RecordingNotice,
     private val scope: CoroutineScope,
 ) {
     private val runtimes = LinkedHashMap<String, Runtime>()
@@ -73,6 +74,11 @@ class CallController(
 
     private val me: String? get() = repo.myUuid
     private val myDevice: String? get() = repo.myDeviceId
+
+    init {
+        // "Agree and continue", over the call or anywhere else: held microphones start.
+        scope.launch { recordingNotice.accepted.collect { if (it) releaseHeldMicrophones() } }
+    }
 
     // Events
 
@@ -374,6 +380,9 @@ class CallController(
             notice = if (call.state == CallState.VOICEMAIL) voicemailReason(call) else null
         }
         runtimes[rt.ringid] = rt
+        // The app asks before placing a call (RecordingNotice.before); this only guards a call
+        // placed without asking.
+        holdForNotice(rt)
         rt.telecom = Telecom.manager(context)?.let { manager ->
             TelecomCall(
                 scope, manager, rt.peer.label, rt.peer.id, incoming = false,
@@ -450,6 +459,10 @@ class CallController(
                 runCatching { api.leave(ringid) }
                 return@launch publish()
             }
+            // Answered from Telecom or the notification before this device agreed to the
+            // recording notice: the call connects with the microphone held.
+            holdForNotice(rt)
+            publish()
             rt.telecom?.answer()
             CallService.refresh(context)
             val grant = result.media
@@ -521,6 +534,9 @@ class CallController(
         rt.muted = muted
         publish()
         scope.launch { rt.media?.setMuted(muted) }
+        // Held for the recording notice, the microphone stays off whatever the mute says (the mute
+        // applies once it is released): an unmute, from a headset or watch, brings the notice forward.
+        if (!muted && rt.micHeld && isAppVisible()) openCallScreen()
     }
 
     fun showNotice(ringid: String, text: String) {
@@ -632,6 +648,8 @@ class CallController(
             phase = if (call.state == CallState.VOICEMAIL) CallPhase.Voicemail else CallPhase.Connecting
         }
         runtimes[rt.ringid] = rt
+        // Rejoining, after a restart, a call this device carried before it agreed.
+        holdForNotice(rt)
         rt.telecom = Telecom.manager(context)?.let { manager ->
             TelecomCall(
                 scope, manager, peer.label, peer.id, incoming = false,
@@ -664,13 +682,37 @@ class CallController(
         val media = rt.media ?: CallMedia(context, scope) { reason -> onMediaLost(rt, reason) }.also { rt.media = it }
         rt.observeMedia()
         val ownAudio = rt.telecom == null || !rt.telecom!!.awaitReady()
-        val connected = media.connect(grant, rt.muted, ownAudio)
+        val connected = media.connect(grant, rt.muted, ownAudio, held = rt.micHeld)
         // The call may have been hung up while the room was connecting.
         if (rt.phase == CallPhase.Ended) {
             media.disconnect()
             return false
         }
         return connected
+    }
+
+    /**
+     * A call goes on here before this device agreed to the recording notice (answered from Telecom
+     * or the notification, or rejoined after a restart): it joins with the microphone held, so
+     * none of this person's audio reaches the room, the recording, the transcription or a
+     * representative, and the notice shows on its call screen. "Agree and continue" releases the
+     * microphone ([releaseHeldMicrophones]); "Not now" ends the call.
+     */
+    private fun holdForNotice(rt: Runtime) {
+        if (!recordingNotice.needed) return
+        rt.micHeld = true
+        recordingNotice.showOverCall()
+    }
+
+    /** This device agreed to the recording notice: held microphones start, with the person's own mute. */
+    private fun releaseHeldMicrophones() {
+        val held = runtimes.values.filter { it.micHeld }
+        if (held.isEmpty()) return
+        held.forEach { rt ->
+            rt.micHeld = false
+            scope.launch { rt.media?.releaseMicrophone() }
+        }
+        publish()
     }
 
     /** The room dropped us: rejoin within the server's 30 s grace unless the call moved or ended. */
@@ -763,6 +805,8 @@ class CallController(
             runtimes[call.ringid]?.joinedHere != true
         val rest = _elsewhere.value.filterNot { it.ringid == call.ringid }
         _elsewhere.value = if (elsewhere) rest + call else rest
+        // A recording notice waiting to move this call here goes with it (it ended or moved).
+        if (!elsewhere) recordingNotice.dropIf { it is RecordingNotice.Action.SwitchHere && it.ringid == call.ringid }
     }
 
     private fun isMineHere(call: Call): Boolean {
@@ -841,6 +885,9 @@ class CallController(
         // service's call.
         snapshots.filter { it.phase == CallPhase.Incoming && it !== primary }.forEach { CallNotifications.postIncoming(context, it) }
         primary?.takeIf { it.phase == CallPhase.Incoming }?.let { CallNotifications.cancelIncoming(context, it.ringid) }
+        // A recording notice waiting to answer a ring goes with it: the caller hung up, another
+        // device answered or declined, or it was answered here some other way.
+        recordingNotice.dropIf { it is RecordingNotice.Action.Answer && runtimes[it.ringid]?.phase != CallPhase.Incoming }
 
         val anyJoined = snapshots.any { it.joined }
         val ringingHere = snapshots.filter { it.phase == CallPhase.Incoming && !it.silenced }
@@ -871,6 +918,8 @@ class CallController(
         var accepted = false
         var silenced = false
         var muted = false
+        /** The microphone waits for the recording notice ([holdForNotice]). */
+        var micHeld = false
         var working = false
         var rejoining = false
         var notice: String? = null
@@ -977,6 +1026,7 @@ class CallController(
                 working = working,
                 notice = notice,
                 endedText = endedText,
+                waitsForNotice = micHeld,
             )
         }
 

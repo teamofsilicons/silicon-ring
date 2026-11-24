@@ -18,6 +18,7 @@ import androidx.core.telecom.CallEndpointCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.teamofsilicons.ring.call.CallPhase
 import com.teamofsilicons.ring.call.CallUi
+import com.teamofsilicons.ring.call.RecordingNotice
 import com.teamofsilicons.ring.data.Appearance
 import com.teamofsilicons.ring.ring
 import com.teamofsilicons.ring.ui.rememberCallPermissions
@@ -29,7 +30,10 @@ import com.teamofsilicons.ring.ui.theme.RingTheme
  */
 class CallActivity : ComponentActivity() {
 
-    private var pendingAnswer by mutableStateOf<String?>(null)
+    /** An answer to carry out; [inApp] when it came from the call screen rather than the notification. */
+    private class PendingAnswer(val ringid: String, val inApp: Boolean)
+
+    private var pendingAnswer by mutableStateOf<PendingAnswer?>(null)
     private var proximity: PowerManager.WakeLock? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,7 +45,9 @@ class CallActivity : ComponentActivity() {
         setContent {
             val appearance by graph.prefs.appearance.collectAsStateWithLifecycle()
             val primary by graph.calls.primary.collectAsStateWithLifecycle()
+            val notice by graph.recordingNotice.request.collectAsStateWithLifecycle()
             val permissions = rememberCallPermissions()
+            val afterNotice = rememberRecordingNotice(graph)
 
             // The incoming screen is ink in both themes; the others follow the appearance. The
             // status and navigation bar icons have to contrast with whichever is showing.
@@ -60,10 +66,25 @@ class CallActivity : ComponentActivity() {
             LaunchedEffect(primary == null) { if (primary == null) finishAndRemoveTask() }
             LaunchedEffect(primary?.phase, primary?.route) { primary?.let(::updateProximity) ?: releaseProximity() }
             LaunchedEffect(pendingAnswer) {
-                val ringid = pendingAnswer ?: return@LaunchedEffect
+                val answer = pendingAnswer ?: return@LaunchedEffect
                 pendingAnswer = null
-                permissions.withMicrophone { granted ->
-                    if (granted) graph.calls.accept(ringid) else graph.calls.showNotice(ringid, "Allow the microphone in Settings to answer calls.")
+                val ringid = answer.ringid
+                val accept = {
+                    permissions.withMicrophone { granted ->
+                        if (granted) {
+                            graph.calls.accept(ringid)
+                        } else {
+                            graph.calls.showNotice(ringid, "Allow the microphone in Settings to answer calls. Calls are recorded and transcribed.")
+                        }
+                    }
+                }
+                when {
+                    // Answering on the call screen: the recording notice first, until this device agrees.
+                    answer.inApp -> afterNotice(RecordingNotice.Action.Answer(ringid), accept)
+                    // The notification's Answer before this device agreed: the call goes ahead with
+                    // the microphone held and the notice over it; agreeing asks for the microphone.
+                    graph.recordingNotice.needed -> graph.calls.accept(ringid)
+                    else -> accept()
                 }
             }
 
@@ -72,9 +93,15 @@ class CallActivity : ComponentActivity() {
                 CallScreen(
                     ui = ui,
                     graph = graph,
-                    onAnswer = { pendingAnswer = ui.ringid },
+                    onAnswer = { pendingAnswer = PendingAnswer(ui.ringid, inApp = true) },
+                    // Over a call that went on before this device agreed: the microphone prompt, if
+                    // access is undecided, follows the notice that says what it is for.
+                    onAgreeToNotice = { permissions.withMicrophone { graph.recordingNotice.agree() } },
                     onMinimize = { moveTaskToBack(true) },
                 )
+                (notice?.action as? RecordingNotice.Action.Answer)
+                    ?.takeIf { it.ringid == ui.ringid && ui.phase == CallPhase.Incoming }
+                    ?.let { RecordingNoticeDialog(it, onAgree = graph.recordingNotice::agree, onNotNow = graph.recordingNotice::notNow) }
             }
         }
         handle(intent)
@@ -93,7 +120,8 @@ class CallActivity : ComponentActivity() {
 
     private fun handle(intent: Intent?) {
         if (intent?.action == ACTION_ANSWER) {
-            pendingAnswer = intent.getStringExtra(EXTRA_RINGID) ?: ring.calls.primary.value?.ringid
+            val ringid = intent.getStringExtra(EXTRA_RINGID) ?: ring.calls.primary.value?.ringid
+            pendingAnswer = ringid?.let { PendingAnswer(it, inApp = false) }
             // The CallStyle notification goes away once the call is answered.
             intent.action = ACTION_SHOW
         }
