@@ -265,7 +265,8 @@ scripts/package-apps.py              # six Apps targets → dist/apps/ (validate
 scripts/publish-apps.py plan         # the exact command sequence; changes nothing
 scripts/publish-apps.py preflight    # read-only: signed in as si:tos, Linux runners live, app exists
 scripts/publish-apps.py all          # upload → release → promote → readiness → publish → verify
-gh workflow run apps-install.yml -f spec='ring>dev' -f version=X.Y.Z   # install check on Windows and Linux
+gh workflow run apps-install.yml -f spec='ring>dev' -f version=X.Y.Z   # install check on Windows and Linux;
+                                     # X.Y.Z is the CLI version (`ring --version`), not the Apps release
 ```
 
 The CLI has its own version (`crates/ring-cli/Cargo.toml`). Linux packages are checked by Apps'
@@ -280,8 +281,10 @@ Each mutation keeps its idempotency key, request and result under
 same key, and a finished step is never repeated. Versions are immutable on Apps, and development and
 production versions are separate: production 1.0.1 was promoted from development 1.0.2, after the
 apps-install check found a Windows path bug in development 1.0.1, and production 1.0.2 (from
-development 1.0.3) only swapped in the build 10 Mac app; every one carries the ring 1.0.1 CLI. To
-change one target, release the other targets' production package ids again with the new package.
+development 1.0.3) only swapped in the build 10 Mac app, and production 1.0.3 (from development 1.0.4,
+2026-11-24) repacked linux-x86_64, linux-aarch64, windows-x86_64 and macos-aarch64 with the 1.0.1
+desktop apps (recording notice); every one carries the ring 1.0.1 CLI. To change one target, release
+the other targets' production package ids again with the new package.
 
 Release the development channel first, run the apps-install check against `ring>dev`, then promote.
 
@@ -290,6 +293,12 @@ archive and checks it against `SHA256SUMS`). Pushing a tag `v<workspace version>
 `.github/workflows/release.yml`, which builds the CLI for six targets, the Linux app and the Windows
 app, and creates a **draft** release with every asset and `SHA256SUMS`. Review the draft, then
 publish it on GitHub.
+
+The website links fixed asset names on the latest release (`Ring-macOS-1.0.0.dmg`,
+`Ring-android-1.0.0.apk`, `Ring-windows-x64.msi`), and `scripts/package-apps.py` looks for
+`Ring-<workspace version>-<arch>.AppImage`. The 1.0.1 apps (Mac 1.0.1 (11), Android 1.0.1
+(1000005), Windows and Linux 1.0.1) therefore replaced the v1.0.0 release's assets under their
+1.0.0 names, with `SHA256SUMS` updated, rather than going out as a v1.0.1 release.
 
 ## Changing the stack
 
