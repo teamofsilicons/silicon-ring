@@ -198,8 +198,9 @@ impl IncomingWindow {
                 inner.decline_caption.set_label("Decline now");
             }
         });
+        // Until this device agrees to the recording notice, the notice comes first.
         let id = this.0.invitation_id.clone();
-        accept.connect_clicked(move |_| App::get().accept(&id));
+        accept.connect_clicked(move |_| App::get().answer(&id));
         let id = this.0.invitation_id.clone();
         silence.connect_clicked(move |_| App::get().silence(&id));
         let id = this.0.invitation_id.clone();
@@ -229,6 +230,11 @@ impl IncomingWindow {
 
     pub fn caller(&self) -> Account {
         self.0.caller.clone()
+    }
+
+    /// The window, to present the recording notice over.
+    pub fn host(&self) -> adw::Window {
+        self.0.window.clone()
     }
 
     pub fn update(&self, call: &Call) {

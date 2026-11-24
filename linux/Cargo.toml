@@ -4,7 +4,7 @@ resolver = "3"
 [package]
 name = "ring-linux"
 description = "Silicon Ring for Linux: calls between carbons and silicons (GTK4/libadwaita)"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"

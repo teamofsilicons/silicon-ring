@@ -36,6 +36,14 @@ This directory is its own Cargo workspace (not a member of the root workspace).
   this computer" (`POST /calls/{ringid}/media`); a call moved away shows "Moved to …" (the
   device's name, else a word for its platform). If Ring restarts mid-call while the server says
   this computer still carries the call, it rejoins it the same way within the 30 s grace period.
+- **Recording notice** (as on Apple 1.0.1): after sign-in, and before placing, answering in the
+  ringing window or switching a call here until this computer agrees, a dialog says that calls
+  are recorded and transcribed, by whom, and links the privacy policy ("Agree and continue" is
+  Enter, "Not now" is Esc and cancels the action). A call answered from the notification first
+  joins with the microphone muted before it is published and the mute control locked; the notice
+  shows over it, agreeing turns the microphone on, "Not now" hangs up. The answer is kept per
+  device in `settings.json`; signing out only forgets a "Not now". The call screen shows
+  "Recorded · Transcribed".
 - **Recents** (call details with a timeline, decline reasons, the transcript and the recording),
   **Voicemail** (unread dots, inline playback, a detail dialog with a scrubber and Call back) and
   **Settings** (account, this device's name and "Ring on this device", devices with sign-out,

@@ -19,10 +19,11 @@ use ring_proto::{
     Platform, RingingStoppedReason, SettingsPatch, Voicemail, codes,
 };
 
-use crate::config::{Appearance, Config};
+use crate::config::{Appearance, Config, RECORDING_NOTICE_VERSION};
 use crate::notify::{Note, NoteKind, Notifier};
 use crate::sound::{Cue, Sounds};
 use crate::ui::incoming::IncomingWindow;
+use crate::ui::recording::{self, NoticeDialog};
 use crate::ui::widgets;
 use crate::ui::window::{MainWindow, Page};
 use crate::{VERSION, autostart, runtime, secret, style};
@@ -39,7 +40,11 @@ struct ActiveCall {
     call: Call,
     /// The LiveKit identity this device publishes as.
     identity: Option<String>,
+    /// The person's own mute.
     muted: bool,
+    /// The call connected before this device agreed to the recording notice (answered from a
+    /// notification, or rejoined after a restart): its microphone stays off until they agree.
+    held: bool,
     /// Set while a rejoin is in flight so media drops do not stack retries.
     rejoining: bool,
     /// Rejoins since the media last connected, for backing off.
@@ -51,6 +56,51 @@ enum Rejoin {
     Media(ring_proto::CallWithMedia),
     MovedTo(Call, String),
     Over(Call),
+}
+
+/// What the recording notice on screen is about, and the call action waiting for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NoticeAction {
+    /// Right after sign-in, before any call: nothing waits.
+    Welcome,
+    /// Calling this id.
+    Place(String),
+    /// Answering this invitation from the incoming window.
+    Answer(String),
+    /// Moving this call (ringid) here from another device.
+    SwitchHere(String),
+    /// The call this device carries, which connected before it agreed and goes on with the
+    /// microphone held: agreeing turns the microphone on, "Not now" ends the call.
+    Answered,
+}
+
+impl NoticeAction {
+    /// The sentence about a call that connected first; `live` while that call goes on.
+    fn context(&self, live: bool) -> Option<&'static str> {
+        match self {
+            NoticeAction::Answered if live => Some(recording::OVER_CALL),
+            NoticeAction::Answered => Some(recording::AFTER_CALL),
+            _ => None,
+        }
+    }
+
+    /// What "Not now" does.
+    fn not_now_tip(&self, live: bool) -> &'static str {
+        match self {
+            NoticeAction::Welcome => "Asks again before your first call",
+            NoticeAction::Place(_) => "Doesn\u{2019}t place the call",
+            NoticeAction::Answer(_) => "Doesn\u{2019}t answer the call",
+            NoticeAction::SwitchHere(_) => "Leaves the call on your other device",
+            NoticeAction::Answered if live => "Ends the call",
+            NoticeAction::Answered => "Closes the notice",
+        }
+    }
+}
+
+struct Notice {
+    id: u64,
+    action: NoticeAction,
+    dialog: NoticeDialog,
 }
 
 pub struct Inner {
@@ -83,6 +133,9 @@ pub struct Inner {
     restoring: Cell<bool>,
     /// `--new-call` (or the desktop action) arrived before the session was restored.
     dialer_pending: Cell<bool>,
+    /// The recording notice on screen; one at a time.
+    notice: RefCell<Option<Notice>>,
+    notice_ids: Cell<u64>,
 }
 
 #[derive(Clone)]
@@ -161,6 +214,8 @@ impl App {
             refresh_pending: Cell::new(false),
             restoring: Cell::new(false),
             dialer_pending: Cell::new(false),
+            notice: RefCell::new(None),
+            notice_ids: Cell::new(0),
         }));
         INSTANCE.with(|i| i.replace(Some(app.clone())));
         Ok(app)
@@ -342,6 +397,7 @@ impl App {
         let window = self.window();
         window.home.settings.set_me(&me);
         window.show(Page::Home);
+        self.offer_recording_notice();
 
         // Describe this device to the server (platform, version, a name the first time).
         let client = self.client();
@@ -397,6 +453,11 @@ impl App {
         self.0.generation.set(self.0.generation.get() + 1);
         let api_url = self.0.options.api_url.clone();
         runtime::run(async move { secret::clear(&api_url).await }).await;
+        if let Some(notice) = self.0.notice.take() {
+            notice.dialog.close();
+        }
+        // The next sign-in shows the recording notice again, unless this device agreed.
+        self.update_config(|c| c.recording_notice_offered = 0);
         self.end_local_call(None, false);
         for (_, window) in self.0.incoming.borrow_mut().drain() {
             window.close();
@@ -1100,6 +1161,8 @@ impl App {
             .borrow_mut()
             .insert(invitation_id.to_string());
         let window = self.0.incoming.borrow_mut().remove(invitation_id);
+        // A notice waiting to answer this ring goes with it, before its window does.
+        self.drop_stale_recording_notice();
         if let Some(window) = window {
             window.close();
         }
@@ -1160,7 +1223,21 @@ impl App {
         self.schedule_recents_refresh();
     }
 
-    /// Answers from the incoming window or a notification button.
+    /// Accept in the incoming window. Until this device agrees to the recording notice, the
+    /// notice comes first, over that window; "Not now" leaves the call ringing.
+    pub fn answer(&self, invitation_id: &str) {
+        let ringing = self.0.incoming.borrow().contains_key(invitation_id);
+        if ringing
+            && self.hold_for_recording_notice(NoticeAction::Answer(invitation_id.to_string()))
+        {
+            return;
+        }
+        self.accept(invitation_id);
+    }
+
+    /// Answers a ring: a notification's Answer button, or the incoming window once the notice
+    /// allows it. Before this device agrees to the recording notice, the call goes ahead with the
+    /// microphone held (`begin_call`).
     pub fn accept(&self, invitation_id: &str) {
         let Some((ringid, invitation_id)) = self.incoming_call_ids(invitation_id) else {
             self.toast("That call is no longer ringing.");
@@ -1259,6 +1336,9 @@ impl App {
             self.window().show(Page::Call);
             return;
         }
+        if self.hold_for_recording_notice(NoticeAction::Place(to.clone())) {
+            return;
+        }
         let client = self.client();
         let app = self.clone();
         self.window().call.show_dialing(&to);
@@ -1280,12 +1360,19 @@ impl App {
     }
 
     /// Enters the call screen for `call` and joins its media on this device.
+    ///
+    /// A call that connects before this device agreed to the recording notice (answered from a
+    /// notification, or rejoined after a restart; placing, answering in the incoming window and
+    /// switching here ask first) joins with the microphone held, so none of this person's audio
+    /// reaches the room, the recording or the transcription, and the notice shows over it.
     fn begin_call(&self, call: Call, media: Option<MediaGrant>) {
         let me = self.my_uuid();
+        let held = self.needs_recording_notice();
         self.0.active.replace(Some(ActiveCall {
             call: call.clone(),
             identity: media.as_ref().map(|m| m.identity.clone()),
             muted: false,
+            held,
             rejoining: false,
             rejoins: 0,
         }));
@@ -1297,6 +1384,7 @@ impl App {
         window
             .call
             .load(&call, &me, media.as_ref().map(|m| m.identity.as_str()));
+        self.apply_microphone();
         window.show(Page::Call);
         window.home.set_call_elsewhere(None);
         window.home.set_return_to_call(Some(&call), &me);
@@ -1308,6 +1396,8 @@ impl App {
         self.load_transcript(&call.ringid);
         if call.state == CallState::Ended {
             self.end_local_call(Some(call), true);
+        } else if held {
+            self.show_recording_notice_over_call();
         }
     }
 
@@ -1426,12 +1516,12 @@ impl App {
         self.update_elsewhere();
     }
 
-    /// The banner offered when this account is on a call on another device.
-    fn update_elsewhere(&self) {
+    /// A call this account is on, carried by another of its devices.
+    fn call_elsewhere(&self) -> Option<(Call, DeviceRef)> {
         let me = self.my_uuid();
         let my_device = self.my_device_id();
         let here = self.active_ringid();
-        let elsewhere = self.0.live.borrow().values().find_map(|call| {
+        self.0.live.borrow().values().find_map(|call| {
             if call.state != CallState::Active || Some(&call.ringid) == here.as_ref() {
                 return None;
             }
@@ -1441,12 +1531,20 @@ impl App {
                 .find(|p| p.account.uuid == me && p.state == ParticipantState::Joined)?;
             let device = mine.device.as_ref()?;
             (device.device_id != my_device).then(|| (call.clone(), device.clone()))
-        });
+        })
+    }
+
+    /// The banner offered when this account is on a call on another device.
+    fn update_elsewhere(&self) {
+        let me = self.my_uuid();
+        let elsewhere = self.call_elsewhere();
         self.window().home.set_call_elsewhere(
             elsewhere
                 .as_ref()
                 .map(|(call, device)| (call, device, me.as_str())),
         );
+        // A notice waiting to move that call here goes when it ends or moves.
+        self.drop_stale_recording_notice();
     }
 
     pub fn hang_up(&self) {
@@ -1485,6 +1583,19 @@ impl App {
         if audible {
             self.0.sounds.play(Cue::Ended);
         }
+        // A notice over this call stays, about the call that just ended.
+        if let Some(notice) = self
+            .0
+            .notice
+            .borrow()
+            .as_ref()
+            .filter(|n| n.action == NoticeAction::Answered)
+        {
+            notice.dialog.set_context(
+                notice.action.context(false),
+                notice.action.not_now_tip(false),
+            );
+        }
         let window = self.window();
         window.home.set_return_to_call(None, "");
         let final_call = call.unwrap_or(active.call);
@@ -1520,6 +1631,9 @@ impl App {
     pub fn switch_here(&self, ringid: String) {
         if self.has_active_call() {
             self.toast("Hang up here first.");
+            return;
+        }
+        if self.hold_for_recording_notice(NoticeAction::SwitchHere(ringid.clone())) {
             return;
         }
         let client = self.client();
@@ -1617,11 +1731,15 @@ impl App {
         self.0.media_generation.set(generation);
         self.drop_media_only();
         let config = self.config();
+        // A call the person muted, or one waiting for the recording notice (also when it
+        // reconnects), starts muted: ring-core mutes the track before publishing it, so none of
+        // their audio reaches the room.
+        let muted = self.microphone_off();
         // An empty id cannot name a device (see `call::selectable`); leave it to the default.
         let options = MediaOptions {
             input_device: config.input_device.filter(|id| !id.is_empty()),
             output_device: config.output_device.filter(|id| !id.is_empty()),
-            muted: false,
+            muted,
         };
         self.window().call.set_media_state(&MediaState::Connecting);
         let app = self.clone();
@@ -1634,10 +1752,11 @@ impl App {
                         runtime::spawn(async move { media.disconnect().await });
                         return;
                     }
-                    let muted = app.0.active.borrow().as_ref().is_some_and(|a| a.muted);
-                    if muted {
+                    // The person may have muted, or agreed to the notice, while it connected.
+                    let off = app.microphone_off();
+                    if off != muted {
                         let _guard = runtime::enter();
-                        media.set_muted(true);
+                        media.set_muted(off);
                     }
                     app.0.media.replace(Some(media));
                     app.window().call.set_media_state(&MediaState::Connected);
@@ -1801,15 +1920,45 @@ impl App {
         self.drop_media_only();
     }
 
+    /// The mute control. While the call waits for the recording notice the microphone stays off:
+    /// unmuting brings the notice forward instead.
     pub fn set_muted(&self, muted: bool) {
-        if let Some(active) = self.0.active.borrow_mut().as_mut() {
-            active.muted = muted;
+        let refused = match self.0.active.borrow_mut().as_mut() {
+            Some(active) if active.held && !muted => true,
+            Some(active) => {
+                active.muted = muted;
+                false
+            }
+            None => false,
+        };
+        self.apply_microphone();
+        if refused {
+            self.show_recording_notice_over_call();
         }
+    }
+
+    /// Whether the call's microphone is off: muted by the person, or held for the notice.
+    fn microphone_off(&self) -> bool {
+        self.0
+            .active
+            .borrow()
+            .as_ref()
+            .is_none_or(|a| a.muted || a.held)
+    }
+
+    /// Applies the person's mute and the notice's hold to the call audio and the mute control.
+    fn apply_microphone(&self) {
+        let Some(held) = self.0.active.borrow().as_ref().map(|a| a.held) else {
+            return;
+        };
+        let off = self.microphone_off();
         if let Some(media) = self.0.media.borrow().as_ref() {
             let _guard = runtime::enter();
-            media.set_muted(muted);
+            media.set_muted(off);
         }
-        self.window().call.set_muted(muted);
+        let view = self.window().call;
+        view.set_mic_held(held);
+        view.set_muted(off);
     }
 
     /// Chooses the microphone (`None` follows the system default) and switches a live call to it.
@@ -1840,6 +1989,189 @@ impl App {
                 self.error(&err);
             }
         }
+    }
+
+    // ---- recording notice -------------------------------------------------------------------------
+
+    /// This device has not agreed to the current recording notice yet.
+    fn needs_recording_notice(&self) -> bool {
+        !self.0.config.borrow().agreed_to_recording()
+    }
+
+    /// Whether this device's call waits for the notice with its microphone off.
+    fn microphone_held(&self) -> bool {
+        self.0.active.borrow().as_ref().is_some_and(|a| a.held)
+    }
+
+    /// After sign-in, and on the first launch signed in after the notice changed: the notice once,
+    /// so that this device has normally agreed before a call is answered from a notification.
+    /// Started at login it waits in the hidden window.
+    fn offer_recording_notice(&self) {
+        let offered = self.0.config.borrow().offered_recording_notice();
+        if !self.needs_recording_notice() || offered || self.0.notice.borrow().is_some() {
+            return;
+        }
+        self.show_recording_notice(NoticeAction::Welcome);
+    }
+
+    /// Holds a call action until the person has agreed to the recording notice. Returns true
+    /// when the action waits for the notice.
+    fn hold_for_recording_notice(&self, action: NoticeAction) -> bool {
+        if !self.needs_recording_notice() {
+            return false;
+        }
+        self.show_recording_notice(action);
+        true
+    }
+
+    /// Shows the notice for `action`, in place of whatever notice was on screen.
+    fn show_recording_notice(&self, action: NoticeAction) {
+        if let Some(previous) = self.0.notice.take() {
+            previous.dialog.close();
+        }
+        let id = self.0.notice_ids.get() + 1;
+        self.0.notice_ids.set(id);
+        let live = self.microphone_held();
+        let dialog = NoticeDialog::new(id, action.context(live), action.not_now_tip(live));
+        // Answering shows it over the ringing window that was answered; the rest over Ring's.
+        let ringing = match &action {
+            NoticeAction::Answer(invitation_id) => self
+                .0
+                .incoming
+                .borrow()
+                .get(invitation_id)
+                .map(IncomingWindow::host),
+            _ => None,
+        };
+        let welcome = action == NoticeAction::Welcome;
+        self.0.notice.replace(Some(Notice {
+            id,
+            action,
+            dialog: dialog.clone(),
+        }));
+        match ringing {
+            Some(window) => dialog.present(&window),
+            None => {
+                // At sign-in the window may be hidden (started at login); the notice waits there.
+                if !welcome {
+                    self.present();
+                }
+                dialog.present(&self.window().window);
+            }
+        }
+    }
+
+    /// The notice over the live call that waits for it, in place of whatever waited for it,
+    /// since this call comes first.
+    fn show_recording_notice_over_call(&self) {
+        if !self.needs_recording_notice() || !self.microphone_held() {
+            return;
+        }
+        let shown = self
+            .0
+            .notice
+            .borrow()
+            .as_ref()
+            .filter(|n| n.action == NoticeAction::Answered)
+            .map(|n| n.dialog.clone());
+        match shown {
+            Some(dialog) => {
+                // Already up, perhaps still about the call before this one.
+                let action = NoticeAction::Answered;
+                dialog.set_context(action.context(true), action.not_now_tip(true));
+            }
+            None => self.show_recording_notice(NoticeAction::Answered),
+        }
+        self.show_call();
+    }
+
+    fn take_recording_notice(&self, id: u64) -> Option<Notice> {
+        let mut notice = self.0.notice.borrow_mut();
+        if notice.as_ref()?.id == id {
+            notice.take()
+        } else {
+            None
+        }
+    }
+
+    /// "Agree and continue": remembers the agreement on this device and carries on.
+    pub fn agree_to_recording_notice(&self, id: u64) {
+        let Some(notice) = self.take_recording_notice(id) else {
+            return;
+        };
+        self.update_config(|c| c.recording_notice_accepted = RECORDING_NOTICE_VERSION);
+        notice.dialog.close();
+        // The call that waited with the microphone held goes on with it, unless the person
+        // muted it themselves.
+        let released = match self.0.active.borrow_mut().as_mut() {
+            Some(active) if active.held => {
+                active.held = false;
+                true
+            }
+            _ => false,
+        };
+        if released {
+            self.apply_microphone();
+        }
+        match notice.action {
+            NoticeAction::Place(to) => self.start_call(to),
+            NoticeAction::Answer(invitation_id) => {
+                // Only while it still rings.
+                let ringing = self.0.incoming.borrow().contains_key(&invitation_id);
+                if ringing {
+                    self.accept(&invitation_id);
+                }
+            }
+            NoticeAction::SwitchHere(ringid) => {
+                let elsewhere = self
+                    .call_elsewhere()
+                    .is_some_and(|(call, _)| call.ringid == ringid);
+                if elsewhere {
+                    self.switch_here(ringid);
+                }
+            }
+            NoticeAction::Welcome | NoticeAction::Answered => {}
+        }
+    }
+
+    /// "Not now" (also Esc): drops the call action that waited, and over a call that waits with
+    /// the microphone off, ends that call. The notice comes back before the next call, and the
+    /// one after sign-in only after the next sign-in.
+    pub fn dismiss_recording_notice(&self, id: u64) {
+        let Some(notice) = self.take_recording_notice(id) else {
+            return;
+        };
+        self.update_config(|c| c.recording_notice_offered = RECORDING_NOTICE_VERSION);
+        notice.dialog.close();
+        if notice.action != NoticeAction::Answered {
+            // It had taken the place of the notice over this device's held call.
+            self.show_recording_notice_over_call();
+        } else if self.microphone_held() {
+            self.hang_up();
+        }
+    }
+
+    /// A notice waiting to answer a ring, or to move a call here, goes away with that ring or
+    /// call: the caller hung up, another device answered, it stopped ringing, or the call ended
+    /// or moved.
+    fn drop_stale_recording_notice(&self) {
+        let action = self.0.notice.borrow().as_ref().map(|n| n.action.clone());
+        let stale = match action {
+            Some(NoticeAction::Answer(invitation_id)) => {
+                !self.0.incoming.borrow().contains_key(&invitation_id)
+            }
+            Some(NoticeAction::SwitchHere(ringid)) => self
+                .call_elsewhere()
+                .is_none_or(|(call, _)| call.ringid != ringid),
+            _ => false,
+        };
+        if !stale {
+            return;
+        }
+        if let Some(notice) = self.0.notice.take() {
+            notice.dialog.close();
+        }
+        self.show_recording_notice_over_call();
     }
 
     // ---- voicemail --------------------------------------------------------------------------------
