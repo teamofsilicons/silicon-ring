@@ -87,6 +87,7 @@ public sealed partial class SettingsPage : Page
         var native = CallMedia.NativeVersion;
         VersionText.Text = native is null ? $"Ring {AppServices.AppVersion}" : $"Ring {AppServices.AppVersion} · media {native}";
         ServerText.Text = Format.Pixel(Services.Api.BaseUri.Host);
+        PrivacyLink.NavigateUri = new Uri(AppServices.PrivacyUrl);
         SourceLink.NavigateUri = new Uri(AppServices.SourceUrl);
     }
 

@@ -65,7 +65,7 @@ The MSI, after publishing:
 
 ```powershell
 dotnet tool install --global wix --version 5.0.2
-wix build windows/installer/Ring.wxs -arch x64 -d PublishDir=$PWD\out\Ring -d Version=1.0.0 -o Ring-windows-x64.msi
+wix build windows/installer/Ring.wxs -arch x64 -d PublishDir=$PWD\out\Ring -d Version=1.0.1 -o Ring-windows-x64.msi
 ```
 
 CI does all of this on `windows-2025` (x64) and `windows-11-arm` (arm64): see

@@ -150,6 +150,7 @@ public sealed class ActiveCall : ObservableObject
     private string _detail = "";
     private string _timer = "";
     private bool _isMuted;
+    private bool _waitsForNotice;
     private string? _banner;
     private bool _mediaConnected;
 
@@ -250,6 +251,27 @@ public sealed class ActiveCall : ObservableObject
             }
         }
     }
+
+    /// <summary>
+    /// Connected before this device agreed to the recording notice (answered from the toast, or
+    /// rejoined after a restart): the microphone stays muted, and unmute stays off, until it agrees.
+    /// </summary>
+    public bool WaitsForNotice
+    {
+        get => _waitsForNotice;
+        set
+        {
+            if (Set(ref _waitsForNotice, value))
+            {
+                OnPropertyChanged(nameof(CanToggleMute));
+            }
+        }
+    }
+
+    /// <summary>Muted by the app while the call waits for the recording notice, not by the person.</summary>
+    public bool MutedForNotice { get; set; }
+
+    public bool CanToggleMute => !_waitsForNotice;
 
     public string MuteLabel => _isMuted ? "UNMUTE" : "MUTE";
 

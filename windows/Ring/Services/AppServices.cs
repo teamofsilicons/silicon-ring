@@ -21,6 +21,7 @@ public sealed class AppServices
     public const string AppUserModelId = "TeamOfSilicons.Ring";
     public const string ProductionApiUrl = "https://backend.ring.teamofsilicons.com";
     public const string SourceUrl = "https://github.com/teamofsilicons/silicon-ring";
+    public const string PrivacyUrl = "https://ring.teamofsilicons.com/privacy";
 
     private RealtimeConnection? _realtime;
     private StoredSession? _session;
@@ -41,7 +42,7 @@ public sealed class AppServices
         get
         {
             var version = Assembly.GetExecutingAssembly().GetName().Version;
-            return version is null ? "1.0.0" : $"{version.Major}.{version.Minor}.{version.Build}";
+            return version is null ? "1.0.1" : $"{version.Major}.{version.Minor}.{version.Build}";
         }
     }
 
@@ -228,6 +229,8 @@ public sealed class AppServices
         }
         Api.SessionToken = stored.SessionToken;
         SessionChanged?.Invoke();
+        // Right after sign-in, and on launch until this sign-in has answered it.
+        Calls.OfferRecordingNotice();
         StartRealtime();
     }
 
@@ -322,6 +325,8 @@ public sealed class AppServices
         await Calls.ResetAsync();
         await StopRealtimeAsync();
         SessionStore.Clear();
+        // The next sign-in shows the recording notice again, unless this device agreed.
+        RecordingNotice.ResetOffer(Preferences);
         _session = null;
         Api.SessionToken = null;
         RingEnabled = true;

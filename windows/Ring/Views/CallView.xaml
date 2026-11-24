@@ -4,6 +4,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:controls="using:Ring.Controls"
+    xmlns:views="using:Ring.Views"
     xmlns:vm="using:Ring.ViewModels"
     FontFamily="{StaticResource RingSansFont}">
     <Grid Background="{ThemeResource RingBackgroundBrush}">
@@ -54,6 +55,15 @@
                 TextAlignment="Center"
                 TextWrapping="Wrap"
                 Visibility="{x:Bind Call.DetailVisibility, Mode=OneWay}" />
+            <StackPanel Margin="0,4,0,0" HorizontalAlignment="Center" Orientation="Horizontal" Spacing="6">
+                <Ellipse Width="6" Height="6" VerticalAlignment="Center" Fill="{ThemeResource RingDangerBrush}" />
+                <TextBlock
+                    VerticalAlignment="Center"
+                    AutomationProperties.Name="This call is recorded and transcribed"
+                    FontSize="10"
+                    Style="{StaticResource RingPixelLabelStyle}"
+                    Text="RECORDED · TRANSCRIBED" />
+            </StackPanel>
         </StackPanel>
 
         <!-- In call: timer, participants, live transcript. -->
@@ -63,13 +73,24 @@
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
             <StackPanel Spacing="20">
-                <StackPanel HorizontalAlignment="Center" Orientation="Horizontal" Spacing="10">
-                    <TextBlock FontSize="13" Style="{StaticResource RingPixelLabelStyle}" Text="{x:Bind Call.Status, Mode=OneWay}" />
-                    <TextBlock
-                        FontSize="13"
-                        Foreground="{ThemeResource RingInkBrush}"
-                        Style="{StaticResource RingPixelLabelStyle}"
-                        Text="{x:Bind Call.Timer, Mode=OneWay}" />
+                <StackPanel HorizontalAlignment="Center" Spacing="6">
+                    <StackPanel HorizontalAlignment="Center" Orientation="Horizontal" Spacing="10">
+                        <TextBlock FontSize="13" Style="{StaticResource RingPixelLabelStyle}" Text="{x:Bind Call.Status, Mode=OneWay}" />
+                        <TextBlock
+                            FontSize="13"
+                            Foreground="{ThemeResource RingInkBrush}"
+                            Style="{StaticResource RingPixelLabelStyle}"
+                            Text="{x:Bind Call.Timer, Mode=OneWay}" />
+                    </StackPanel>
+                    <StackPanel HorizontalAlignment="Center" Orientation="Horizontal" Spacing="6">
+                        <Ellipse Width="6" Height="6" VerticalAlignment="Center" Fill="{ThemeResource RingDangerBrush}" />
+                        <TextBlock
+                            VerticalAlignment="Center"
+                            AutomationProperties.Name="This call is recorded and transcribed"
+                            FontSize="10"
+                            Style="{StaticResource RingPixelLabelStyle}"
+                            Text="RECORDED · TRANSCRIBED" />
+                    </StackPanel>
                 </StackPanel>
                 <ItemsControl HorizontalAlignment="Center" ItemsSource="{x:Bind Call.Peers, Mode=OneWay}">
                     <ItemsControl.ItemsPanel>
@@ -144,6 +165,13 @@
             </Grid>
         </Grid>
 
+        <!--
+            A call that connected before this device agreed to the recording notice: the notice
+            covers the people and the transcript, and end and the audio devices stay in reach
+            below it. The microphone stays muted until it is answered.
+        -->
+        <views:RecordingNoticeView x:Name="NoticeOverCall" />
+
         <!-- Problems during the call ("Call audio was lost"), over the top of the screen. -->
         <InfoBar
             x:Name="NoticeBar"
@@ -174,10 +202,21 @@
             Visibility="{x:Bind Call.ControlsVisibility, Mode=OneWay}">
             <StackPanel Spacing="8">
                 <Grid>
-                    <Button AutomationProperties.Name="Mute" Click="OnMuteClick" Style="{StaticResource RingCircleButtonStyle}" Visibility="{x:Bind Call.UnmutedVisibility, Mode=OneWay}">
+                    <!-- Off while the call waits for the recording notice: agreeing turns the microphone on. -->
+                    <Button
+                        AutomationProperties.Name="Mute"
+                        Click="OnMuteClick"
+                        IsEnabled="{x:Bind Call.CanToggleMute, Mode=OneWay}"
+                        Style="{StaticResource RingCircleButtonStyle}"
+                        Visibility="{x:Bind Call.UnmutedVisibility, Mode=OneWay}">
                         <FontIcon Glyph="&#xE720;" />
                     </Button>
-                    <Button AutomationProperties.Name="Unmute" Click="OnMuteClick" Style="{StaticResource RingInkCircleButtonStyle}" Visibility="{x:Bind Call.MutedVisibility, Mode=OneWay}">
+                    <Button
+                        AutomationProperties.Name="Unmute"
+                        Click="OnMuteClick"
+                        IsEnabled="{x:Bind Call.CanToggleMute, Mode=OneWay}"
+                        Style="{StaticResource RingInkCircleButtonStyle}"
+                        Visibility="{x:Bind Call.MutedVisibility, Mode=OneWay}">
                         <FontIcon Glyph="&#xEC54;" />
                     </Button>
                 </Grid>

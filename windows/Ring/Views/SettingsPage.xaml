@@ -103,6 +103,7 @@
                     <StackPanel Spacing="14">
                         <ComboBox x:Name="InputCombo" HorizontalAlignment="Stretch" Header="Microphone" SelectionChanged="OnInputChanged" />
                         <ComboBox x:Name="OutputCombo" HorizontalAlignment="Stretch" Header="Speaker" SelectionChanged="OnOutputChanged" />
+                        <TextBlock Style="{StaticResource RingSecondaryTextStyle}" Text="Ring uses the microphone so the people and silicons you call can hear you. Calls are recorded and transcribed." />
                         <TextBlock x:Name="AudioNote" Style="{StaticResource RingSecondaryTextStyle}" Visibility="Collapsed" />
                     </StackPanel>
                 </Border>
@@ -192,6 +193,7 @@
                             </StackPanel>
                         </StackPanel>
                         <TextBlock Style="{StaticResource RingSecondaryTextStyle}" Text="Ring sends no telemetry." />
+                        <HyperlinkButton x:Name="PrivacyLink" Padding="0" Content="Privacy Policy" />
                         <HyperlinkButton x:Name="SourceLink" Padding="0" Content="Source on GitHub" />
                     </StackPanel>
                 </Border>

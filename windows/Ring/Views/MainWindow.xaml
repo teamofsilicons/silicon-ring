@@ -30,6 +30,9 @@
             <views:SignInView x:Name="SignInHost" Grid.Row="1" Visibility="Collapsed" />
             <views:ShellView x:Name="ShellHost" Grid.Row="1" Visibility="Collapsed" />
             <views:CallView x:Name="CallHost" Grid.Row="1" Visibility="Collapsed" />
+
+            <!-- The recording notice over the whole window (one over a live call shows in CallHost). -->
+            <views:RecordingNoticeView x:Name="NoticeHost" Grid.Row="1" />
         </Grid>
     </UserControl>
 </Window>

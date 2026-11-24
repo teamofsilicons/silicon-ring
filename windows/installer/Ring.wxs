@@ -2,7 +2,7 @@
 <!--
   Per-machine MSI for the self-contained Ring folder (WiX Toolset v5).
   Built by .github/workflows/windows.yml:
-    wix build Ring.wxs -arch x64|arm64 -d PublishDir=<publish folder> -d Version=1.0.0 -o Ring-windows-<arch>.msi
+    wix build Ring.wxs -arch x64|arm64 -d PublishDir=<publish folder> -d Version=1.0.1 -o Ring-windows-<arch>.msi
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package

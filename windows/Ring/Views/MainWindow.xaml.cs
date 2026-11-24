@@ -1,5 +1,7 @@
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Ring.Interop;
 using Ring.Services;
 using Windows.Graphics;
@@ -11,6 +13,9 @@ public sealed partial class MainWindow : Window
 {
     private const int WidthDip = 1040;
     private const int HeightDip = 720;
+
+    // The recording notice last shown, to bring the window forward only when a new one appears.
+    private RecordingNoticeRequest? _notice;
 
     public MainWindow()
     {
@@ -32,6 +37,7 @@ public sealed partial class MainWindow : Window
 
         Services.SessionChanged += UpdateRoot;
         Services.Calls.ActiveChanged += UpdateCall;
+        Services.Calls.NoticeChanged += OnNoticeChanged;
         ApplyTheme();
         UpdateRoot();
         UpdateCall();
@@ -102,6 +108,7 @@ public sealed partial class MainWindow : Window
         {
             CallHost.Visibility = Visibility.Collapsed;
         }
+        UpdateNotice();
     }
 
     private void UpdateCall()
@@ -109,9 +116,54 @@ public sealed partial class MainWindow : Window
         var active = Services.Calls.Active;
         CallHost.Show(active);
         CallHost.Visibility = active is null ? Visibility.Collapsed : Visibility.Visible;
+        UpdateNotice();
         if (active is not null)
         {
             ShowAndActivate();
+        }
+    }
+
+    private void OnNoticeChanged()
+    {
+        var notice = Services.Calls.Notice;
+        var appeared = notice is not null && !ReferenceEquals(notice, _notice);
+        _notice = notice;
+        UpdateNotice();
+        // A call waits for it: bring Ring forward. The one after sign-in waits for the window.
+        if (appeared && Services.Calls.NoticePlacement is not null && notice is { Action: not RecordingNoticeAction.Welcome })
+        {
+            ShowAndActivate();
+        }
+    }
+
+    /// <summary>The recording notice over the window, or over the live call it is about.</summary>
+    private void UpdateNotice()
+    {
+        var calls = Services.Calls;
+        var placement = calls.NoticePlacement;
+        var overWindow = placement == RecordingNoticePlacement.Window;
+        var wasShown = NoticeHost.Visibility == Visibility.Visible || CallHost.IsShowingNotice;
+        NoticeHost.Show(overWindow ? calls.Notice : null);
+        CallHost.ShowNotice(placement == RecordingNoticePlacement.CallScreen ? calls.Notice : null);
+        if (placement is not null && !wasShown)
+        {
+            CloseDialogs();
+        }
+    }
+
+    /// <summary>Dialogs sit above everything in the window; make way for the recording notice.</summary>
+    private void CloseDialogs()
+    {
+        if (RootControl.XamlRoot is not { } root)
+        {
+            return;
+        }
+        foreach (var popup in VisualTreeHelper.GetOpenPopupsForXamlRoot(root))
+        {
+            if (popup.Child is ContentDialog dialog)
+            {
+                dialog.Hide();
+            }
         }
     }
 

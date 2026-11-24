@@ -110,7 +110,12 @@ public sealed partial class IncomingCallWindow : Window
             return;
         }
         _busy = true;
-        await Services.Calls.AcceptAsync(_incoming);
+        if (!await Services.Calls.AcceptAsync(_incoming))
+        {
+            // Until this device agrees, the recording notice comes first in the main window; the
+            // call keeps ringing here meanwhile, so Decline and Silence still work.
+            _busy = false;
+        }
         App.ShowMainWindow();
     }
 

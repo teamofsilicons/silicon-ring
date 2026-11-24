@@ -29,6 +29,7 @@ public sealed class CallCoordinator
     private ElsewhereCall? _elsewhere;
     // A rejoin of a call this device carried before the app restarted is in flight.
     private bool _restoring;
+    private RecordingNoticeRequest? _notice;
 
     public CallCoordinator(AppServices app)
     {
@@ -56,6 +57,12 @@ public sealed class CallCoordinator
 
     /// <summary>A call ended or changed in a way the call history should show.</summary>
     public event Action? HistoryChanged;
+
+    /// <summary>The recording notice on screen, and the call action waiting for it; null when none.</summary>
+    public RecordingNoticeRequest? Notice => _notice;
+
+    /// <summary>The recording notice appeared, went away, or moved (<see cref="NoticePlacement"/>).</summary>
+    public event Action? NoticeChanged;
 
     private string MyUuid => _app.Me?.Uuid ?? "";
 
@@ -226,6 +233,12 @@ public sealed class CallCoordinator
         {
             _app.Sounds.StopLoop();
         }
+        // A notice waiting to answer this ring goes away with it: the caller hung up, another
+        // device answered or declined, or it stopped ringing.
+        if (_notice is { Action: RecordingNoticeAction.Answer } notice && notice.Incoming?.InvitationId == incoming.InvitationId)
+        {
+            CloseRecordingNotice();
+        }
         IncomingRemoved?.Invoke(incoming);
     }
 
@@ -254,7 +267,24 @@ public sealed class CallCoordinator
     public IncomingCall? FindIncoming(string? ringid, string? invitationId) =>
         Incoming.FirstOrDefault(i => (invitationId is not null && i.InvitationId == invitationId) || (invitationId is null && i.Ringid == ringid));
 
-    public async Task AcceptAsync(IncomingCall incoming)
+    /// <summary>
+    /// Answers in the app (the ringing window). Until this device agrees to the recording notice,
+    /// the notice comes first and the call keeps ringing. Returns whether the call was answered.
+    /// </summary>
+    public async Task<bool> AcceptAsync(IncomingCall incoming)
+    {
+        if (HoldForRecordingNotice(RecordingNoticeRequest.Answer(incoming)))
+        {
+            return false;
+        }
+        return await AcceptNowAsync(incoming);
+    }
+
+    /// <summary>
+    /// Accepts on the server and joins the room. A call answered before this device agreed to the
+    /// recording notice (from the toast) joins with the microphone muted (<see cref="Begin"/>).
+    /// </summary>
+    private async Task<bool> AcceptNowAsync(IncomingCall incoming)
     {
         _handled.Add(incoming.InvitationId);
         Dismiss(incoming);
@@ -267,6 +297,7 @@ public sealed class CallCoordinator
             var result = await _app.Api.AcceptAsync(incoming.Ringid, incoming.InvitationId);
             _open[result.Call.Ringid] = result.Call;
             Begin(result.Call, result.Media, isOutgoing: false, primary: incoming.Caller);
+            return true;
         }
         catch (ApiException ex)
         {
@@ -276,16 +307,21 @@ public sealed class CallCoordinator
                 "invitation_expired" => "That call stopped ringing.",
                 _ => ex.UserMessage,
             });
+            return false;
         }
     }
 
-    /// <summary>Answers from a notification button, where only the ids are known.</summary>
+    /// <summary>
+    /// Answers from a notification button, where only the ids are known. This answer happens
+    /// outside Ring's windows, so it goes ahead before the recording notice is agreed: the call
+    /// joins with the microphone muted and the notice shows over it.
+    /// </summary>
     public async Task AcceptByIdAsync(string ringid, string? invitationId)
     {
         var incoming = FindIncoming(ringid, invitationId);
         if (incoming is not null)
         {
-            await AcceptAsync(incoming);
+            await AcceptNowAsync(incoming);
             return;
         }
         try
@@ -299,7 +335,7 @@ public sealed class CallCoordinator
                 _app.ShowNotice("That call is no longer ringing.");
                 return;
             }
-            await AcceptAsync(new IncomingCall(call, invitation, MyUuid));
+            await AcceptNowAsync(new IncomingCall(call, invitation, MyUuid));
         }
         catch (ApiException ex)
         {
@@ -369,6 +405,10 @@ public sealed class CallCoordinator
             _app.ShowNotice("You're already on a call.");
             return false;
         }
+        if (HoldForRecordingNotice(RecordingNoticeRequest.Place(to)))
+        {
+            return false;
+        }
         try
         {
             var created = await _app.Api.CreateCallAsync(to);
@@ -407,8 +447,12 @@ public sealed class CallCoordinator
         }
     }
 
-    /// <summary>Moves a call carried by another of this account's devices to this one.</summary>
-    public Task SwitchHereAsync(string ringid) => ClaimAsync(ringid, rejoin: false);
+    /// <summary>
+    /// Moves a call carried by another of this account's devices to this one, after the recording
+    /// notice until this device has agreed to it.
+    /// </summary>
+    public Task SwitchHereAsync(string ringid) =>
+        HoldForRecordingNotice(RecordingNoticeRequest.SwitchHere(ringid)) ? Task.CompletedTask : ClaimAsync(ringid, rejoin: false);
 
     /// <summary>Claims the call's audio for this device; false when the server refused or was unreachable.</summary>
     private async Task<bool> ClaimAsync(string ringid, bool rejoin)
@@ -481,6 +525,16 @@ public sealed class CallCoordinator
         {
             return;
         }
+        if (active.WaitsForNotice)
+        {
+            // The microphone stays muted until this device agrees: the notice comes back instead
+            // (the mute button is off meanwhile, so this is only a safeguard).
+            if (!active.IsEnded)
+            {
+                ShowRecordingNoticeOverCall();
+            }
+            return;
+        }
         active.IsMuted = !active.IsMuted;
         _media?.SetMuted(active.IsMuted);
     }
@@ -513,6 +567,15 @@ public sealed class CallCoordinator
     private void Begin(Call call, MediaGrant? grant, bool isOutgoing, Account primary)
     {
         var active = new ActiveCall(call, isOutgoing, primary);
+        // Connected before this device agreed to the recording notice (answered from the toast, or
+        // rejoined after a restart): it joins muted, so none of this person's audio reaches the
+        // room, the recording, the transcription or a representative until they agree.
+        if (NeedsRecordingNotice)
+        {
+            active.WaitsForNotice = true;
+            active.MutedForNotice = true;
+            active.IsMuted = true;
+        }
         _active = active;
         UpdateActive(active, call);
         ActiveChanged?.Invoke();
@@ -524,6 +587,10 @@ public sealed class CallCoordinator
         if (active.Phase == CallPhase.Active)
         {
             _ = LoadTranscriptAsync(active);
+        }
+        if (active.WaitsForNotice && !active.IsEnded)
+        {
+            ShowRecordingNoticeOverCall();
         }
     }
 
@@ -688,6 +755,11 @@ public sealed class CallCoordinator
         {
             _ = media.DisconnectAsync();
         }
+        if (_notice is { IsAnswered: true })
+        {
+            // The notice over this call stays until it is answered, over the window now.
+            NoticeChanged?.Invoke();
+        }
 
         // Leave the outcome on screen for a moment, then return to the app.
         var close = _app.Dispatcher.CreateTimer();
@@ -738,7 +810,9 @@ public sealed class CallCoordinator
         }
         try
         {
-            _media = CallMedia.Connect(grant, _app.Preferences.InputDeviceId, _app.Preferences.OutputDeviceId, active.IsMuted, (media, e) =>
+            // A rejoin while the call still waits for the recording notice stays muted too.
+            var muted = active.IsMuted || active.WaitsForNotice;
+            _media = CallMedia.Connect(grant, _app.Preferences.InputDeviceId, _app.Preferences.OutputDeviceId, muted, (media, e) =>
             {
                 // The microphone level (10 Hz) has no consumer on this screen.
                 if (e.Type != MediaEventTypes.LocalLevel)
@@ -908,18 +982,13 @@ public sealed class CallCoordinator
         ElsewhereCall? next = null;
         foreach (var call in _open.Values)
         {
-            if (call.State != CallStates.Active || _active?.Ringid == call.Ringid)
-            {
-                continue;
-            }
-            var mine = call.ParticipantFor(MyUuid);
-            if (mine is not { IsJoined: true } || mine.Device is null || mine.Device.DeviceId == MyDeviceId)
+            if (OtherDeviceCarrying(call) is not { } device)
             {
                 continue;
             }
             var others = call.JoinedParticipants.Where(p => p.Account.Uuid != MyUuid).Select(p => p.Account.Label).ToList();
             var with = others.Count == 0 ? "a call" : $"a call with {string.Join(", ", others)}";
-            next = new ElsewhereCall(call.Ringid, $"On {with} on {Format.DeviceLabel(mine.Device)}");
+            next = new ElsewhereCall(call.Ringid, $"On {with} on {Format.DeviceLabel(device)}");
             break;
         }
         if (next != _elsewhere)
@@ -927,7 +996,29 @@ public sealed class CallCoordinator
             _elsewhere = next;
             ElsewhereChanged?.Invoke();
         }
+        // A notice waiting to move a call here goes away once that call ended or moved.
+        if (_notice is { Action: RecordingNoticeAction.SwitchHere, Ringid: { } waiting } && !IsCarriedElsewhere(waiting))
+        {
+            CloseRecordingNotice();
+        }
     }
+
+    /// <summary>The other device of this account that carries <paramref name="call"/>, while it is on and not here.</summary>
+    private DeviceRef? OtherDeviceCarrying(Call call)
+    {
+        if (call.State != CallStates.Active || _active?.Ringid == call.Ringid)
+        {
+            return null;
+        }
+        var mine = call.ParticipantFor(MyUuid);
+        if (mine is not { IsJoined: true } || mine.Device is null || mine.Device.DeviceId == MyDeviceId)
+        {
+            return null;
+        }
+        return mine.Device;
+    }
+
+    private bool IsCarriedElsewhere(string ringid) => _open.TryGetValue(ringid, out var call) && OtherDeviceCarrying(call) is not null;
 
     // ---- transcript -------------------------------------------------------------------------------
 
@@ -1146,5 +1237,153 @@ public sealed class CallCoordinator
             _elsewhere = null;
             ElsewhereChanged?.Invoke();
         }
+        if (_notice is not null)
+        {
+            _notice = null;
+            NoticeChanged?.Invoke();
+        }
+    }
+
+    // ---- recording notice -------------------------------------------------------------------------
+
+    /// <summary>This device has not agreed to the current recording notice yet.</summary>
+    public bool NeedsRecordingNotice => !RecordingNotice.IsAccepted(_app.Preferences);
+
+    /// <summary>
+    /// Where the notice shows now: one about this device's live call shows over that call's
+    /// screen; every other one, and one whose call has ended, over the whole window.
+    /// </summary>
+    public RecordingNoticePlacement? NoticePlacement
+    {
+        get
+        {
+            if (_notice is not { } notice || !_app.IsSignedIn)
+            {
+                return null;
+            }
+            return notice.IsAnswered && _active is { IsEnded: false }
+                ? RecordingNoticePlacement.CallScreen
+                : RecordingNoticePlacement.Window;
+        }
+    }
+
+    /// <summary>
+    /// Right after sign-in, and on each launch signed in until this sign-in has answered it: the
+    /// notice once, so that this device has normally agreed before a call can be answered from a
+    /// toast.
+    /// </summary>
+    public void OfferRecordingNotice()
+    {
+        if (!NeedsRecordingNotice || RecordingNotice.WasOffered(_app.Preferences) || _notice is not null)
+        {
+            return;
+        }
+        SetNotice(RecordingNoticeRequest.Welcome());
+    }
+
+    /// <summary>
+    /// Holds a call action until the person has agreed to the recording notice. Returns true when
+    /// the action waits for the notice.
+    /// </summary>
+    private bool HoldForRecordingNotice(RecordingNoticeRequest request)
+    {
+        if (!NeedsRecordingNotice)
+        {
+            return false;
+        }
+        SetNotice(request);
+        return true;
+    }
+
+    /// <summary>
+    /// The notice over the live call that waits for it, in place of whatever call action was
+    /// waiting for it, since this call now comes first.
+    /// </summary>
+    private void ShowRecordingNoticeOverCall()
+    {
+        if (!NeedsRecordingNotice || _notice is { IsAnswered: true })
+        {
+            return;
+        }
+        SetNotice(RecordingNoticeRequest.Answered());
+    }
+
+    /// <summary>"Agree and continue": remembers the agreement on this device and carries on with the call.</summary>
+    public void AgreeToRecordingNotice()
+    {
+        if (_notice is not { } request)
+        {
+            return;
+        }
+        RecordingNotice.Accept(_app.Preferences);
+        // The call that waited goes on with the microphone, unless the person muted it themselves.
+        if (_active is { WaitsForNotice: true } active)
+        {
+            active.WaitsForNotice = false;
+            if (active.MutedForNotice)
+            {
+                active.MutedForNotice = false;
+                active.IsMuted = false;
+                _media?.SetMuted(false);
+            }
+        }
+        CloseRecordingNotice();
+        switch (request.Action)
+        {
+            case RecordingNoticeAction.Place when request.To is { } to:
+                _ = StartCallAsync(to);
+                break;
+            case RecordingNoticeAction.Answer when request.Incoming is { } waiting:
+                // Only while it still rings.
+                if (Incoming.FirstOrDefault(i => i.InvitationId == waiting.InvitationId) is { } ringing)
+                {
+                    _ = AcceptNowAsync(ringing);
+                }
+                break;
+            case RecordingNoticeAction.SwitchHere when request.Ringid is { } ringid:
+                if (IsCarriedElsewhere(ringid))
+                {
+                    _ = ClaimAsync(ringid, rejoin: false);
+                }
+                break;
+        }
+    }
+
+    /// <summary>
+    /// "Not now": drops the call action that waited, and over a call that waits with the
+    /// microphone muted, ends that call. The notice comes back before the next call, and the one
+    /// after sign-in only after the next sign-in.
+    /// </summary>
+    public void DismissRecordingNotice()
+    {
+        if (_notice is not { } request)
+        {
+            return;
+        }
+        RecordingNotice.MarkOffered(_app.Preferences);
+        CloseRecordingNotice();
+        if (request.IsAnswered && _active is { IsEnded: false, WaitsForNotice: true })
+        {
+            _ = HangUpAsync();
+        }
+    }
+
+    private void SetNotice(RecordingNoticeRequest request)
+    {
+        _notice = request;
+        NoticeChanged?.Invoke();
+    }
+
+    private void CloseRecordingNotice()
+    {
+        var closed = _notice;
+        _notice = null;
+        // A notice about another call took the place of the one over this device's live call:
+        // that call still has no agreement, so its notice comes back.
+        if (closed is { IsAnswered: false } && _active is { IsEnded: false, WaitsForNotice: true } && NeedsRecordingNotice)
+        {
+            _notice = RecordingNoticeRequest.Answered();
+        }
+        NoticeChanged?.Invoke();
     }
 }

@@ -12,13 +12,20 @@ public sealed partial class CallView : UserControl
     public CallView()
     {
         InitializeComponent();
+        NoticeOverCall.Placement = RecordingNoticePlacement.CallScreen;
         // This view lives as long as the main window; the shell's notice bar is hidden under it.
         Services.Notice += OnNotice;
     }
 
     public ActiveCall? Call { get; private set; }
 
+    /// <summary>The recording notice shows over this call's people and transcript.</summary>
+    public bool IsShowingNotice => NoticeOverCall.Visibility == Visibility.Visible;
+
     private static AppServices Services => App.Services;
+
+    /// <summary>The recording notice about this call, or null to hide it.</summary>
+    public void ShowNotice(RecordingNoticeRequest? request) => NoticeOverCall.Show(request);
 
     public void Show(ActiveCall? call)
     {

@@ -100,6 +100,15 @@ public sealed class Preferences
     /// <summary>Overrides the API origin (development servers). Null means production.</summary>
     public string? ApiUrl { get; set; }
 
+    /// <summary>The recording notice version this device agreed to; 0 until it agrees (<see cref="RecordingNotice"/>).</summary>
+    public int RecordingNoticeAccepted { get; set; }
+
+    /// <summary>
+    /// The recording notice version last put to the person signed in here and answered with
+    /// "Not now"; cleared at sign-out.
+    /// </summary>
+    public int RecordingNoticeOffered { get; set; }
+
     private static string FilePath => Path.Combine(AppPaths.DataDirectory, "preferences.json");
 
     public static Preferences Load()
