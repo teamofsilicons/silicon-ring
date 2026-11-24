@@ -49,6 +49,15 @@
     <color type="primary" scheme_preference="dark">#181818</color>
   </branding>
   <releases>
+    <release version="1.0.1" date="2026-11-24">
+      <description>
+        <p>
+          Ring now says that it records and transcribes calls, and which services process the
+          audio, and asks before this computer's first call. A call answered from a notification
+          before then keeps the microphone off until you agree.
+        </p>
+      </description>
+    </release>
     <release version="1.0.0" date="2026-10-15">
       <description>
         <p>The native GTK4 and libadwaita app for Silicon Ring.</p>

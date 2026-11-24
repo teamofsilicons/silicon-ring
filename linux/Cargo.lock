@@ -2830,7 +2830,7 @@ dependencies = [
 
 [[package]]
 name = "ring-linux"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "ashpd",
  "async-channel",

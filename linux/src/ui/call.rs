@@ -1,7 +1,7 @@
 //! The call screen: outgoing ringing, voicemail recording and the live call, with the transcript
 //! moving up and fading as it goes.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
@@ -17,6 +17,7 @@ use ring_proto::{
 use crate::app::App;
 use crate::runtime;
 use crate::ui::dialer;
+use crate::ui::recording;
 use crate::ui::widgets;
 
 const MAX_LINES: usize = 300;
@@ -143,12 +144,16 @@ struct Inner {
     status: gtk::Label,
     timer: gtk::Label,
     media_label: gtk::Label,
+    /// "Recorded · Transcribed" on the outgoing and in-call screens.
+    recorded: gtk::Box,
     people: gtk::FlowBox,
     voicemail_note: gtk::Box,
     transcript: gtk::Box,
     scroller: gtk::ScrolledWindow,
     controls: gtk::Box,
     mute: gtk::ToggleButton,
+    /// Set while the mute control is changed to show the call's state rather than by the person.
+    syncing: Rc<Cell<bool>>,
     mute_box: gtk::Box,
     level: gtk::LevelBar,
     devices_box: gtk::Box,
@@ -198,6 +203,10 @@ impl CallView {
         status_line.set_halign(gtk::Align::Center);
         status_line.append(&status);
         status_line.append(&timer);
+        let recorded = recording::indicator();
+        recorded.set_halign(gtk::Align::Center);
+        recorded.set_visible(false);
+        status_line.append(&recorded);
         let media_label = gtk::Label::new(None);
         media_label.add_css_class("pixel");
         media_label.add_css_class("tiny");
@@ -252,13 +261,17 @@ impl CallView {
             .tooltip_text("Mute")
             .build();
         mute.add_css_class("call-control");
-        mute.connect_toggled(|button| {
+        let syncing = Rc::new(Cell::new(false));
+        let guard = syncing.clone();
+        mute.connect_toggled(move |button| {
             button.set_icon_name(if button.is_active() {
                 "microphone-disabled-symbolic"
             } else {
                 "audio-input-microphone-symbolic"
             });
-            App::get().set_muted(button.is_active());
+            if !guard.get() {
+                App::get().set_muted(button.is_active());
+            }
         });
         let level = gtk::LevelBar::builder()
             .min_value(0.0)
@@ -322,12 +335,14 @@ impl CallView {
             status,
             timer,
             media_label,
+            recorded,
             people,
             voicemail_note,
             transcript,
             scroller,
             controls,
             mute,
+            syncing,
             mute_box,
             level,
             devices_box,
@@ -354,7 +369,8 @@ impl CallView {
         self.0.timer.set_label("");
         self.0.media_label.set_label("");
         self.0.level.set_value(0.0);
-        self.0.mute.set_active(false);
+        self.set_muted(false);
+        self.set_mic_held(false);
         let me = std::mem::take(&mut self.0.state.borrow_mut().me);
         *self.0.state.borrow_mut() = ViewState {
             me,
@@ -379,6 +395,7 @@ impl CallView {
         };
         self.add_tile(&placeholder, true, true);
         self.0.status.set_label("CALLING…");
+        self.0.recorded.set_visible(true);
         self.0.voicemail_note.set_visible(false);
         self.show_controls(false, false, false, true, false);
     }
@@ -496,6 +513,7 @@ impl CallView {
             self.set_remote_muted(&identity, is_muted);
         }
 
+        self.0.recorded.set_visible(call.state != CallState::Ended);
         match call.state {
             CallState::Ringing => {
                 let rung = call
@@ -588,6 +606,7 @@ impl CallView {
         };
         self.0.status.set_label(&text);
         self.0.media_label.set_label("");
+        self.0.recorded.set_visible(false);
         self.0.voicemail_note.set_visible(false);
         for tile in self.0.state.borrow().tiles.values() {
             tile.frame.remove_css_class("ringing");
@@ -615,10 +634,24 @@ impl CallView {
         });
     }
 
+    /// Shows the microphone as muted or not, without acting on it.
     pub fn set_muted(&self, muted: bool) {
         if self.0.mute.is_active() != muted {
+            self.0.syncing.set(true);
             self.0.mute.set_active(muted);
+            self.0.syncing.set(false);
         }
+    }
+
+    /// While the call waits for the recording notice, its microphone is off and the mute
+    /// control cannot turn it on.
+    pub fn set_mic_held(&self, held: bool) {
+        self.0.mute.set_sensitive(!held);
+        self.0.mute.set_tooltip_text(Some(if held {
+            "Your microphone stays off until you agree to the recording notice"
+        } else {
+            "Mute"
+        }));
     }
 
     pub fn set_level(&self, level: f32) {
@@ -956,7 +989,7 @@ fn rebuild_device_menu(popover: &gtk::Popover) {
     }
     if fixed {
         let hint = widgets::label(
-            "Ring uses your system\u{2019}s default microphone and speaker. Change them in your sound settings.",
+            "Ring uses your system\u{2019}s default microphone and speaker. Change them in your sound settings. Calls are recorded and transcribed.",
             &["muted"],
         );
         hint.set_max_width_chars(36);

@@ -7,6 +7,7 @@ pub mod home;
 pub mod incoming;
 pub mod player;
 pub mod recents;
+pub mod recording;
 pub mod settings;
 pub mod voicemail;
 pub mod widgets;

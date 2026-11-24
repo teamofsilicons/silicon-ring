@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::APP_ID;
 
+/// The recording notice's version (`ui::recording`). Raise it when the notice's wording changes
+/// enough that people should agree again.
+pub const RECORDING_NOTICE_VERSION: u32 = 1;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Appearance {
@@ -43,6 +47,13 @@ pub struct Config {
     /// Settings is never overridden.
     #[serde(default)]
     pub open_at_login_initialized: bool,
+    /// The recording notice version this device agreed to ("Agree and continue"); 0 for none.
+    #[serde(default)]
+    pub recording_notice_accepted: u32,
+    /// The notice version last put to the person signed in here and answered with "Not now":
+    /// the notice after sign-in shows only until then. Signing out clears it.
+    #[serde(default)]
+    pub recording_notice_offered: u32,
 }
 
 fn default_true() -> bool {
@@ -59,6 +70,8 @@ impl Default for Config {
             output_device: None,
             told_about_background: false,
             open_at_login_initialized: false,
+            recording_notice_accepted: 0,
+            recording_notice_offered: 0,
         }
     }
 }
@@ -107,6 +120,16 @@ impl Config {
             }),
             Err(_) => Config::default(),
         }
+    }
+
+    /// This device agreed to the current recording notice.
+    pub fn agreed_to_recording(&self) -> bool {
+        self.recording_notice_accepted >= RECORDING_NOTICE_VERSION
+    }
+
+    /// This sign-in has seen the current recording notice and chose "Not now".
+    pub fn offered_recording_notice(&self) -> bool {
+        self.recording_notice_offered >= RECORDING_NOTICE_VERSION
     }
 
     pub fn save(&self) {

@@ -285,6 +285,16 @@ banner > revealer > widget, banner > revealer > widget:backdrop {{ background-co
 .recording-dot {{ min-width: 10px; min-height: 10px; border-radius: 9999px; background-color: @ring_danger; animation: rec-pulse 1.4s ease-in-out infinite; }}
 @keyframes rec-pulse {{ 0% {{ opacity: 1; }} 50% {{ opacity: 0.3; }} 100% {{ opacity: 1; }} }}
 
+/* Calls are recorded and transcribed: a steady dot on the call screen and the recording notice */
+.recorded-dot {{ min-width: 6px; min-height: 6px; border-radius: 9999px; background-color: @ring_danger; }}
+.recording-notice {{ color: @ring_foreground; }}
+.recording-notice .notice-context {{ font-weight: 500; }}
+.recording-notice .notice-item {{ color: @ring_text_secondary; }}
+.recording-notice .notice-icon {{ color: @ring_accent_text; }}
+/* Over the incoming call's moment window too, the notice keeps the dialog's colours. */
+.recording-notice .muted {{ color: @ring_text_muted; }}
+.recording-notice button.link {{ color: @ring_accent_text; }}
+
 .lookup-card {{ padding: 12px; }}
 .ring-empty image.icon {{ opacity: 0.3; }}
 "#
