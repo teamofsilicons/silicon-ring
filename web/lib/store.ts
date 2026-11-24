@@ -5,6 +5,10 @@ import {
   closeNotifications, pushPermission, pushToken, requestNotifications, showPageNotification, unsubscribePush, type PushState,
 } from './push';
 import { RealtimeConnection, type RealtimeStatus } from './realtime';
+import {
+  acceptRecordingNotice, isRecordingNoticeAgreement, markRecordingNoticeOffered, recordingNoticeAccepted, recordingNoticeOffered,
+  resetRecordingNoticeOffer, type RecordingNoticeAction, type RecordingNoticeRequest,
+} from './recording-notice';
 import { sounds, type LoopSound } from './sounds';
 import type { Account, Call, CallState, DeviceRef, DeviceUpdate, Invitation, MediaGrant, Me, Meta, RealtimeEvent, TranscriptEntry } from './types';
 
@@ -72,6 +76,8 @@ export interface RingState {
   now: number;
   /** What the sign-in screen says about why this browser is signed out, such as after deleting the account. */
   signedOutNotice: Notice | null;
+  /** The recording notice on screen, and the call action waiting for it. */
+  recordingNotice: RecordingNoticeRequest | null;
 }
 
 export interface IncomingRing {
@@ -120,6 +126,7 @@ function initialState(): RingState {
     clockOffset: 0,
     now: Date.now(),
     signedOutNotice: null,
+    recordingNotice: null,
   };
 }
 
@@ -189,6 +196,9 @@ export class RingStore {
    */
   private deleting = false;
   private revokedWhileDeleting = false;
+  /** Settles the call action waiting for the recording notice: true to go ahead, false to drop it. */
+  private noticeWaiter: ((agreed: boolean) => void) | null = null;
+  private noticeSeq = 0;
 
   getState = () => this.state;
 
@@ -217,6 +227,10 @@ export class RingStore {
     if (this.started) return;
     this.started = true;
     sounds.install();
+    // Agreeing in another tab of this browser answers the notice after sign-in here too.
+    window.addEventListener('storage', event => {
+      if (isRecordingNoticeAgreement(event) && this.state.recordingNotice?.action.kind === 'welcome') this.closeRecordingNotice(false);
+    });
     void this.load();
   }
 
@@ -275,6 +289,9 @@ export class RingStore {
     this.releaseMediaLock?.();
     this.releaseMediaLock = null;
     sounds.setLoops([]);
+    // The next sign-in shows the notice again, unless this browser agreed.
+    resetRecordingNoticeOffer();
+    this.closeRecordingNotice(false);
     this.set({ ...initialState(), status: 'signed-out', meta: this.state.meta, signedOutNotice: notice });
   }
 
@@ -298,6 +315,10 @@ export class RingStore {
       if (!ringing.has(ring.invitation.invitation_id)) void closeNotifications(ring.call.ringid);
     }
     this.scheduleExpiry(rings);
+
+    if (state.recordingNotice && (state.calls !== previous.calls || state.now !== previous.now || state.media !== previous.media)) {
+      queueMicrotask(() => this.dropStaleRecordingNotice());
+    }
   }
 
   private serverNow() {
@@ -450,7 +471,9 @@ export class RingStore {
     // Another reconcile, or a click on Rejoin call, may have picked it up meanwhile.
     if (this.state.media || this.state.resume?.ringid === ringid || this.rejoining.has(ringid)) return;
     if (!this.carriedHere(this.state.calls[ringid])) return;
-    if (!granted) {
+    // Until this browser agrees to the recording notice nothing joins without a click: Rejoin call shows the notice
+    // first, so no call goes on here with this browser's microphone before the person agreed.
+    if (!granted || this.needsRecordingNotice()) {
       this.set({ resume: { ringid, state: 'offered' } });
       return;
     }
@@ -682,9 +705,91 @@ export class RingStore {
     }
   }
 
+  // ------------------------------------------------------------------------------------------------ recording notice
+
+  /** This browser has not agreed to the current recording notice yet. */
+  needsRecordingNotice() {
+    return !recordingNoticeAccepted();
+  }
+
+  /**
+   * Right after sign-in, and on every load signed in until it is answered once: the notice, before the app is used, so
+   * that this browser has normally agreed before a call rings.
+   */
+  offerRecordingNotice() {
+    if (this.state.status !== 'signed-in' || this.state.me?.account.kind !== 'carbon') return;
+    if (!this.needsRecordingNotice() || recordingNoticeOffered() || this.state.recordingNotice) return;
+    this.set({ recordingNotice: { id: ++this.noticeSeq, action: { kind: 'welcome' } } });
+  }
+
+  /**
+   * Holds a call action until this browser has agreed to the recording notice: true to go ahead (agreed now or
+   * before), false when the person chose Not now or what waited went away. A notice already on screen gives way to this
+   * one, and the action it held is dropped.
+   */
+  private waitForRecordingNotice(action: RecordingNoticeAction): Promise<boolean> {
+    if (!this.needsRecordingNotice()) return Promise.resolve(true);
+    this.closeRecordingNotice(false);
+    return new Promise(resolve => {
+      this.noticeWaiter = resolve;
+      this.set({ recordingNotice: { id: ++this.noticeSeq, action } });
+    });
+  }
+
+  /** "Agree and continue": remembers the agreement in this browser and carries on with what waited for it. */
+  agreeToRecordingNotice(id: number) {
+    if (this.state.recordingNotice?.id !== id) return;
+    acceptRecordingNotice();
+    this.closeRecordingNotice(true);
+  }
+
+  /**
+   * "Not now": drops the call action that waited. The notice comes back before the next call, and the one after
+   * sign-in only after the next sign-in.
+   */
+  dismissRecordingNotice(id: number) {
+    if (this.state.recordingNotice?.id !== id) return;
+    markRecordingNoticeOffered();
+    this.closeRecordingNotice(false);
+  }
+
+  private closeRecordingNotice(agreed: boolean) {
+    const waiter = this.noticeWaiter;
+    this.noticeWaiter = null;
+    if (this.state.recordingNotice) this.set({ recordingNotice: null });
+    waiter?.(agreed);
+  }
+
+  /**
+   * A notice waiting to answer a ring, or to bring a call here, goes away with that ring or call: the caller hung up,
+   * another device answered or declined, it stopped ringing, or the call ended or is already here.
+   */
+  private dropStaleRecordingNotice() {
+    const action = this.state.recordingNotice?.action;
+    if (!action || action.kind === 'welcome' || action.kind === 'place') return;
+    const call = this.state.calls[action.ringid];
+    let gone: boolean;
+    if (action.kind === 'answer') {
+      const meUuid = this.state.me?.account.uuid;
+      const invitation = call?.invitations.find(candidate => (action.invitationId
+        ? candidate.invitation_id === action.invitationId
+        : candidate.to.uuid === meUuid && candidate.state === 'ringing'));
+      gone = !call || (call.state !== 'ringing' && call.state !== 'active') || invitation?.state !== 'ringing'
+        || Date.parse(invitation.expires_at) <= this.serverNow();
+    } else {
+      const mine = call ? myParticipant(call, this.state.me?.account.uuid) : undefined;
+      const here = this.state.media?.ringid === action.ringid && this.state.media.status !== 'disconnected';
+      gone = !call || !LIVE_STATES.has(call.state) || mine?.state !== 'joined' || here;
+    }
+    if (gone) this.closeRecordingNotice(false);
+  }
+
   // ------------------------------------------------------------------------------------------------ actions
 
-  async startCall(to: string, idempotencyKey: string) {
+  /** Places a call. Null when the person chose Not now on the recording notice. */
+  async startCall(to: string, idempotencyKey: string): Promise<Call | null> {
+    if (this.state.media) throw new Error('You’re already on a call. Hang up first.');
+    if (!(await this.waitForRecordingNotice({ kind: 'place', to }))) return null;
     if (this.state.media) throw new Error('You’re already on a call. Hang up first.');
     const created = await api.createCall(to, idempotencyKey);
     this.upsertCall(created.call);
@@ -692,7 +797,9 @@ export class RingStore {
     return created.call;
   }
 
-  async accept(ringid: string, invitationId?: string) {
+  /** Answers a ring here. Null when the person chose Not now on the recording notice, or the ring stopped meanwhile. */
+  async accept(ringid: string, invitationId?: string): Promise<Call | null> {
+    if (!(await this.waitForRecordingNotice({ kind: 'answer', ringid, invitationId }))) return null;
     const current = this.state.media;
     if (current && current.ringid !== ringid) await this.leave(current.ringid);
     if (invitationId) this.accepting.add(invitationId);
@@ -747,9 +854,11 @@ export class RingStore {
     return result.invitation;
   }
 
+  /** Moves a call to this browser. False when the person chose Not now on the recording notice. */
   async switchHere(ringid: string) {
     const current = this.state.media;
     if (current && current.ringid !== ringid) throw new Error('Hang up your other call first.');
+    if (!(await this.waitForRecordingNotice({ kind: 'switch', ringid }))) return false;
     // Marked as rejoining so a reconnect's automatic rejoin doesn't ask for a second grant meanwhile.
     this.rejoining.add(ringid);
     try {
@@ -760,10 +869,13 @@ export class RingStore {
       this.rejoining.delete(ringid);
     }
     void this.syncTranscript(ringid);
+    return true;
   }
 
   /** Rejoin call: takes back a call this browser carried before the page reloaded. Run it from a click. */
   async resumeCall(ringid: string) {
+    // Not now leaves it offered, until the server lets the call go from this browser.
+    if (!(await this.waitForRecordingNotice({ kind: 'rejoin', ringid }))) return;
     this.set({ resume: { ringid, state: 'joining' } });
     try {
       await this.switchHere(ringid);

@@ -150,7 +150,8 @@ function CallDetails({ ringid }: { ringid: string }) {
     setCalling(true);
     try {
       const next = await store.startCall(person.id, key.current);
-      router.push(`/call?id=${encodeURIComponent(next.ringid)}`);
+      if (next) router.push(`/call?id=${encodeURIComponent(next.ringid)}`);
+      else setCalling(false);
     } catch (failure) {
       key.current = newIdempotencyKey();
       toast({ type: 'error', title: 'The call didn’t go through', description: errorMessage(failure) });

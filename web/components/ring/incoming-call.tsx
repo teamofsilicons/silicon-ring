@@ -47,6 +47,8 @@ function IncomingCallSheet({ ring, more }: { ring: IncomingRing; more: number })
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState<'accept' | 'decline' | 'silence' | null>(null);
+  // The recording notice comes before answering, over this sheet.
+  const behindNotice = useRing(state => Boolean(state.recordingNotice));
   const previousFocus = useRef<Element | null>(null);
   const { call, invitation } = ring;
   const caller = invitation.from;
@@ -72,7 +74,11 @@ function IncomingCallSheet({ ring, more }: { ring: IncomingRing; more: number })
   async function accept() {
     setBusy('accept');
     try {
-      await store.accept(call.ringid, invitation.invitation_id);
+      // Not now on the recording notice leaves it ringing here.
+      if (!(await store.accept(call.ringid, invitation.invitation_id))) {
+        setBusy(null);
+        return;
+      }
       router.push(`/call?id=${encodeURIComponent(call.ringid)}`);
     } catch (error) {
       failed(error, 'Couldn’t answer');
@@ -107,7 +113,7 @@ function IncomingCallSheet({ ring, more }: { ring: IncomingRing; more: number })
   const tooLong = codePoints(reason) > limit;
 
   return (
-    <section className={styles.moment} data-ring-moment="" role="alertdialog" aria-modal="true" aria-labelledby="incoming-name" aria-describedby="incoming-status">
+    <section className={[styles.moment, behindNotice ? styles.behindNotice : ''].filter(Boolean).join(' ')} data-ring-moment="" role="alertdialog" aria-modal="true" aria-labelledby="incoming-name" aria-describedby="incoming-status">
       <div className={styles.momentBody}>
         <span className={[styles.halo, styles.waves].join(' ')}>
           <PersonAvatar account={caller} size="xl" />

@@ -306,6 +306,11 @@
   gap: var(--space-comfort);
 }
 
+/* Under the recording notice (a dialog, z-index 50 and 51) while it asks before answering. */
+.behindNotice {
+  z-index: 49;
+}
+
 .momentActions {
   display: flex;
   justify-content: center;

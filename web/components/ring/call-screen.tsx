@@ -18,6 +18,7 @@ import { CallControl } from './exceptions/call-control';
 import { useMe, useNow } from './hooks';
 import { NameBlock, PersonAvatar, Pixel, SiliconBadge } from './identity';
 import { LiveTranscriptView } from './live-transcript';
+import { RecordingIndicator } from './recording-notice';
 import { useRing, useRingStore } from './ring-context';
 import { RingRings } from './ring-mark';
 import { keepClearOfToasts } from './toasts';
@@ -169,6 +170,7 @@ function OutgoingView({ call, media }: { call: Call; media: MediaState | null })
         <Halo account={callee} waves />
         <NameBlock account={callee} />
         <Pixel tone="foreground" className={styles.callStatus}>{media?.status === 'connecting' ? 'Calling…' : 'Ringing'}</Pixel>
+        <RecordingIndicator />
         <MediaNotes media={media} />
       </div>
       <div className={styles.controls} ref={keepClearOfToasts}>
@@ -196,6 +198,7 @@ function VoicemailView({ call, media }: { call: Call; media: MediaState | null }
           {reason?.state === 'busy' ? <Pixel>Busy</Pixel> : null}
           <Pixel tone="foreground" className={styles.callStatus}>Leave a message after the beep</Pixel>
           <Pixel>{duration(now - since)}</Pixel>
+          <RecordingIndicator />
         </div>
         <MediaNotes media={media} />
       </div>
@@ -260,6 +263,7 @@ function InCallView({ call, media }: { call: Call; media: MediaState | null }) {
       <header className={styles.callHeader}>
         <Pixel tone="foreground" className={styles.timer}>{timer}</Pixel>
         <Pixel>{here ? status : elsewhere ? `On ${deviceLabel(mine?.device)}` : rejoining ? 'Connecting…' : 'Not connected'}</Pixel>
+        <RecordingIndicator />
       </header>
 
       <ul className={solo ? styles.soloRoster : styles.roster} aria-label="On the call">
@@ -324,7 +328,8 @@ function EndedView({ call }: { call: Call }) {
     setCalling(true);
     try {
       const next = await store.startCall(person.id, key.current);
-      router.replace(`/call?id=${encodeURIComponent(next.ringid)}`);
+      if (next) router.replace(`/call?id=${encodeURIComponent(next.ringid)}`);
+      else setCalling(false);
     } catch (error) {
       key.current = newIdempotencyKey();
       toast({ type: 'error', title: 'The call didn’t go through', description: errorMessage(error) });
@@ -375,9 +380,13 @@ function IncomingFromLink({ call, action }: { call: Call; action: string | null 
     if (!invitation) return;
     setBusy(kind);
     try {
-      if (kind === 'accept') await store.accept(call.ringid, invitation.invitation_id);
-      else await store.decline(call.ringid, invitation.invitation_id);
-      if (kind === 'decline') router.replace('/');
+      if (kind === 'accept') {
+        // Not now on the recording notice leaves it ringing; answering shows the call here.
+        if (!(await store.accept(call.ringid, invitation.invitation_id))) setBusy(null);
+      } else {
+        await store.decline(call.ringid, invitation.invitation_id);
+        router.replace('/');
+      }
     } catch (error) {
       toast({ type: 'error', title: kind === 'accept' ? 'Couldn’t answer' : 'Couldn’t decline', description: errorMessage(error) });
       setBusy(null);
@@ -388,6 +397,7 @@ function IncomingFromLink({ call, action }: { call: Call; action: string | null 
     if (done.current || !invitation || (action !== 'answer' && action !== 'decline')) return;
     done.current = true;
     const ringid = call.ringid;
+    // The recording notice comes first until this browser agreed; Not now drops the action and leaves it ringing.
     const run = action === 'answer' ? store.accept(ringid, invitation.invitation_id) : store.decline(ringid, invitation.invitation_id);
     run.then(
       () => router.replace(action === 'answer' ? `/call?id=${encodeURIComponent(ringid)}` : '/'),

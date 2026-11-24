@@ -1,0 +1,75 @@
+.indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-related);
+}
+
+.dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--danger);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-inset);
+  color: var(--foreground);
+  font-size: var(--text-base);
+}
+
+.lead,
+.tip {
+  margin: 0;
+}
+
+.tip {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-group);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-group);
+  color: var(--text-secondary);
+}
+
+.icon {
+  flex: 0 0 auto;
+  margin-top: var(--space-tight);
+  color: var(--ring-accent-text);
+}
+
+/* The ghost button's own padding lines its text up with the copy above. */
+.privacy {
+  margin-inline-start: calc(-1 * var(--space-group));
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-related);
+  width: 100%;
+  margin-top: var(--space-tight);
+}
+
+@media (max-width: 420px) {
+  .buttons {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+}

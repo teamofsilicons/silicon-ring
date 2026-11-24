@@ -116,7 +116,7 @@ function CallRow({ call }: { call: Call }) {
     setCalling(true);
     try {
       const next = await store.startCall(person.id, key.current);
-      router.push(`/call?id=${encodeURIComponent(next.ringid)}`);
+      if (next) router.push(`/call?id=${encodeURIComponent(next.ringid)}`);
     } catch (error) {
       key.current = newIdempotencyKey();
       toast({ type: 'error', title: 'The call didn’t go through', description: errorMessage(error) });

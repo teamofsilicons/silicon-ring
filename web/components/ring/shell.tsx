@@ -177,8 +177,7 @@ function CallBanner() {
         onClick={async () => {
           setSwitching(true);
           try {
-            await store.switchHere(elsewhere.ringid);
-            router.push(`/call?id=${encodeURIComponent(elsewhere.ringid)}`);
+            if (await store.switchHere(elsewhere.ringid)) router.push(`/call?id=${encodeURIComponent(elsewhere.ringid)}`);
           } catch (error) {
             toast({ type: 'error', title: 'Couldn’t switch the call', description: errorMessage(error) });
           } finally {

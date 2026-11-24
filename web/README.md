@@ -57,6 +57,7 @@ The HTML pages carry a `<meta>` CSP that pins Next's inline scripts. The server'
 | `lib/store.ts` | session, live calls, transcripts and the one call this tab carries audio for; reconciles with `GET /v1/calls?state=ringing,active,voicemail` on every (re)connect |
 | `lib/media.ts` | LiveKit room per call: one microphone track, every remote audio track, active speakers by identity |
 | `lib/sounds.ts` | ringback and ringtone loops, unlocked on the first gesture |
+| `lib/recording-notice.ts`, `components/ring/recording-notice.tsx` | the call-recording notice, as in the native 1.0.1 apps: once after sign-in, and before placing, answering, switching or rejoining a call until this browser agrees (`localStorage['ring.recordingNotice.version']`; sign-out clears only the "offered" mark). The store holds those actions until it is answered, so no call joins here before agreeing (an automatic rejoin after a reload waits for Rejoin call instead); "Recorded · Transcribed" shows on the call screens |
 | `lib/push.ts`, `public/sw.js` | Web Push: VAPID subscription registered as the device's `webpush` token; the worker shows calls with Answer/Decline |
 | `components/ring/` | the screens, built from Silicon UI components; CSS modules use tokens only |
 | `public/install.sh` | the `ring` CLI installer for macOS and Linux (GitHub release archive + `SHA256SUMS`) |

@@ -154,7 +154,8 @@ function VoicemailDetail({ id }: { id: string }) {
     setBusy('call');
     try {
       const call = await store.startCall(voicemail.from.id, key.current);
-      router.push(`/call?id=${encodeURIComponent(call.ringid)}`);
+      if (call) router.push(`/call?id=${encodeURIComponent(call.ringid)}`);
+      else setBusy(null);
     } catch (failure) {
       key.current = newIdempotencyKey();
       toast({ type: 'error', title: 'The call didn’t go through', description: errorMessage(failure) });

@@ -113,6 +113,8 @@ function Dialer({ mode, onDone }: { mode: DialerMode; onDone: () => void }) {
     try {
       if (mode.kind === 'call') {
         const call = await store.startCall(target, key.current);
+        // Not now on the recording notice: the dialer stays as it was.
+        if (!call) return;
         onDone();
         router.push(`/call?id=${encodeURIComponent(call.ringid)}`);
       } else {

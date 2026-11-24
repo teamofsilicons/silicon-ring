@@ -8,6 +8,7 @@ import { ToastStackProvider } from '@teamofsilicons/silicon-ui/toast-stack';
 import { applyAppearance, readAppearance } from '@/lib/theme';
 import { DialerProvider } from './dialer';
 import { IncomingCallLayer } from './incoming-call';
+import { RecordingNotice } from './recording-notice';
 import { RingProvider, useRing } from './ring-context';
 import { Shell } from './shell';
 import { SignIn, SiliconNotice, Splash, Unreachable } from './sign-in';
@@ -39,12 +40,18 @@ function AppFrame({ children }: { children: ReactNode }) {
   useSystemAppearance();
 
   // The public pages need no sign-in, but a signed-in carbon reading them still gets calls (the ringtone plays on
-  // every page).
+  // every page), and the recording notice before answering one. The notice after sign-in waits for the app itself, so
+  // it never covers the privacy policy it links to.
   if (PUBLIC_PAGES.some(page => pathname === page || pathname.startsWith(`${page}/`))) {
     return (
       <>
         {children}
-        {status === 'signed-in' && kind === 'carbon' ? <IncomingCallLayer /> : null}
+        {status === 'signed-in' && kind === 'carbon' ? (
+          <>
+            <IncomingCallLayer />
+            <RecordingNotice />
+          </>
+        ) : null}
       </>
     );
   }
@@ -56,6 +63,7 @@ function AppFrame({ children }: { children: ReactNode }) {
     <DialerProvider>
       <Shell>{children}</Shell>
       <IncomingCallLayer />
+      <RecordingNotice offer />
     </DialerProvider>
   );
 }
